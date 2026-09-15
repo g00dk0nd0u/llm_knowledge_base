@@ -215,6 +215,30 @@ def _atomic_json(path: Path, data: dict[str, Any]) -> None:
         raise
 
 
+def _rollback_project(
+    applied: list[tuple[Path, Path | None, Path]],
+    removed: list[tuple[Path, Path]],
+) -> None:
+    """Restore moved directories after a failed project transaction."""
+    failures: list[str] = []
+    for stale, backup in reversed(removed):
+        try:
+            if backup.exists():
+                os.replace(backup, stale)
+        except OSError as exc:
+            failures.append(f"restore {stale}: {exc}")
+    for output, backup, staged_output in reversed(applied):
+        try:
+            if output.exists():
+                os.replace(output, staged_output)
+            if backup is not None and backup.exists():
+                os.replace(backup, output)
+        except OSError as exc:
+            failures.append(f"restore {output}: {exc}")
+    if failures:
+        raise PipelineError("transaction rollback failed: " + "; ".join(failures))
+
+
 def process_all(root: Path) -> ProcessResult:
     projects = root / "projects"
     if not projects.is_dir():
@@ -240,6 +264,10 @@ def process_all(root: Path) -> ProcessResult:
                 doc_id = document_id(source_file)
                 output_rel = f"projects/{project.name}/knowledge/{_slug(pdf, doc_id)}"
                 output = root / output_rel
+                if output.exists() and not (output / MANAGED_MARKER).is_file():
+                    raise PipelineError(
+                        f"refusing to replace unmanaged knowledge directory: {output_rel}"
+                    )
                 source_hash = _sha256(pdf)
                 previous = old_by_id.get(doc_id)
                 entry = {
@@ -267,15 +295,8 @@ def process_all(root: Path) -> ProcessResult:
                     processed += 1
                 entries.append(entry)
 
-            # Extraction of every changed PDF succeeded; only now replace generated trees.
-            for staged_output, output, _data in staged:
-                output.parent.mkdir(parents=True, exist_ok=True)
-                backup = temp_root / (staged_output.name + "-old")
-                if output.exists():
-                    os.replace(output, backup)
-                os.replace(staged_output, output)
-
             current_paths = {entry["knowledge_path"] for entry in entries}
+            stale_directories: list[Path] = []
             for previous in manifest["documents"]:
                 stale_rel = previous.get("knowledge_path")
                 if not isinstance(stale_rel, str) or stale_rel in current_paths:
@@ -283,15 +304,47 @@ def process_all(root: Path) -> ProcessResult:
                 stale = root / stale_rel
                 expected = project / "knowledge"
                 if _inside(stale, expected) and (stale / MANAGED_MARKER).is_file():
-                    shutil.rmtree(stale)
-                    removed += 1
+                    stale_directories.append(stale)
 
             updated = {key: value for key, value in manifest.items() if key != "documents"}
             updated["project_id"] = project.name
             updated["pipeline_version"] = PIPELINE_VERSION
             updated["documents"] = sorted(entries, key=lambda item: item["source_file"])
-            if updated != manifest:
-                _atomic_json(manifest_path, updated)
+            applied: list[tuple[Path, Path | None, Path]] = []
+            removed_for_rollback: list[tuple[Path, Path]] = []
+            try:
+                # Every extraction and ownership check succeeded. Apply as one project
+                # transaction, retaining backups until the manifest is safely replaced.
+                for staged_output, output, _data in staged:
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    backup = temp_root / (staged_output.name + "-old")
+                    previous_output = backup if output.exists() else None
+                    if previous_output is not None:
+                        os.replace(output, previous_output)
+                    try:
+                        os.replace(staged_output, output)
+                    except BaseException:
+                        if previous_output is not None and previous_output.exists():
+                            os.replace(previous_output, output)
+                        raise
+                    applied.append((output, previous_output, staged_output))
+
+                for index, stale in enumerate(stale_directories):
+                    backup = temp_root / f"stale-{index}"
+                    os.replace(stale, backup)
+                    removed_for_rollback.append((stale, backup))
+
+                if updated != manifest:
+                    _atomic_json(manifest_path, updated)
+            except BaseException as exc:
+                try:
+                    _rollback_project(applied, removed_for_rollback)
+                except PipelineError as rollback_exc:
+                    raise rollback_exc from exc
+                if isinstance(exc, PipelineError):
+                    raise
+                raise PipelineError(f"failed to apply project transaction {project.name}: {exc}") from exc
+            removed += len(stale_directories)
         finally:
             shutil.rmtree(temp_root, ignore_errors=True)
     return ProcessResult(processed, unchanged, removed)
@@ -351,10 +404,16 @@ def render_pages(
         raise PipelineError(f"cannot open corrupt or invalid PDF {pdf}: {exc}") from exc
     try:
         chosen = list(range(1, document.page_count + 1)) if all_pages else _parse_pages(pages or "", document.page_count)
-        output = (root / output).resolve() if not output.is_absolute() else output.resolve()
-        # Knowledge trees are reviewable text; rendered binaries must never be placed there.
-        for project_knowledge in (root / "projects").glob("*/knowledge"):
-            if _inside(output, project_knowledge):
+        logical_output = Path(os.path.abspath(root / output if not output.is_absolute() else output))
+        output = logical_output.resolve()
+        # This structural check does not depend on knowledge/ already existing. Resolution
+        # above also prevents traversal and symlink aliases from bypassing it.
+        for candidate in (logical_output, output):
+            try:
+                output_relative = candidate.relative_to(root / "projects")
+            except ValueError:
+                continue
+            if len(output_relative.parts) >= 2 and output_relative.parts[1] == "knowledge":
                 raise PipelineError("render output must not be inside a project knowledge directory")
         output.mkdir(parents=True, exist_ok=True)
         results: list[Path] = []

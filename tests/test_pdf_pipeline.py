@@ -8,6 +8,7 @@ import fitz
 import jsonschema
 import pytest
 
+from tools.pdf_pipeline import pipeline
 from tools.pdf_pipeline.pipeline import PipelineError, document_id, process_all, render_pages
 
 
@@ -131,5 +132,69 @@ def test_render_rejects_non_source_and_knowledge_output(repository: Path) -> Non
         render_pages(repository, outside, pages="1", all_pages=False, dpi=300, output=Path("artifacts"))
     source = repository / "projects/example/source/sample.pdf"
     make_pdf(source, ["source"])
+    assert not (repository / "projects/example/knowledge").exists()
     with pytest.raises(PipelineError, match="knowledge"):
         render_pages(repository, source, pages="1", all_pages=False, dpi=300, output=Path("projects/example/knowledge/images"))
+    assert not (repository / "projects/example/knowledge").exists()
+    alias = repository / "artifacts/knowledge-alias"
+    alias.parent.mkdir()
+    alias.symlink_to(repository / "projects/example/knowledge", target_is_directory=True)
+    with pytest.raises(PipelineError, match="knowledge"):
+        render_pages(repository, source, pages="1", all_pages=False, dpi=300, output=alias / "images")
+
+
+def test_process_refuses_to_replace_unmanaged_directory(repository: Path) -> None:
+    pdf = repository / "projects/example/source/sample.pdf"
+    make_pdf(pdf, ["Source text that is sufficiently long for normal extraction."])
+    doc_id = document_id("projects/example/source/sample.pdf")
+    output = repository / f"projects/example/knowledge/sample--{doc_id[4:16]}"
+    output.mkdir(parents=True)
+    sentinel = output / "human-authored.md"
+    sentinel.write_text("preserve exactly\n")
+
+    with pytest.raises(PipelineError, match="unmanaged knowledge directory"):
+        process_all(repository)
+
+    assert output.is_dir()
+    assert list(output.iterdir()) == [sentinel]
+    assert sentinel.read_text() == "preserve exactly\n"
+    assert not (repository / "projects/example/manifest.json").exists()
+
+
+def test_multi_document_apply_failure_rolls_back_project(
+    repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = repository / "projects/example/source/first.pdf"
+    second = repository / "projects/example/source/second.pdf"
+    make_pdf(first, ["Original first document text with enough characters to extract."])
+    make_pdf(second, ["Original second document text with enough characters to extract."])
+    process_all(repository)
+    manifest_path = repository / "projects/example/manifest.json"
+    manifest_before = manifest_path.read_bytes()
+    knowledge_root = repository / "projects/example/knowledge"
+    knowledge_before = {
+        path.relative_to(knowledge_root): path.read_bytes()
+        for path in knowledge_root.rglob("*")
+        if path.is_file()
+    }
+
+    make_pdf(first, ["Updated first document text that must be rolled back on failure."])
+    make_pdf(second, ["Updated second document text that triggers injected apply failure."])
+    second_id = document_id("projects/example/source/second.pdf")
+    real_replace = pipeline.os.replace
+
+    def fail_second_staged_replace(source: Path | str, destination: Path | str) -> None:
+        if Path(source).name == second_id:
+            raise OSError("injected replacement failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(pipeline.os, "replace", fail_second_staged_replace)
+    with pytest.raises(PipelineError, match="failed to apply project transaction"):
+        process_all(repository)
+
+    assert manifest_path.read_bytes() == manifest_before
+    assert knowledge_before == {
+        path.relative_to(knowledge_root): path.read_bytes()
+        for path in knowledge_root.rglob("*")
+        if path.is_file()
+    }
