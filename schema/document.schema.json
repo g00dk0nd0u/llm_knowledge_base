@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "document.schema.json",
+  "title": "Knowledge Base Document",
+  "type": "object",
+  "required": [
+    "document_id",
+    "source_file",
+    "source_sha256",
+    "project_id"
+  ],
+  "properties": {
+    "document_id": { "type": "string", "minLength": 1 },
+    "source_file": { "type": "string", "minLength": 1 },
+    "source_sha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
+    "project_id": { "type": "string", "minLength": 1 },
+    "title": { "type": ["string", "null"] },
+    "document_type": { "type": ["string", "null"] },
+    "discipline": { "type": ["string", "null"] },
+    "language": { "type": ["string", "null"] },
+    "page_count": { "type": ["integer", "null"], "minimum": 1 },
+    "pipeline_version": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}
