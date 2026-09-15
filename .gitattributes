@@ -1,0 +1,9 @@
+* text=auto
+
+# Preserve binary PDFs as ordinary Git blobs for now.
+# Large-file strategy can be introduced later if repository growth requires it.
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
