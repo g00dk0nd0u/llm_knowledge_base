@@ -1,0 +1,34 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local processing output
+.tmp/
+.cache/
+artifacts/
+vision/
+renders/
+tiles/
+
+# Local indexes / embeddings
+*.sqlite
+*.sqlite3
+*.db
+vector_store/
+embeddings/
+
+# Secrets / local config
+.env
+.env.*
+!.env.example
