@@ -7,7 +7,7 @@ from typing import Any
 
 from .errors import QueryCoreError
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 REQUIRED_METADATA = {
     "schema_version",
     "generator_version",
@@ -141,6 +141,212 @@ REQUIRED_COLUMNS = {
     "geometry_rtree": {"rowid", "min_x", "max_x", "min_y", "max_y", "min_z", "max_z"},
     "search_fts": {"content"},
 }
+# v2 replaces the v1 identity and placement shapes and adds structured Revit data.
+REQUIRED_COLUMNS.update(
+    {
+        "source_models": {
+            "id",
+            "role",
+            "title",
+            "revit_version",
+            "model_identity_kind",
+            "model_identity",
+            "snapshot_version_guid",
+            "snapshot_save_number",
+        },
+        "link_instances": {
+            "id",
+            "host_source_model_id",
+            "linked_source_model_id",
+            "source_unique_id",
+            "name",
+            "transform_to_host_json",
+            "provenance",
+        },
+        "entity_appearances": {
+            "id",
+            "entity_kind",
+            "entity_id",
+            "sheet_id",
+            "view_id",
+            "viewport_id",
+            "link_instance_id",
+            "pdf_page",
+            "x_min",
+            "y_min",
+            "x_max",
+            "y_max",
+            "coordinate_space",
+            "appearance_kind",
+            "bbox_quality",
+            "provenance",
+        },
+        "annotation_segments": {
+            "id",
+            "annotation_id",
+            "segment_index",
+            "numeric_value",
+            "display_text",
+            "unit",
+            "value_override",
+            "prefix",
+            "suffix",
+            "above",
+            "below",
+            "origin_json",
+            "text_position_json",
+        },
+        "annotation_references": {
+            "id",
+            "annotation_id",
+            "reference_index",
+            "target_source_model_id",
+            "target_source_unique_id",
+            "target_link_instance_id",
+            "stable_reference",
+            "reference_type",
+            "is_linked",
+            "resolution_state",
+        },
+        "spatial_boundaries": {
+            "id",
+            "space_id",
+            "loop_index",
+            "loop_kind",
+            "coordinate_system",
+            "unit",
+            "provenance",
+        },
+        "spatial_boundary_segments": {
+            "id",
+            "boundary_id",
+            "segment_index",
+            "start_x",
+            "start_y",
+            "start_z",
+            "end_x",
+            "end_y",
+            "end_z",
+            "source_model_id",
+            "source_unique_id",
+        },
+    }
+)
+# Old columns below are removed by v2; replace their validation sets.
+REQUIRED_COLUMNS["sheets"] = {
+    "id",
+    "document_id",
+    "number",
+    "name",
+    "pdf_page",
+    "export_order",
+    "source_model_id",
+    "source_unique_id",
+}
+REQUIRED_COLUMNS["views"] = {
+    "id",
+    "document_id",
+    "name",
+    "view_type",
+    "export_order",
+    "source_model_id",
+    "source_unique_id",
+}
+REQUIRED_COLUMNS["viewports"] = {
+    "id",
+    "sheet_id",
+    "view_id",
+    "placement_kind",
+    "sheet_x_min",
+    "sheet_y_min",
+    "sheet_x_max",
+    "sheet_y_max",
+    "sheet_coordinate_unit",
+    "pdf_x_min",
+    "pdf_y_min",
+    "pdf_x_max",
+    "pdf_y_max",
+    "pdf_coordinate_space",
+    "sheet_to_pdf_transform_json",
+    "mapping_quality",
+}
+REQUIRED_COLUMNS["levels"] = {
+    "id",
+    "name",
+    "elevation",
+    "unit",
+    "source_model_id",
+    "source_unique_id",
+    "provenance",
+    "confidence",
+}
+REQUIRED_COLUMNS["spaces"] = {
+    "id",
+    "kind",
+    "name",
+    "number",
+    "level_id",
+    "source_model_id",
+    "source_unique_id",
+    "phase_source_unique_id",
+    "provenance",
+    "confidence",
+}
+REQUIRED_COLUMNS["element_types"] = {
+    "id",
+    "family_name",
+    "type_name",
+    "category",
+    "source_model_id",
+    "source_unique_id",
+    "provenance",
+    "confidence",
+}
+REQUIRED_COLUMNS["elements"] = {
+    "id",
+    "name",
+    "category",
+    "type_id",
+    "space_id",
+    "level_id",
+    "source_model_id",
+    "source_unique_id",
+    "provenance",
+    "confidence",
+}
+REQUIRED_COLUMNS["parameters"] = {
+    "id",
+    "entity_kind",
+    "entity_id",
+    "scope",
+    "definition_name",
+    "definition_key",
+    "storage_type",
+    "data_type_id",
+    "parameter_type_id",
+    "shared_parameter_guid",
+    "unit_type_id",
+    "raw_value_text",
+    "raw_numeric_value",
+    "numeric_value",
+    "unit",
+    "value_text",
+    "provenance",
+    "confidence",
+    "evidence_id",
+}
+REQUIRED_COLUMNS["annotations"] = {
+    "id",
+    "kind",
+    "display_text",
+    "numeric_value",
+    "unit",
+    "source_model_id",
+    "source_unique_id",
+    "view_id",
+    "evidence_id",
+}
+REQUIRED_COLUMNS["geometries"].add("link_instance_id")
 ENTITY_TABLES = {
     "level": "levels",
     "space": "spaces",
@@ -166,7 +372,7 @@ def validate_database(path: Path) -> dict[str, str]:
         missing_tables = sorted(REQUIRED_COLUMNS.keys() - objects.keys())
         if missing_tables:
             raise QueryCoreError(
-                f"incomplete Query Core v1 schema; missing tables: {', '.join(missing_tables)}"
+                f"incomplete Query Core v2 schema; missing tables: {', '.join(missing_tables)}"
             )
         invalid_virtual_tables = sorted(
             table
@@ -178,7 +384,7 @@ def validate_database(path: Path) -> dict[str, str]:
         )
         if invalid_virtual_tables:
             raise QueryCoreError(
-                "incompatible Query Core v1 schema; expected virtual tables: "
+                "incompatible Query Core v2 schema; expected virtual tables: "
                 + ", ".join(invalid_virtual_tables)
             )
         for table, required in REQUIRED_COLUMNS.items():
@@ -189,7 +395,7 @@ def validate_database(path: Path) -> dict[str, str]:
             missing_columns = sorted(required - actual)
             if missing_columns:
                 raise QueryCoreError(
-                    f"incompatible Query Core v1 schema; {table} missing columns: "
+                    f"incompatible Query Core v2 schema; {table} missing columns: "
                     + ", ".join(missing_columns)
                 )
         metadata = dict(connection.execute("SELECT key,value FROM metadata"))
@@ -226,7 +432,7 @@ def validate_database(path: Path) -> dict[str, str]:
 
 
 class QueryCore:
-    """Structured, read-only API over a validated Query Core v1 database."""
+    """Structured, read-only API over a validated Query Core v2 database."""
 
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -275,6 +481,72 @@ class QueryCore:
         rows = self._rows(f"SELECT * FROM {table} WHERE id=?", (entity_id,))
         return rows[0] if rows else None
 
+    def get_source_model(self, model_id: str) -> dict[str, Any] | None:
+        rows = self._rows("SELECT * FROM source_models WHERE id=?", (model_id,))
+        if not rows:
+            return None
+        return rows[0]
+
+    def get_link_instance(self, link_instance_id: str) -> dict[str, Any] | None:
+        rows = self._rows(
+            "SELECT * FROM link_instances WHERE id=?", (link_instance_id,)
+        )
+        return self._decode_link_instance(rows[0]) if rows else None
+
+    def get_link_instances(
+        self, linked_source_model_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM link_instances"
+        values: tuple[Any, ...] = ()
+        if linked_source_model_id is not None:
+            sql += " WHERE linked_source_model_id=?"
+            values = (linked_source_model_id,)
+        return [
+            self._decode_link_instance(row)
+            for row in self._rows(sql + " ORDER BY id", values)
+        ]
+
+    @staticmethod
+    def _decode_link_instance(row: dict[str, Any]) -> dict[str, Any]:
+        transform = row.pop("transform_to_host_json")
+        row["transform_to_host"] = json.loads(transform)
+        return row
+
+    def get_appearances(self, entity_kind: str, entity_id: str) -> list[dict[str, Any]]:
+        return self._rows(
+            "SELECT * FROM entity_appearances WHERE entity_kind=? AND entity_id=? ORDER BY pdf_page,id",
+            (entity_kind, entity_id),
+        )
+
+    def get_annotation_segments(self, annotation_id: str) -> list[dict[str, Any]]:
+        rows = self._rows(
+            "SELECT * FROM annotation_segments WHERE annotation_id=? ORDER BY segment_index",
+            (annotation_id,),
+        )
+        for row in rows:
+            for key in ("origin", "text_position"):
+                value = row.pop(f"{key}_json")
+                row[key] = json.loads(value) if value else None
+        return rows
+
+    def get_annotation_references(self, annotation_id: str) -> list[dict[str, Any]]:
+        return self._rows(
+            "SELECT * FROM annotation_references WHERE annotation_id=? ORDER BY reference_index",
+            (annotation_id,),
+        )
+
+    def get_spatial_boundaries(self, space_id: str) -> list[dict[str, Any]]:
+        boundaries = self._rows(
+            "SELECT * FROM spatial_boundaries WHERE space_id=? ORDER BY loop_index",
+            (space_id,),
+        )
+        for boundary in boundaries:
+            boundary["segments"] = self._rows(
+                "SELECT * FROM spatial_boundary_segments WHERE boundary_id=? ORDER BY segment_index",
+                (boundary["id"],),
+            )
+        return boundaries
+
     def find_entities(self, text: str, kind: str | None = None) -> list[dict[str, Any]]:
         kinds = [kind] if kind else list(ENTITY_TABLES)
         output = []
@@ -282,8 +554,9 @@ class QueryCore:
             table = ENTITY_TABLES.get(entity_kind)
             if not table:
                 raise QueryCoreError(f"unknown entity kind: {entity_kind}")
+            name_column = "type_name" if table == "element_types" else "name"
             for row in self._rows(
-                f"SELECT * FROM {table} WHERE instr(lower(name),lower(?))>0 ORDER BY id",
+                f"SELECT * FROM {table} WHERE instr(lower({name_column}),lower(?))>0 ORDER BY id",
                 (text,),
             ):
                 output.append({"kind": entity_kind, **row})
@@ -310,7 +583,7 @@ class QueryCore:
     ) -> list[dict[str, Any]]:
         return self._with_evidence(
             self._rows(
-                "SELECT * FROM parameters WHERE entity_kind=? AND entity_id=? AND numeric_value IS NOT NULL ORDER BY name,id",
+                "SELECT * FROM parameters WHERE entity_kind=? AND entity_id=? AND numeric_value IS NOT NULL ORDER BY definition_name,id",
                 (entity_kind, entity_id),
             )
         )

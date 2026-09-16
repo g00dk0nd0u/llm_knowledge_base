@@ -1,75 +1,73 @@
-# Query Core v1
+# Query Core v2
 
-Query Core is the portable, Revit-independent runtime layer. Its handover model is:
+Query Core is the portable, Revit-independent runtime. Revit participates only at
+export time: a future adapter writes `revit_snapshot_v1` JSON, Python validates and
+imports it into SQLite v2, and the existing packager embeds `project.sqlite` in the
+Enhanced Drawing PDF. Query time requires neither JSON nor Revit/RVT/API assemblies.
 
-```text
-future Revit Exporter (export time only)
-  -> SQLite v1 machine payload
-  -> Enhanced PDF portable handover artifact
-  -> local read-only cache
-  -> Query Core runtime
-  -> structured facts, exact geometry, and PDF evidence
-  -> optional LLM consumer
-```
+## Identity and parameters
 
-The existing PDF Pipeline remains the text/Markdown retrieval fallback and is not
-replaced by this layer. No Revit, LLM, OCR, vision, or RVT dependency exists here.
+`source_models` separates stable model identity (`model_identity_kind` plus
+`model_identity`) from changing `snapshot_version_guid`/`snapshot_save_number`.
+`DocumentVersion.VersionGUID` must never be used as permanent model identity.
+Revit entities use `(source_model_id, source_unique_id)` uniqueness, so equal
+`Element.UniqueId` values in unrelated host/link documents are valid. Element types
+retain family, type, and category separately.
 
-## Schema and evidence
+`link_instances` represents placement separately: one linked `source_models` row may
+be referenced by many host link instances, each with its own Revit instance UniqueId
+and transform. Linked geometry, appearances, and annotation references carry the
+applicable link instance ID without duplicating the linked element identity.
 
-`schema.sql` defines schema version **1**. Both `metadata.schema_version` and
-`PRAGMA user_version` carry that version. Canonical input owns stable string IDs;
-the builder sorts records and atomically replaces its output, providing semantic
-determinism without promising identical SQLite bytes across SQLite versions.
+Parameters retain instance/type scope, definition key and name, storage type,
+data/spec/parameter/unit identifiers, shared GUID, raw text/internal numeric value,
+and normalized `numeric_value + unit`. A Double alone never implies a physical unit.
 
-Public PDF page numbers are one-based. An evidence bbox is
-`x_min, y_min, x_max, y_max` in PDF points in `pdf_points_top_left`: origin at the
-top-left of the unrotated page, x rightward and y downward. Bounds are inclusive
-and ordered. A null bbox means page-level evidence; partial or inverted bboxes are
-invalid.
+## Geometry and drawing occurrences
 
-Geometry uses explicit JSON analytic primitives plus normalized 3D extents. The
-v1 fixture demonstrates points within footprints and line axes. Coordinates are
-in the named coordinate system and unit. `geometry_rtree` performs only candidate
-filtering; callers receive the exact JSON geometry and must perform any later
-deterministic measurement themselves. It does not assert architectural relations.
+Every R-Tree bound is in `host_revit_internal_origin`, `mm`, on host Revit XYZ axes.
+Linked geometry must be transformed before insertion. Exact analytic JSON—not the
+float R-Tree—is authoritative for measurement. A link transform has exactly
+`basis_x`, `basis_y`, `basis_z`, `origin` (three numbers each), and
+`source_unit: revit_internal`.
 
-FTS5 uses the portable built-in `unicode61` tokenizer. This provides normal token
-search and some Japanese behavior, but unspaced Japanese segmentation varies.
-`search_text()` therefore falls back to deterministic Unicode substring matching
-when FTS returns no result. No external tokenizer or search service is required.
+`entity_appearances` provides independent, many-to-many occurrences with one-based
+PDF page, `pdf_points_top_left` bbox, appearance kind, and explicit quality:
+`page_only`, `may_be_visible`, `view_bbox`, `projected_bbox`, or `exact`. Collector
+visibility must not be called exact. `viewports` separately records Revit sheet bbox
+and unit, PDF bbox, affine mapping, and mapping quality. `placement_kind=schedule`
+supports ScheduleSheetInstance without pretending it is a Viewport.
 
-## Enhanced PDF and validation
+Printable sheets/views carry explicit `export_order`; combined PDF page numbers
+follow that order and are never reconstructed by sorting sheet numbers.
 
-PyMuPDF copies the existing PDF object/page structure and adds `project.sqlite`
-through the standard PDF EmbeddedFiles mechanism; pages are neither rasterized nor
-reconstructed. The file specification is linked from the catalog `/AF` array with
-`/AFRelationship /Data`, and its embedded stream declares MIME
-`application/vnd.sqlite3`. The attachment descriptor carries schema/project/source
-identity, generator version, and payload SHA-256.
+Dimensions keep ordered segments and source-model-aware references. The same
+reference structure supports linked/multiple/unresolved tag targets. Spot elevation
+and coordinate annotations retain numeric and display values. Relationships preserve
+`contained_in`, `from_space`, `to_space`, `hosted_by`, and `belongs_to_level`, with
+phase identity where applicable.
 
-Validation is deliberately non-circular: SQLite metadata stores the original
-drawing SHA-256, while the PDF attachment descriptor stores the SQLite payload
-SHA-256. The enhanced PDF's own hash is only used as a cache key and is not stored
-inside itself.
+Spatial boundaries are ordered outer/inner finish-face loops of directed segments,
+optionally identifying their boundary element. Compact obstruction footprints and
+bounds belong in `geometries`; full meshes are intentionally out of scope.
 
-`.cache/query-core/<enhanced-pdf-sha256>/<payload-sha256>/project.sqlite` is the
-default ignored cache. Both hashes prevent stale reuse. Existing cache content is
-revalidated for byte hash, SQLite integrity, and supported schema. Query connections
-use SQLite URI `mode=ro` plus `PRAGMA query_only=ON`.
+## Evidence, search, and packaging
 
-## Developer harness
+PDF evidence remains one-based and uses inclusive ordered `pdf_points_top_left`
+bounds. FTS5 uses `unicode61`, with deterministic Unicode substring fallback for
+Japanese. Enhanced PDFs retain `/AFRelationship /Data`, SQLite MIME metadata,
+drawing/payload SHA binding, validated read-only cache, and SQLite integrity checks.
+
+Public APIs include `search_text`, `find_entities`, `get_entity`,
+`get_numeric_facts`, `get_dimensions`, `get_spot_elevations`,
+`get_spatial_candidates`, `get_related_entities`, `get_pdf_evidence`, plus v2
+`get_source_model`, `get_appearances`, `get_annotation_segments`,
+`get_annotation_references`, and `get_spatial_boundaries`.
+
+See [`REVIT_2026_MAPPING.md`](REVIT_2026_MAPPING.md) for the Phase B extraction map.
 
 ```bash
 python -m tools.query_core build-fixture artifacts/query-demo
-python -m tools.query_core package artifacts/query-demo/drawing.pdf \
-  artifacts/query-demo/project.sqlite artifacts/query-demo/enhanced.pdf
+python -m tools.query_core package artifacts/query-demo/drawing.pdf artifacts/query-demo/project.sqlite artifacts/query-demo/enhanced.pdf
 python -m tools.query_core inspect artifacts/query-demo/enhanced.pdf
-python -m tools.query_core extract artifacts/query-demo/enhanced.pdf
-python -m tools.query_core search artifacts/query-demo/enhanced.pdf SD-03
 ```
-
-The programmatic API includes `search_text`, `find_entities`, `get_entity`,
-`get_numeric_facts`, `get_dimensions`, `get_spot_elevations`,
-`get_spatial_candidates`, `get_related_entities`, and `get_pdf_evidence`. Results
-are dictionaries, never prose.

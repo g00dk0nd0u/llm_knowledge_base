@@ -99,7 +99,7 @@ python -m tools.pdf_pipeline render \
 `knowledge/` directory and never modifies the source PDF. See
 [`tools/pdf_pipeline/README.md`](tools/pdf_pipeline/README.md) for details.
 
-## Portable Query Core v1
+## Portable Query Core v2
 
 The [Query Core](tools/query_core/README.md) is a separate, Revit-independent layer.
 It builds a versioned SQLite payload containing architectural entities, numeric
@@ -109,6 +109,6 @@ ignored content-addressed cache, and queried read-only through a structured Pyth
 API. The included fixture data is entirely synthetic.
 
 The intended boundary is: **Revit = future export-time source; Enhanced PDF =
-portable handover artifact; SQLite = embedded v1 machine payload; Query Core =
+portable handover artifact; SQLite = embedded v2 machine payload; Query Core =
 runtime; LLM = optional consumer.** The current implementation does not include a
 Revit exporter, corridor compliance reasoning, or change-impact analysis.

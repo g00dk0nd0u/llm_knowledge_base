@@ -63,7 +63,7 @@ def _payload_attachment_names(document: fitz.Document) -> list[str]:
 
 
 def package_pdf(drawing_pdf: Path, database: Path, output: Path) -> Path:
-    """Copy drawing pages unchanged and attach the v1 database as an embedded file."""
+    """Copy drawing pages unchanged and attach the v2 database as an embedded file."""
     drawing_pdf, database, output = map(Path, (drawing_pdf, database, output))
     metadata = validate_database(database)
     if drawing_pdf.resolve() == output.resolve():

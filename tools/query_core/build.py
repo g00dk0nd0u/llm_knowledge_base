@@ -9,10 +9,12 @@ from typing import Any
 
 from .errors import QueryCoreError
 
-SCHEMA_VERSION = 1
-GENERATOR_VERSION = "query-core/1.0"
+SCHEMA_VERSION = 2
+GENERATOR_VERSION = "query-core/2.0"
 TABLES = (
     "documents",
+    "source_models",
+    "link_instances",
     "sheets",
     "views",
     "viewports",
@@ -24,6 +26,11 @@ TABLES = (
     "parameters",
     "relationships",
     "annotations",
+    "annotation_segments",
+    "annotation_references",
+    "entity_appearances",
+    "spatial_boundaries",
+    "spatial_boundary_segments",
     "geometries",
     "search_content",
 )
@@ -46,6 +53,71 @@ def _validate(records: dict[str, Any]) -> None:
         or any(c not in "0123456789abcdef" for c in sha)
     ):
         raise QueryCoreError("source_document_sha256 must be a lowercase SHA-256")
+    model_rows = records.get("source_models", [])
+    source_models = {row.get("id"): row for row in model_rows}
+    hosts = [row for row in model_rows if row.get("role") == "host"]
+    if len(hosts) != 1:
+        raise QueryCoreError("snapshot must contain exactly one host source model")
+    for table in (
+        "levels",
+        "spaces",
+        "element_types",
+        "elements",
+        "views",
+        "sheets",
+        "annotations",
+    ):
+        identities: set[tuple[str, str]] = set()
+        for row in records.get(table, []):
+            model, unique_id = row.get("source_model_id"), row.get("source_unique_id")
+            if model is not None and model not in source_models:
+                raise QueryCoreError(f"reference to nonexistent source model: {model}")
+            if model is not None and unique_id is not None:
+                identity = (model, unique_id)
+                if identity in identities:
+                    raise QueryCoreError(
+                        f"duplicate source identity: {model}/{unique_id}"
+                    )
+                identities.add(identity)
+    link_instances: dict[str, dict[str, Any]] = {}
+    instance_identities: set[tuple[str, str]] = set()
+    for row in records.get("link_instances", []):
+        host = source_models.get(row.get("host_source_model_id"))
+        linked = source_models.get(row.get("linked_source_model_id"))
+        if host is None or host.get("role") != "host":
+            raise QueryCoreError(
+                f"link instance has invalid host source model: {row.get('id')}"
+            )
+        if linked is None or linked.get("role") != "link":
+            raise QueryCoreError(
+                f"link instance has invalid linked source model: {row.get('id')}"
+            )
+        if (
+            not isinstance(row.get("source_unique_id"), str)
+            or not row["source_unique_id"].strip()
+        ):
+            raise QueryCoreError(
+                f"link instance requires source_unique_id: {row.get('id')}"
+            )
+        identity = (row["host_source_model_id"], row["source_unique_id"])
+        if identity in instance_identities:
+            raise QueryCoreError(
+                f"duplicate link instance identity: {identity[0]}/{identity[1]}"
+            )
+        instance_identities.add(identity)
+        _validate_transform(row.get("transform_to_host"), row.get("id"))
+        link_instances[row["id"]] = row
+    for collection in ("evidence", "entity_appearances"):
+        for row in records.get(collection, []):
+            if not isinstance(row.get("pdf_page"), int) or row["pdf_page"] < 1:
+                raise QueryCoreError(f"invalid appearance page: {row.get('id')}")
+            coords = [row.get(k) for k in ("x_min", "y_min", "x_max", "y_max")]
+            if any(v is not None for v in coords) and (
+                any(v is None for v in coords)
+                or coords[0] > coords[2]
+                or coords[1] > coords[3]
+            ):
+                raise QueryCoreError(f"malformed {collection} bbox: {row.get('id')}")
     for row in records.get("evidence", []):
         coords = [row.get(k) for k in ("x_min", "y_min", "x_max", "y_max")]
         if any(v is not None for v in coords) and (
@@ -54,14 +126,126 @@ def _validate(records: dict[str, Any]) -> None:
             or coords[1] > coords[3]
         ):
             raise QueryCoreError(f"malformed evidence bbox: {row.get('id')}")
-    for table in ("parameters", "annotations"):
+    for table in ("parameters", "annotations", "annotation_segments"):
         for row in records.get(table, []):
             if row.get("numeric_value") is not None and not row.get("unit"):
                 raise QueryCoreError(f"numeric record requires unit: {row.get('id')}")
+    for row in records.get("geometries", []):
+        if (
+            row.get("coordinate_system") != "host_revit_internal_origin"
+            or row.get("unit") != "mm"
+        ):
+            raise QueryCoreError(
+                "indexed geometry must use host_revit_internal_origin/mm"
+            )
+        instance_id = row.get("link_instance_id")
+        if instance_id is not None:
+            instance = link_instances.get(instance_id)
+            if instance is None:
+                raise QueryCoreError(
+                    f"geometry references nonexistent link instance: {instance_id}"
+                )
+            if row.get("entity_kind") == "element":
+                element = next(
+                    (
+                        item
+                        for item in records.get("elements", [])
+                        if item.get("id") == row.get("entity_id")
+                    ),
+                    None,
+                )
+                if (
+                    element is not None
+                    and element.get("source_model_id")
+                    != instance["linked_source_model_id"]
+                ):
+                    raise QueryCoreError(
+                        f"geometry link instance model mismatch: {row.get('id')}"
+                    )
+    for row in records.get("annotation_references", []):
+        model = row.get("target_source_model_id")
+        if model is not None and model not in source_models:
+            raise QueryCoreError(f"reference to nonexistent source model: {model}")
+        instance_id = row.get("target_link_instance_id")
+        if row.get("is_linked") == 1 and row.get("resolution_state") == "resolved":
+            if (
+                model is None
+                or not row.get("target_source_unique_id")
+                or instance_id is None
+            ):
+                raise QueryCoreError(
+                    f"resolved linked reference requires model, element, and link instance: {row.get('id')}"
+                )
+        if instance_id is not None:
+            instance = link_instances.get(instance_id)
+            if instance is None:
+                raise QueryCoreError(
+                    f"reference to nonexistent link instance: {instance_id}"
+                )
+            if model != instance["linked_source_model_id"]:
+                raise QueryCoreError(
+                    f"annotation reference link instance model mismatch: {row.get('id')}"
+                )
+    for row in records.get("entity_appearances", []):
+        instance_id = row.get("link_instance_id")
+        if instance_id is not None and instance_id not in link_instances:
+            raise QueryCoreError(
+                f"appearance references nonexistent link instance: {instance_id}"
+            )
+    _validate_order(records, "annotation_segments", "annotation_id", "segment_index")
+    _validate_order(
+        records, "annotation_references", "annotation_id", "reference_index"
+    )
+    _validate_order(records, "spatial_boundaries", "space_id", "loop_index")
+    _validate_order(
+        records, "spatial_boundary_segments", "boundary_id", "segment_index"
+    )
+    boundary_segments: dict[str, list[dict[str, Any]]] = {}
+    for row in records.get("spatial_boundary_segments", []):
+        boundary_segments.setdefault(row["boundary_id"], []).append(row)
+        model = row.get("source_model_id")
+        if model is not None and model not in source_models:
+            raise QueryCoreError(f"reference to nonexistent source model: {model}")
+    for boundary in records.get("spatial_boundaries", []):
+        segments = sorted(
+            boundary_segments.get(boundary["id"], []), key=lambda r: r["segment_index"]
+        )
+        if len(segments) < 3 or any(
+            [a["end_x"], a["end_y"], a["end_z"]]
+            != [b["start_x"], b["start_y"], b["start_z"]]
+            for a, b in zip(segments, segments[1:] + segments[:1])
+        ):
+            raise QueryCoreError(f"malformed spatial boundary loop: {boundary['id']}")
+
+
+def _validate_order(
+    records: dict[str, Any], table: str, parent_key: str, index_key: str
+) -> None:
+    grouped: dict[str, list[int]] = {}
+    for row in records.get(table, []):
+        grouped.setdefault(row[parent_key], []).append(row[index_key])
+    for parent, indexes in grouped.items():
+        if sorted(indexes) != list(range(len(indexes))):
+            raise QueryCoreError(f"{table} ordering error for {parent}")
+
+
+def _validate_transform(transform: Any, model_id: Any) -> None:
+    keys = ("basis_x", "basis_y", "basis_z", "origin")
+    if (
+        not isinstance(transform, dict)
+        or transform.get("source_unit") != "revit_internal"
+        or any(
+            not isinstance(transform.get(key), list)
+            or len(transform[key]) != 3
+            or any(not isinstance(value, (int, float)) for value in transform[key])
+            for key in keys
+        )
+    ):
+        raise QueryCoreError(f"invalid link transform: {model_id}")
 
 
 def build_database(records: dict[str, Any], output: Path) -> Path:
-    """Atomically build schema v1 from canonical records sorted by stable ID."""
+    """Atomically build schema v2 from validated canonical records."""
     _validate(records)
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -100,6 +284,26 @@ def build_database(records: dict[str, Any], output: Path) -> Path:
                         separators=(",", ":"),
                     )
                     del values["geometry"]
+                elif table == "link_instances" and "transform_to_host" in values:
+                    transform = values.pop("transform_to_host")
+                    values["transform_to_host_json"] = (
+                        json.dumps(transform, sort_keys=True, separators=(",", ":"))
+                        if transform is not None
+                        else None
+                    )
+                elif table == "viewports" and "sheet_to_pdf_transform" in values:
+                    transform = values.pop("sheet_to_pdf_transform")
+                    values["sheet_to_pdf_transform_json"] = (
+                        json.dumps(transform, sort_keys=True, separators=(",", ":"))
+                        if transform is not None
+                        else None
+                    )
+                elif table == "annotation_segments":
+                    for key in ("origin", "text_position"):
+                        if key in values:
+                            values[f"{key}_json"] = json.dumps(
+                                values.pop(key), separators=(",", ":")
+                            )
                 columns = ",".join(values)
                 placeholders = ",".join("?" for _ in values)
                 connection.execute(
