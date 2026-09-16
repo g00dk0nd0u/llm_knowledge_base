@@ -1,0 +1,59 @@
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+from .fixtures import build_synthetic_fixture
+from .package import cached_payload, extract_payload, inspect_pdf, package_pdf
+from .query import QueryCore
+
+
+def parser() -> argparse.ArgumentParser:
+    root = argparse.ArgumentParser(prog="python -m tools.query_core")
+    commands = root.add_subparsers(dest="command", required=True)
+    fixture = commands.add_parser("build-fixture")
+    fixture.add_argument("directory", type=Path)
+    package = commands.add_parser("package")
+    package.add_argument("drawing", type=Path)
+    package.add_argument("database", type=Path)
+    package.add_argument("output", type=Path)
+    inspect = commands.add_parser("inspect")
+    inspect.add_argument("pdf", type=Path)
+    extract = commands.add_parser("extract")
+    extract.add_argument("pdf", type=Path)
+    extract.add_argument("output", type=Path, nargs="?")
+    search = commands.add_parser("search")
+    search.add_argument("source", type=Path)
+    search.add_argument("query")
+    return root
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    if args.command == "build-fixture":
+        drawing, database = build_synthetic_fixture(args.directory)
+        print(
+            json.dumps({"drawing": str(drawing), "database": str(database)}, indent=2)
+        )
+    elif args.command == "package":
+        print(package_pdf(args.drawing, args.database, args.output))
+    elif args.command == "inspect":
+        print(json.dumps(inspect_pdf(args.pdf), indent=2, sort_keys=True))
+    elif args.command == "extract":
+        print(
+            extract_payload(args.pdf, args.output)
+            if args.output
+            else cached_payload(args.pdf)
+        )
+    elif args.command == "search":
+        database = (
+            cached_payload(args.source)
+            if args.source.suffix.lower() == ".pdf"
+            else args.source
+        )
+        with QueryCore(database) as core:
+            print(
+                json.dumps(core.search_text(args.query), ensure_ascii=False, indent=2)
+            )
+    return 0
