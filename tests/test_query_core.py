@@ -506,6 +506,29 @@ def test_finalize_revit_export_and_reject_hash_mismatch(tmp_path: Path) -> None:
     assert not (export / "must-not-exist.pdf").exists()
 
 
+@pytest.mark.parametrize(
+    ("version", "runtime", "project", "framework"),
+    [
+        ("2025", "net8", "LlmKnowledgeBase.Revit2025", "net8.0-windows"),
+        ("2026", "net8", "LlmKnowledgeBase.Revit2026", "net8.0-windows"),
+        ("2026", "net10", "LlmKnowledgeBase.Revit2026Net10", "net10.0-windows"),
+        ("2027", "net10", "LlmKnowledgeBase.Revit2027", "net10.0-windows"),
+    ],
+)
+def test_revit_runtime_profiles(version: str, runtime: str, project: str, framework: str) -> None:
+    from tools.revit_exporter.cli import select_profile
+
+    assert select_profile(version, runtime)[:2] == (project, framework)
+
+
+@pytest.mark.parametrize(("version", "runtime"), [("2027", "net8"), ("2026", "invalid")])
+def test_invalid_revit_runtime_profiles_rejected(version: str, runtime: str) -> None:
+    from tools.revit_exporter.cli import select_profile
+
+    with pytest.raises(ValueError, match="unsupported Revit/runtime profile"):
+        select_profile(version, runtime)
+
+
 def test_repeated_link_model_placements(fixture: tuple[Path, Path]) -> None:
     with QueryCore(fixture[1]) as core:
         element = core.get_entity("element", "element-linked-collision")

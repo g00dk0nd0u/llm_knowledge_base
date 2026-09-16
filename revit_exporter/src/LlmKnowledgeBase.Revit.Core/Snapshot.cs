@@ -72,6 +72,31 @@ public static class StableIds
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\u001f", components)));
         return $"{kind}:{Convert.ToHexString(bytes).ToLowerInvariant()[..24]}";
     }
+
+    public static string Document(string identityKind, string identityValue) =>
+        Hash("document", identityKind, identityValue);
+}
+
+public enum DimensionSemantic
+{
+    Unsupported,
+    Linear,
+    Angular,
+    SpotElevation,
+    SpotCoordinate
+}
+
+public sealed record DimensionValueSemantics(string? Unit, bool Supported);
+
+public static class DimensionValues
+{
+    public static DimensionValueSemantics Describe(DimensionSemantic semantic) =>
+        semantic switch
+        {
+            DimensionSemantic.Linear or DimensionSemantic.SpotElevation or DimensionSemantic.SpotCoordinate => new("mm", true),
+            DimensionSemantic.Angular => new("degrees", true),
+            _ => new(null, false)
+        };
 }
 
 public static class ExportFiles

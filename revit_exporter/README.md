@@ -7,24 +7,31 @@ No Autodesk binaries are stored here.
 
 ## Version matrix and prerequisites
 
-| Revit | Host target | SDK |
+| Profile | Host target | SDK |
 |---|---|---|
-| 2025 | `net8.0-windows` | .NET 8 |
-| 2026 | `net8.0-windows` | .NET 8 |
-| 2027 | `net10.0-windows` | .NET 10 |
+| 2025 / `net8` | `net8.0-windows` | .NET 8 |
+| 2026 / `net8` (pre-.NET 10 line) | `net8.0-windows` | .NET 8 |
+| 2026 / `net10` (2026.5+ line) | `net10.0-windows` | .NET 10 |
+| 2027 / `net10` | `net10.0-windows` | .NET 10 |
+
+Revit point releases can change CLR runtime. The runtime profile is therefore
+explicit; in particular, the build helper never guesses between the two 2026 lines.
+The profile table is intentionally extensible, but no unverified 2025/.NET 10 host is
+provided.
 
 Install the matching Revit and SDK on Windows. Hosts reference `RevitAPI.dll` and
 `RevitAPIUI.dll` from `RevitInstallDir` (`C:\Program Files\Autodesk\Revit YYYY` by
 default), with `Private=false`; a missing assembly is a build error. Shared DTO,
 hashing, deterministic IDs, manifest and serialization code has no Autodesk
-reference. One shared Revit source implementation is linked into three thin hosts.
+reference. One shared Revit source implementation is linked into four thin runtime-profile hosts.
 
 Build and optionally create a local manifest (do not commit generated manifests):
 
 ```powershell
-python -m tools.revit_exporter build --version 2025 --manifest "$env:APPDATA\Autodesk\Revit\Addins\2025\LlmKnowledgeBase.Revit.addin"
-python -m tools.revit_exporter build --version 2026 --manifest "$env:APPDATA\Autodesk\Revit\Addins\2026\LlmKnowledgeBase.Revit.addin"
-python -m tools.revit_exporter build --version 2027 --manifest "$env:APPDATA\Autodesk\Revit\Addins\2027\LlmKnowledgeBase.Revit.addin"
+python -m tools.revit_exporter build --version 2025 --runtime net8 --manifest "$env:APPDATA\Autodesk\Revit\Addins\2025\LlmKnowledgeBase.Revit.addin"
+python -m tools.revit_exporter build --version 2026 --runtime net8 --manifest "$env:APPDATA\Autodesk\Revit\Addins\2026\LlmKnowledgeBase.Revit.addin"
+python -m tools.revit_exporter build --version 2026 --runtime net10 --manifest "$env:APPDATA\Autodesk\Revit\Addins\2026\LlmKnowledgeBase.Revit.addin"
+python -m tools.revit_exporter build --version 2027 --runtime net10 --manifest "$env:APPDATA\Autodesk\Revit\Addins\2027\LlmKnowledgeBase.Revit.addin"
 ```
 
 The portable templates under `manifests/` contain `{{ASSEMBLY_PATH}}`, never a
@@ -85,6 +92,8 @@ For **each** installed version (2025, 2026, 2027):
 * PDF evidence is generally page-level, not an exact element bbox.
 * Curved spatial boundaries retain endpoints and emit an approximation warning.
 * Linked tag/reference resolution is conservative when the API cannot safely resolve it.
-* Autodesk-dependent hosts cannot be compiled or run in CI without licensed local installations.
+* GitHub CI builds/tests only the Autodesk-independent Core. Autodesk-dependent hosts
+  require local compilation against matching installed `RevitAPI.dll` and
+  `RevitAPIUI.dll`, and cannot be run in CI without licensed local installations.
 * Phase B1 exports source data only; it contains no Issue #5 corridor/compliance,
   security, egress, change-impact, LLM, OCR, or inference logic.

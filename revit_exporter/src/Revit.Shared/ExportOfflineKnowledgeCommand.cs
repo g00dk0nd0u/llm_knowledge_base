@@ -39,6 +39,7 @@ internal sealed class RevitSnapshotExporter
     private readonly Dictionary<string, JsonObject> _elements = [];
     private readonly Dictionary<string, JsonObject> _types = [];
     private readonly Dictionary<string, HashSet<string>> _recordIds = [];
+    private readonly HashSet<string> _searchIds = [];
     private JsonObject _snapshot = null!;
     private JsonObject Records => _snapshot["records"]!.AsObject();
     private string _hostModelId = "";
@@ -66,11 +67,11 @@ internal sealed class RevitSnapshotExporter
             var sha = ExportFiles.Sha256(pdf);
             var identity = DocumentIdentityResolver.Resolve(_document);
             _hostModelId = StableIds.Hash("model", identity.Kind, identity.Value);
-            _documentId = StableIds.Hash("document", identity.Value, sha);
+            _documentId = StableIds.Document(identity.Kind, identity.Value);
             _snapshot = SnapshotContract.Create(project, $"Revit {_document.Application.VersionNumber}", identity.Value, sha);
             AddDocumentAndModels(identity, sha);
             AddSheetsViewsAndPlacements(sheets);
-            AddLevels(_document, _hostModelId, Transform.Identity, null);
+            AddLevels(_document, _hostModelId);
             AddLinks();
             CollectHostElements();
             AddSpatialElements();
@@ -125,12 +126,14 @@ internal sealed class RevitSnapshotExporter
             var sheet = sheets[index]; var page = index + 1; var sheetId = Id("sheet", _hostModelId, sheet.UniqueId);
             Add("sheets", Obj(("id", sheetId), ("document_id", _documentId), ("number", sheet.SheetNumber), ("name", sheet.Name),
                 ("pdf_page", page), ("export_order", page), ("source_model_id", _hostModelId), ("source_unique_id", sheet.UniqueId)));
+            AddSearch("sheet", sheetId, $"{sheet.SheetNumber} {sheet.Name}");
             foreach (var viewportId in sheet.GetAllViewports())
             {
                 if (_document.GetElement(viewportId) is not Viewport port || _document.GetElement(port.ViewId) is not View view) continue;
                 var viewId = Id("view", _hostModelId, view.UniqueId); var portId = Id("viewport", _hostModelId, port.UniqueId);
                 if (views.Add(view.Id)) Add("views", Obj(("id", viewId), ("document_id", _documentId), ("name", view.Name),
                     ("view_type", view.ViewType.ToString()), ("export_order", null), ("source_model_id", _hostModelId), ("source_unique_id", view.UniqueId)));
+                AddSearch("view", viewId, $"{view.Name} {view.ViewType}");
                 var outline = port.GetBoxOutline();
                 Add("viewports", Obj(("id", portId), ("sheet_id", sheetId), ("view_id", viewId), ("placement_kind", "viewport"),
                     ("sheet_x_min", outline.MinimumPoint.X), ("sheet_y_min", outline.MinimumPoint.Y), ("sheet_x_max", outline.MaximumPoint.X),
@@ -147,6 +150,7 @@ internal sealed class RevitSnapshotExporter
                 var viewId = Id("view", _hostModelId, view.UniqueId);
                 if (views.Add(view.Id)) Add("views", Obj(("id", viewId), ("document_id", _documentId), ("name", view.Name), ("view_type", "Schedule"),
                     ("export_order", null), ("source_model_id", _hostModelId), ("source_unique_id", view.UniqueId)));
+                AddSearch("view", viewId, $"{view.Name} Schedule");
                 Add("viewports", Obj(("id", Id("schedule", _hostModelId, schedule.UniqueId)), ("sheet_id", sheetId), ("view_id", viewId),
                     ("placement_kind", "schedule"), ("sheet_x_min", null), ("sheet_y_min", null), ("sheet_x_max", null), ("sheet_y_max", null),
                     ("sheet_coordinate_unit", "revit_sheet_feet"), ("pdf_x_min", null), ("pdf_y_min", null), ("pdf_x_max", null), ("pdf_y_max", null),
@@ -168,7 +172,7 @@ internal sealed class RevitSnapshotExporter
                     var identity = DocumentIdentityResolver.Resolve(linked);
                     modelId = StableIds.Hash("model", identity.Kind, identity.Value); models[linked] = modelId;
                     Add("source_models", SourceModel(linked, modelId, "link", identity));
-                    AddLevels(linked, modelId, link.GetTotalTransform(), Id("link", _hostModelId, link.UniqueId));
+                    AddLevels(linked, modelId);
                 }
                 var linkId = Id("link", _hostModelId, link.UniqueId); var transform = link.GetTotalTransform();
                 Add("link_instances", Obj(("id", linkId), ("host_source_model_id", _hostModelId), ("linked_source_model_id", modelId),
@@ -221,6 +225,7 @@ internal sealed class RevitSnapshotExporter
                         ("category", CategoryName(type)), ("source_model_id", modelId), ("source_unique_id", type.UniqueId),
                         ("provenance", Provenance), ("confidence", null)));
                     AddParameters(type, "element_type", typeId, "type");
+                    AddSearch("element_type", typeId, $"{type.FamilyName} {type.Name} {CategoryName(type)}");
                 }
                 _elements[id] = Obj(("id", id), ("name", string.IsNullOrWhiteSpace(element.Name) ? CategoryName(element) : element.Name),
                     ("category", CategoryName(element)), ("type_id", typeId), ("space_id", null), ("level_id", ResolveLevel(element, modelId)),
@@ -337,17 +342,25 @@ internal sealed class RevitSnapshotExporter
             try
             {
                 var view = _document.GetElement(pair.Key) as View; if (view is null) continue;
-                var kind = element switch { SpotDimension => SpotKind(element), TextNote => "text_annotation", IndependentTag => "tag", Grid => "grid_reference", _ => "dimension" };
+                var semantic = element is Dimension dimension ? DimensionSemanticFor(dimension) : DimensionSemantic.Unsupported;
+                var kind = element switch
+                {
+                    SpotDimension when semantic == DimensionSemantic.SpotElevation => "spot_elevation",
+                    SpotDimension when semantic == DimensionSemantic.SpotCoordinate => "spot_coordinate",
+                    SpotDimension => "dimension",
+                    TextNote => "text_annotation", IndependentTag => "tag", Grid => "grid_reference", _ => "dimension"
+                };
                 var text = element switch { TextNote note => note.Text, IndependentTag tag => tag.TagText, Grid grid => grid.Name,
                     Dimension dimension => dimension.ValueString ?? dimension.Name, _ => element.Name };
                 var annotationId = Id("annotation", _hostModelId, element.UniqueId);
-                double? numeric = element is Dimension d && d.Value is double value ? Units.Length(value) : null;
-                Add("annotations", Obj(("id", annotationId), ("kind", kind), ("semantic_type", null), ("display_text", text ?? ""),
-                    ("numeric_value", numeric), ("unit", numeric is null ? null : "mm"), ("related_entity_kind", null), ("related_entity_id", null),
-                    ("source_model_id", _hostModelId), ("source_unique_id", element.UniqueId), ("view_id", Id("view", _hostModelId, view.UniqueId)),
+                var normalized = element is Dimension d ? NormalizeDimension(d.Value, semantic, element.UniqueId) : new NormalizedDimension(null, null);
+                Add("annotations", Obj(("id", annotationId), ("kind", kind), ("semantic_type", semantic.ToString().ToLowerInvariant()),
+                    ("display_text", text ?? ""), ("numeric_value", normalized.Value), ("unit", normalized.Unit),
+                    ("related_entity_kind", null), ("related_entity_id", null), ("source_model_id", _hostModelId),
+                    ("source_unique_id", element.UniqueId), ("view_id", Id("view", _hostModelId, view.UniqueId)),
                     ("provenance", Provenance), ("confidence", null), ("evidence_id", null)));
                 AddSearch("annotation", annotationId, text ?? "");
-                if (element is Dimension dimension) AddDimensionDetails(dimension, annotationId);
+                if (element is Dimension dimension) AddDimensionDetails(dimension, annotationId, semantic);
                 if (element is IndependentTag tag) AddTagReferences(tag, annotationId);
                 foreach (var p in pair.Value)
                     Add("entity_appearances", Obj(("id", StableIds.Hash("appearance", annotationId, p.Sheet.UniqueId, p.View.UniqueId)),
@@ -361,23 +374,70 @@ internal sealed class RevitSnapshotExporter
         _warnings.Add(new("pdf_mapping_page_level", "Phase B1 annotation and element PDF evidence is page-level."));
     }
 
-    private void AddDimensionDetails(Dimension dimension, string annotationId)
+    private void AddDimensionDetails(Dimension dimension, string annotationId, DimensionSemantic semantic)
     {
         var segments = dimension.NumberOfSegments > 0 ? dimension.Segments.Cast<DimensionSegment>().ToList() : [];
         if (segments.Count == 0)
-            Add("annotation_segments", Segment(annotationId, 0, dimension.Value, dimension.ValueString, dimension.Prefix, dimension.Suffix, dimension.Above, dimension.Below));
+            Add("annotation_segments", Segment(annotationId, 0, dimension.Value, dimension.ValueString,
+                Safe(() => dimension.ValueOverride), dimension.Prefix, dimension.Suffix, dimension.Above, dimension.Below,
+                SafePoint(() => dimension.Origin), SafePoint(() => dimension.TextPosition), semantic, dimension.UniqueId));
         else for (var i = 0; i < segments.Count; i++)
         {
-            var s = segments[i]; Add("annotation_segments", Segment(annotationId, i, s.Value, s.ValueString, s.Prefix, s.Suffix, s.Above, s.Below));
+            var segment = segments[i];
+            Add("annotation_segments", Segment(annotationId, i, segment.Value, segment.ValueString,
+                Safe(() => segment.ValueOverride), segment.Prefix, segment.Suffix, segment.Above, segment.Below,
+                SafePoint(() => segment.Origin), SafePoint(() => segment.TextPosition), semantic, dimension.UniqueId));
         }
         var references = dimension.References;
         for (var i = 0; i < references.Size; i++) AddReference(annotationId, i, references.get_Item(i));
     }
 
-    private JsonObject Segment(string annotationId, int index, double? value, string? text, string? prefix, string? suffix, string? above, string? below) =>
-        Obj(("id", StableIds.Hash("annotation-segment", annotationId, index.ToString())), ("annotation_id", annotationId), ("segment_index", index),
-            ("numeric_value", value is null ? null : Units.Length(value.Value)), ("unit", value is null ? null : "mm"), ("display_text", text),
-            ("value_override", null), ("prefix", prefix), ("suffix", suffix), ("above", above), ("below", below), ("origin", null), ("text_position", null));
+    private JsonObject Segment(string annotationId, int index, double? value, string? text, string? valueOverride,
+        string? prefix, string? suffix, string? above, string? below, JsonArray? origin, JsonArray? textPosition,
+        DimensionSemantic semantic, string sourceId)
+    {
+        var normalized = NormalizeDimension(value, semantic, sourceId, false);
+        return Obj(("id", StableIds.Hash("annotation-segment", annotationId, index.ToString())), ("annotation_id", annotationId),
+            ("segment_index", index), ("numeric_value", normalized.Value), ("unit", normalized.Unit), ("display_text", text),
+            ("value_override", valueOverride), ("prefix", prefix), ("suffix", suffix), ("above", above), ("below", below),
+            ("origin", origin), ("text_position", textPosition));
+    }
+
+    private DimensionSemantic DimensionSemanticFor(Dimension dimension)
+    {
+        if (dimension is SpotDimension)
+        {
+            if (dimension.Category?.Id.Value == (long)BuiltInCategory.OST_SpotElevations) return DimensionSemantic.SpotElevation;
+            if (dimension.Category?.Id.Value == (long)BuiltInCategory.OST_SpotCoordinates) return DimensionSemantic.SpotCoordinate;
+            return DimensionSemantic.Unsupported;
+        }
+        if (_document.GetElement(dimension.GetTypeId()) is not DimensionType type) return DimensionSemantic.Unsupported;
+        return type.StyleType switch
+        {
+            DimensionStyleType.Linear or DimensionStyleType.LinearFixed or DimensionStyleType.Radial or DimensionStyleType.ArcLength
+                => DimensionSemantic.Linear,
+            DimensionStyleType.Angular => DimensionSemantic.Angular,
+            _ => DimensionSemantic.Unsupported
+        };
+    }
+
+    private NormalizedDimension NormalizeDimension(double? value, DimensionSemantic semantic, string sourceId, bool warn = true)
+    {
+        if (value is null) return new(null, null);
+        if (semantic is DimensionSemantic.Linear or DimensionSemantic.SpotElevation or DimensionSemantic.SpotCoordinate)
+            return new(UnitUtils.ConvertFromInternalUnits(value.Value, UnitTypeId.Millimeters), "mm");
+        if (semantic == DimensionSemantic.Angular)
+            return new(UnitUtils.ConvertFromInternalUnits(value.Value, UnitTypeId.Degrees), "degrees");
+        if (warn) _warnings.Add(new("unsupported_dimension_numeric_semantics",
+            "Dimension numeric value was omitted because its semantics are unsupported or uncertain.", sourceId));
+        return new(null, null);
+    }
+
+    private static T? Safe<T>(Func<T> getter) where T : class { try { return getter(); } catch { return null; } }
+    private static JsonArray? SafePoint(Func<XYZ> getter)
+    {
+        try { return Vec(Units.Point(getter(), Transform.Identity)); } catch { return null; }
+    }
 
     private void AddTagReferences(IndependentTag tag, string annotationId)
     {
@@ -412,14 +472,38 @@ internal sealed class RevitSnapshotExporter
 
     private void AddReference(string annotationId, int index, Reference reference)
     {
+        string? stable = null;
+        try { stable = reference.ConvertToStableRepresentation(_document); }
+        catch (Exception error) { _warnings.Add(new("stable_reference_unavailable", error.Message)); }
         try
         {
-            var target = _document.GetElement(reference.ElementId); var stable = reference.ConvertToStableRepresentation(_document);
-            Add("annotation_references", ReferenceObject(annotationId, index, target is null ? null : _hostModelId, target?.UniqueId, null,
-                false, target is null ? "unresolved" : "resolved", stable));
+            if (reference.LinkedElementId != ElementId.InvalidElementId && _document.GetElement(reference.ElementId) is RevitLinkInstance link)
+            {
+                var linkedDocument = link.GetLinkDocument(); var linkedElement = linkedDocument?.GetElement(reference.LinkedElementId);
+                if (linkedDocument is not null && linkedElement is not null)
+                {
+                    var identity = DocumentIdentityResolver.Resolve(linkedDocument);
+                    Add("annotation_references", ReferenceObject(annotationId, index,
+                        StableIds.Hash("model", identity.Kind, identity.Value), linkedElement.UniqueId,
+                        Id("link", _hostModelId, link.UniqueId), true, "resolved", stable));
+                    return;
+                }
+                Add("annotation_references", ReferenceObject(annotationId, index, null, null,
+                    Id("link", _hostModelId, link.UniqueId), true, "unresolved", stable));
+                _warnings.Add(new("annotation_reference_unresolved", "Linked dimension target is unavailable."));
+                return;
+            }
+            var target = _document.GetElement(reference.ElementId);
+            Add("annotation_references", ReferenceObject(annotationId, index, target is null ? null : _hostModelId,
+                target?.UniqueId, null, false, target is null ? "unresolved" : "resolved", stable));
+            if (target is null) _warnings.Add(new("annotation_reference_unresolved", "Host dimension target is unavailable."));
         }
-        catch (Exception error) { Add("annotation_references", ReferenceObject(annotationId, index, null, null, null, false, "unresolved", null));
-            _warnings.Add(new("annotation_reference_unresolved", error.Message)); }
+        catch (Exception error)
+        {
+            Add("annotation_references", ReferenceObject(annotationId, index, null, null, null,
+                reference.LinkedElementId != ElementId.InvalidElementId, "unresolved", stable));
+            _warnings.Add(new("annotation_reference_unresolved", error.Message));
+        }
     }
     private void AddGeometry(Element element, string entityId, Transform transform, string? linkId)
     {
@@ -460,12 +544,11 @@ internal sealed class RevitSnapshotExporter
             ("min_z", points.Min(p => p.Z)), ("max_z", points.Max(p => p.Z)), ("provenance", Provenance),
             ("confidence", null), ("evidence_id", null)));
 
-    private void AddLevels(Document document, string modelId, Transform transform, string? linkId)
+    private void AddLevels(Document document, string modelId)
     {
         foreach (var level in new FilteredElementCollector(document).OfClass(typeof(Level)).Cast<Level>().OrderBy(x => x.UniqueId))
         {
-            var point = Units.Point(new XYZ(0, 0, level.Elevation), transform);
-            Add("levels", Obj(("id", Id("level", modelId, level.UniqueId)), ("name", level.Name), ("elevation", point.Z),
+            Add("levels", Obj(("id", Id("level", modelId, level.UniqueId)), ("name", level.Name), ("elevation", Units.Length(level.Elevation)),
                 ("unit", "mm"), ("source_model_id", modelId), ("source_unique_id", level.UniqueId), ("provenance", Provenance), ("confidence", null)));
         }
     }
@@ -473,7 +556,11 @@ internal sealed class RevitSnapshotExporter
     private JsonObject SourceModel(Document document, string id, string role, DocumentIdentity identity)
     {
         string? guid = null; int? save = null;
-        try { var version = document.GetDocumentVersion(); guid = version.VersionGUID.ToString("D"); save = version.NumberOfSaves; }
+        try
+        {
+            using var version = Document.GetDocumentVersion(document);
+            guid = version.VersionGUID.ToString("D"); save = version.NumberOfSaves;
+        }
         catch (Exception error) { _warnings.Add(new("document_version_unavailable", error.Message)); }
         return Obj(("id", id), ("role", role), ("title", document.Title), ("revit_version", document.Application.VersionNumber),
             ("model_identity_kind", identity.Kind), ("model_identity", identity.Value), ("snapshot_version_guid", guid), ("snapshot_save_number", save));
@@ -489,7 +576,6 @@ internal sealed class RevitSnapshotExporter
     private static string? PhaseUniqueId(Element e) => e.CreatedPhaseId == ElementId.InvalidElementId ? null : e.Document.GetElement(e.CreatedPhaseId)?.UniqueId;
     private static string CategoryName(Element e) => e.Category?.Name ?? "Uncategorized";
     private static string SafeValueString(Parameter p) { try { return p.AsValueString() ?? p.AsString() ?? p.AsElementId()?.Value.ToString() ?? ""; } catch { return ""; } }
-    private static string SpotKind(Element e) => e.Category?.Id.Value == (long)BuiltInCategory.OST_SpotElevations ? "spot_elevation" : "spot_coordinate";
     private static string Id(string kind, string model, string unique) => StableIds.For(kind, model, unique);
     private void Add(string collection, JsonObject value)
     {
@@ -500,7 +586,11 @@ internal sealed class RevitSnapshotExporter
         }
         Records[collection]!.AsArray().Add(value);
     }
-    private void AddSearch(string kind, string id, string text) { if (!string.IsNullOrWhiteSpace(text)) Add("search_content", Obj(("record_kind", kind), ("record_id", id), ("content", text))); }
+    private void AddSearch(string kind, string id, string text)
+    {
+        if (!string.IsNullOrWhiteSpace(text) && _searchIds.Add($"{kind}\u001f{id}"))
+            Add("search_content", Obj(("record_kind", kind), ("record_id", id), ("content", text)));
+    }
     private int Count(string collection) => Records[collection]!.AsArray().Count;
     private void FlushElements() { foreach (var x in _types.OrderBy(x => x.Key)) Add("element_types", x.Value); foreach (var x in _elements.OrderBy(x => x.Key)) Add("elements", x.Value); }
     private void SortRecords() { foreach (var name in SnapshotContract.RecordCollections) { var a = Records[name]!.AsArray(); var sorted = a.OrderBy(x => x?["export_order"]?.GetValue<int>() ?? int.MaxValue).ThenBy(x => x?["id"]?.ToString() ?? x?["record_id"]?.ToString(), StringComparer.Ordinal).ToList(); a.Clear(); foreach (var x in sorted) a.Add(x); } }
@@ -511,6 +601,8 @@ internal sealed class RevitSnapshotExporter
             ("reference_type", null), ("is_linked", linked ? 1 : 0), ("resolution_state", state));
     private static string SafeName(string value) => string.Concat(value.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
 }
+
+internal sealed record NormalizedDimension(double? Value, string? Unit);
 
 internal sealed record DocumentIdentity(string Kind, string Value);
 internal static class DocumentIdentityResolver
