@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import fitz
@@ -22,7 +23,7 @@ def create_synthetic_pdf(path: Path) -> Path:
 def synthetic_records(source_pdf: Path) -> dict:
     source_hash = hashlib.sha256(source_pdf.read_bytes()).hexdigest()
     provenance = "synthetic_fixture"
-    return {
+    records = {
         "project_id": "synthetic-architecture",
         "created_from": "programmatic synthetic fixture",
         "source_document_identity": "synthetic-drawings-v1",
@@ -424,6 +425,278 @@ def synthetic_records(source_pdf: Path) -> dict:
             },
         ],
     }
+    records["source_models"] = [
+        {
+            "id": "model-host",
+            "role": "host",
+            "title": "Host Architectural Model",
+            "revit_version": "2026",
+            "model_identity_kind": "explicit",
+            "model_identity": "synthetic-host",
+            "snapshot_version_guid": "snapshot-host-1",
+            "snapshot_save_number": 7,
+            "host_source_model_id": None,
+            "link_instance_unique_id": None,
+            "transform_to_host": None,
+        },
+        {
+            "id": "model-link",
+            "role": "link",
+            "title": "Linked Model",
+            "revit_version": "2026",
+            "model_identity_kind": "explicit",
+            "model_identity": "synthetic-link",
+            "snapshot_version_guid": "snapshot-link-1",
+            "snapshot_save_number": 3,
+            "host_source_model_id": "model-host",
+            "link_instance_unique_id": "link-instance-01",
+            "transform_to_host": {
+                "basis_x": [0, 1, 0],
+                "basis_y": [-1, 0, 0],
+                "basis_z": [0, 0, 1],
+                "origin": [100, 200, 0],
+                "source_unit": "revit_internal",
+            },
+        },
+    ]
+    for index, row in enumerate(records["sheets"], 1):
+        row.update(
+            export_order=index,
+            source_model_id="model-host",
+            source_unique_id=f"sheet-{index}",
+        )
+    for index, row in enumerate(records["views"], 1):
+        row.update(
+            export_order=index,
+            source_model_id="model-host",
+            source_unique_id=f"view-{index}",
+        )
+    viewport = records["viewports"][0]
+    for old, new in (
+        ("x_min", "pdf_x_min"),
+        ("y_min", "pdf_y_min"),
+        ("x_max", "pdf_x_max"),
+        ("y_max", "pdf_y_max"),
+        ("coordinate_space", "pdf_coordinate_space"),
+    ):
+        viewport[new] = viewport.pop(old)
+    viewport.update(
+        placement_kind="viewport",
+        sheet_x_min=0.1,
+        sheet_y_min=0.1,
+        sheet_x_max=0.8,
+        sheet_y_max=0.5,
+        sheet_coordinate_unit="ft",
+        sheet_to_pdf_transform=[72, 0, 0, -72, 0, 595],
+        mapping_quality="calibrated",
+    )
+    for table in ("levels", "spaces", "elements"):
+        for row in records[table]:
+            row["source_model_id"] = "model-host"
+            row["source_unique_id"] = row.pop("source_id")
+    for row in records["spaces"]:
+        row["phase_source_unique_id"] = "phase-new-construction"
+    element_type = records["element_types"][0]
+    element_type.update(
+        family_name="Industrial Shutters",
+        type_name=element_type.pop("name"),
+        source_model_id="model-host",
+        source_unique_id=element_type.pop("source_id"),
+    )
+    # Same UniqueId in a different owning model is deliberately valid.
+    records["elements"].append(
+        {
+            "id": "element-linked-collision",
+            "name": "Linked Equipment",
+            "category": "Fixed Equipment",
+            "type_id": None,
+            "space_id": None,
+            "level_id": None,
+            "source_model_id": "model-link",
+            "source_unique_id": "synthetic-sd03",
+            "provenance": provenance,
+            "confidence": None,
+        }
+    )
+    parameter = records["parameters"][0]
+    parameter["definition_name"] = parameter.pop("name")
+    parameter.update(
+        scope="instance",
+        definition_key="builtin:DOOR_WIDTH",
+        storage_type="Double",
+        data_type_id="autodesk.spec.aec:length-2.0.0",
+        parameter_type_id=None,
+        shared_parameter_guid=None,
+        unit_type_id="autodesk.unit.unit:millimeters-1.0.1",
+        raw_value_text="14.7638 ft",
+        raw_numeric_value=14.7637795276,
+    )
+    for row in records["relationships"]:
+        row["phase_source_unique_id"] = (
+            "phase-new-construction" if row["id"] == "rel-dock-shutter" else None
+        )
+    records["relationships"].extend(
+        [
+            {
+                "id": "rel-shutter-from",
+                "source_kind": "element",
+                "source_id": "element-sd03",
+                "relation_type": "from_space",
+                "target_kind": "space",
+                "target_id": "space-hall-a",
+                "phase_source_unique_id": "phase-new-construction",
+                "provenance": provenance,
+                "confidence": None,
+                "evidence_id": "ev-shutter",
+            },
+            {
+                "id": "rel-shutter-to",
+                "source_kind": "element",
+                "source_id": "element-sd03",
+                "relation_type": "to_space",
+                "target_kind": "space",
+                "target_id": "space-hall-b",
+                "phase_source_unique_id": "phase-new-construction",
+                "provenance": provenance,
+                "confidence": None,
+                "evidence_id": "ev-shutter",
+            },
+        ]
+    )
+    for index, row in enumerate(records["annotations"]):
+        row.update(
+            source_model_id="model-host",
+            source_unique_id=f"annotation-{index}",
+            view_id="view-dock" if index == 0 else "view-roof",
+        )
+    records["annotation_segments"] = [
+        {
+            "id": "seg-width-0",
+            "annotation_id": "ann-opening-width",
+            "segment_index": 0,
+            "numeric_value": 2100,
+            "unit": "mm",
+            "display_text": "2100",
+            "value_override": None,
+            "prefix": None,
+            "suffix": None,
+            "above": None,
+            "below": None,
+            "origin": [1, 2, 0],
+            "text_position": [1, 2.1, 0],
+        },
+        {
+            "id": "seg-width-1",
+            "annotation_id": "ann-opening-width",
+            "segment_index": 1,
+            "numeric_value": 2400,
+            "unit": "mm",
+            "display_text": "2400",
+            "value_override": None,
+            "prefix": None,
+            "suffix": None,
+            "above": None,
+            "below": None,
+            "origin": [3, 2, 0],
+            "text_position": [3, 2.1, 0],
+        },
+    ]
+    records["annotation_references"] = [
+        {
+            "id": "ref-width-0",
+            "annotation_id": "ann-opening-width",
+            "reference_index": 0,
+            "target_source_model_id": "model-host",
+            "target_source_unique_id": "synthetic-dl03",
+            "stable_reference": "stable:host:dl03",
+            "reference_type": "surface",
+            "is_linked": 0,
+            "resolution_state": "resolved",
+        },
+        {
+            "id": "ref-width-1",
+            "annotation_id": "ann-opening-width",
+            "reference_index": 1,
+            "target_source_model_id": "model-link",
+            "target_source_unique_id": "synthetic-sd03",
+            "stable_reference": "stable:link:sd03",
+            "reference_type": "surface",
+            "is_linked": 1,
+            "resolution_state": "resolved",
+        },
+        {
+            "id": "ref-roof-0",
+            "annotation_id": "ann-roof-rfl",
+            "reference_index": 0,
+            "target_source_model_id": "model-host",
+            "target_source_unique_id": "synthetic-office-roof",
+            "stable_reference": "stable:roof",
+            "reference_type": "face",
+            "is_linked": 0,
+            "resolution_state": "resolved",
+        },
+    ]
+    records["entity_appearances"] = [
+        {
+            "id": f"appearance-sd03-{i}",
+            "entity_kind": "element",
+            "entity_id": "element-sd03",
+            "sheet_id": sheet,
+            "view_id": view,
+            "viewport_id": "vp-dock" if i == 0 else None,
+            "pdf_page": page,
+            "x_min": 120 + i * 10,
+            "y_min": 150,
+            "x_max": 330 + i * 10,
+            "y_max": 240,
+            "coordinate_space": "pdf_points_top_left",
+            "appearance_kind": kind,
+            "bbox_quality": quality,
+            "provenance": provenance,
+        }
+        for i, (sheet, view, page, kind, quality) in enumerate(
+            (
+                ("sheet-a312", "view-dock", 1, "model", "projected_bbox"),
+                ("sheet-a421", "view-roof", 2, "detail", "view_bbox"),
+                ("sheet-a201", "view-level2", 3, "schedule", "page_only"),
+            )
+        )
+    ]
+    # Page-only occurrences have no bbox.
+    records["entity_appearances"][2].update(
+        x_min=None, y_min=None, x_max=None, y_max=None
+    )
+    points = [(0, 0, 0), (10000, 0, 0), (10000, 1800, 0), (0, 1800, 0)]
+    records["spatial_boundaries"] = [
+        {
+            "id": "boundary-corridor-outer",
+            "space_id": "space-corridor",
+            "loop_index": 0,
+            "loop_kind": "outer",
+            "coordinate_system": "host_revit_internal_origin",
+            "unit": "mm",
+            "provenance": provenance,
+        }
+    ]
+    records["spatial_boundary_segments"] = [
+        {
+            "id": f"boundary-segment-{i}",
+            "boundary_id": "boundary-corridor-outer",
+            "segment_index": i,
+            "start_x": a[0],
+            "start_y": a[1],
+            "start_z": a[2],
+            "end_x": b[0],
+            "end_y": b[1],
+            "end_z": b[2],
+            "source_model_id": "model-host",
+            "source_unique_id": f"boundary-wall-{i}",
+        }
+        for i, (a, b) in enumerate(zip(points, points[1:] + points[:1]))
+    ]
+    for row in records["geometries"]:
+        row["coordinate_system"] = "host_revit_internal_origin"
+    return records
 
 
 def build_synthetic_fixture(directory: Path) -> tuple[Path, Path]:
@@ -432,3 +705,26 @@ def build_synthetic_fixture(directory: Path) -> tuple[Path, Path]:
         synthetic_records(drawing), Path(directory) / "project.sqlite"
     )
     return drawing, database
+
+
+def write_synthetic_revit_snapshot(source_pdf: Path, output: Path) -> Path:
+    """Write export-time JSON shaped like the future Revit 2026 adapter output."""
+    records = synthetic_records(source_pdf)
+    project_keys = (
+        "project_id",
+        "created_from",
+        "source_document_identity",
+        "source_document_sha256",
+    )
+    snapshot = {
+        "snapshot_version": 1,
+        "coordinate_system": "host_revit_internal_origin",
+        "unit": "mm",
+        "project": {key: records.pop(key) for key in project_keys},
+        "records": records,
+    }
+    output.write_text(
+        json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return output

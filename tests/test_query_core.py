@@ -31,8 +31,8 @@ def test_schema_build_rebuild_update_delete_and_stable_ids(
 ) -> None:
     drawing, database = fixture
     metadata = validate_database(database)
-    assert metadata["schema_version"] == "1"
-    assert metadata["generator_version"] == "query-core/1.0"
+    assert metadata["schema_version"] == "2"
+    assert metadata["generator_version"] == "query-core/2.0"
     before = (
         sqlite3.connect(database)
         .execute("SELECT id FROM elements ORDER BY id")
@@ -78,7 +78,8 @@ def test_loading_dock_and_evidence(fixture: tuple[Path, Path]) -> None:
                 "type_id": "type-shutter",
                 "space_id": None,
                 "level_id": "level-2",
-                "source_id": "synthetic-sd03",
+                "source_model_id": "model-host",
+                "source_unique_id": "synthetic-sd03",
                 "provenance": "synthetic_fixture",
                 "confidence": None,
             }
@@ -198,7 +199,7 @@ def test_pdf_round_trip_and_ordinary_pdf_behavior(
     extracted = extract_payload(enhanced, tmp_path / "extracted.sqlite")
     assert extracted.read_bytes() == database.read_bytes()
     details = inspect_pdf(enhanced)
-    assert details["schema_version"] == 1
+    assert details["schema_version"] == 2
     assert details["af_relationship"] == "Data"
     assert details["mime_type"] == "application/vnd.sqlite3"
     assert (
@@ -257,8 +258,8 @@ def test_missing_corrupt_and_unsupported_payload_fail(
     unsupported = tmp_path / "unsupported.sqlite"
     unsupported.write_bytes(database.read_bytes())
     connection = sqlite3.connect(unsupported)
-    connection.execute("UPDATE metadata SET value='2' WHERE key='schema_version'")
-    connection.execute("PRAGMA user_version=2")
+    connection.execute("UPDATE metadata SET value='3' WHERE key='schema_version'")
+    connection.execute("PRAGMA user_version=3")
     connection.commit()
     connection.close()
     with pytest.raises(QueryCoreError, match="unsupported schema"):
@@ -300,7 +301,7 @@ def test_missing_corrupt_and_unsupported_payload_fail(
         inspect_pdf(ambiguous_pdf)
 
 
-def test_schema_validation_rejects_incomplete_v1_payloads(
+def test_schema_validation_rejects_incomplete_v2_payloads(
     fixture: tuple[Path, Path], tmp_path: Path
 ) -> None:
     _drawing, valid_database = fixture
@@ -313,15 +314,15 @@ def test_schema_validation_rejects_incomplete_v1_payloads(
     connection.executemany(
         "INSERT INTO metadata VALUES (?,?)",
         [
-            ("schema_version", "1"),
-            ("generator_version", "query-core/1.0"),
+            ("schema_version", "2"),
+            ("generator_version", "query-core/2.0"),
             ("project_id", "fake"),
             ("created_from", "test"),
             ("source_document_identity", "fake"),
             ("source_document_sha256", "0" * 64),
         ],
     )
-    connection.execute("PRAGMA user_version=1")
+    connection.execute("PRAGMA user_version=2")
     connection.commit()
     connection.close()
     with pytest.raises(QueryCoreError, match="missing tables"):
@@ -367,3 +368,97 @@ def test_query_connection_is_read_only(fixture: tuple[Path, Path]) -> None:
         pytest.raises(sqlite3.OperationalError, match="readonly"),
     ):
         core.connection.execute("DELETE FROM elements")
+
+
+def test_revit_composite_identity_and_source_transform(
+    fixture: tuple[Path, Path],
+) -> None:
+    with QueryCore(fixture[1]) as core:
+        host = core.get_entity("element", "element-sd03")
+        linked = core.get_entity("element", "element-linked-collision")
+        assert host["source_unique_id"] == linked["source_unique_id"]
+        assert host["source_model_id"] != linked["source_model_id"]
+        transform = core.get_source_model("model-link")["transform_to_host"]
+        assert transform["origin"] == [100, 200, 0]
+        assert transform["source_unit"] == "revit_internal"
+
+
+def test_multi_appearance_dimension_and_corridor_contract(
+    fixture: tuple[Path, Path],
+) -> None:
+    with QueryCore(fixture[1]) as core:
+        appearances = core.get_appearances("element", "element-sd03")
+        assert [row["pdf_page"] for row in appearances] == [1, 2, 3]
+        assert appearances[-1]["appearance_kind"] == "schedule"
+        assert appearances[-1]["bbox_quality"] == "page_only"
+        segments = core.get_annotation_segments("ann-opening-width")
+        assert [row["segment_index"] for row in segments] == [0, 1]
+        assert [row["numeric_value"] for row in segments] == [2100, 2400]
+        references = core.get_annotation_references("ann-opening-width")
+        assert [row["target_source_model_id"] for row in references] == [
+            "model-host",
+            "model-link",
+        ]
+        loops = core.get_spatial_boundaries("space-corridor")
+        assert loops[0]["loop_kind"] == "outer"
+        assert len(loops[0]["segments"]) == 4
+        assert loops[0]["segments"][-1]["end_x"] == loops[0]["segments"][0]["start_x"]
+
+
+def test_v2_revit_validation_errors(tmp_path: Path) -> None:
+    drawing = tmp_path / "drawing.pdf"
+    from tools.query_core.fixtures import create_synthetic_pdf
+
+    create_synthetic_pdf(drawing)
+    base = synthetic_records(drawing)
+
+    bad = json.loads(json.dumps(base))
+    bad["elements"].append({**bad["elements"][0], "id": "duplicate"})
+    with pytest.raises(QueryCoreError, match="duplicate source identity"):
+        build_database(bad, tmp_path / "bad.sqlite")
+
+    bad = json.loads(json.dumps(base))
+    bad["source_models"][1]["transform_to_host"]["basis_x"] = [1, 0]
+    with pytest.raises(QueryCoreError, match="invalid link transform"):
+        build_database(bad, tmp_path / "bad.sqlite")
+
+    for key, value in (("unit", "ft"), ("coordinate_system", "link_local")):
+        bad = json.loads(json.dumps(base))
+        bad["geometries"][0][key] = value
+        with pytest.raises(QueryCoreError, match="indexed geometry"):
+            build_database(bad, tmp_path / "bad.sqlite")
+
+    bad = json.loads(json.dumps(base))
+    bad["annotation_segments"][1]["segment_index"] = 2
+    with pytest.raises(QueryCoreError, match="ordering error"):
+        build_database(bad, tmp_path / "bad.sqlite")
+
+    bad = json.loads(json.dumps(base))
+    bad["annotation_references"][0]["target_source_model_id"] = "missing"
+    with pytest.raises(QueryCoreError, match="nonexistent source model"):
+        build_database(bad, tmp_path / "bad.sqlite")
+
+    bad = json.loads(json.dumps(base))
+    bad["spatial_boundary_segments"][-1]["end_x"] = 1
+    with pytest.raises(QueryCoreError, match="malformed spatial boundary loop"):
+        build_database(bad, tmp_path / "bad.sqlite")
+
+
+def test_synthetic_revit_snapshot_import_and_version(tmp_path: Path) -> None:
+    from tools.query_core.fixtures import (
+        create_synthetic_pdf,
+        write_synthetic_revit_snapshot,
+    )
+    from tools.query_core.revit_snapshot import import_snapshot, load_snapshot
+
+    drawing = create_synthetic_pdf(tmp_path / "drawing.pdf")
+    snapshot = write_synthetic_revit_snapshot(drawing, tmp_path / "snapshot.json")
+    database = import_snapshot(snapshot, tmp_path / "snapshot.sqlite")
+    with QueryCore(database) as core:
+        assert core.get_source_model("model-host")["role"] == "host"
+        assert len(core.get_appearances("element", "element-sd03")) == 3
+    payload = json.loads(snapshot.read_text())
+    payload["snapshot_version"] = 2
+    snapshot.write_text(json.dumps(payload))
+    with pytest.raises(QueryCoreError, match="unsupported snapshot version"):
+        load_snapshot(snapshot)

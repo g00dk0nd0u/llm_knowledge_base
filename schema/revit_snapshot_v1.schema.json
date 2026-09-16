@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/llm-knowledge-base/revit_snapshot_v1.schema.json",
+  "title": "Revit Snapshot v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["snapshot_version", "coordinate_system", "unit", "project", "records"],
+  "properties": {
+    "snapshot_version": {"const": 1},
+    "coordinate_system": {"const": "host_revit_internal_origin"},
+    "unit": {"const": "mm"},
+    "project": {
+      "type": "object", "additionalProperties": false,
+      "required": ["project_id", "created_from", "source_document_identity", "source_document_sha256"],
+      "properties": {
+        "project_id": {"type": "string", "minLength": 1}, "created_from": {"type": "string", "minLength": 1},
+        "source_document_identity": {"type": "string", "minLength": 1}, "source_document_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "records": {
+      "type": "object",
+      "required": ["documents", "source_models", "sheets", "views", "levels", "spaces", "element_types", "elements", "parameters", "relationships", "annotations", "geometries"],
+      "additionalProperties": {"type": "array", "items": {"type": "object"}},
+      "properties": {
+        "source_models": {"type": "array", "items": {"$ref": "#/$defs/sourceModel"}},
+        "geometries": {"type": "array", "items": {"$ref": "#/$defs/geometry"}}
+      }
+    }
+  },
+  "$defs": {
+    "vector": {"type": "array", "prefixItems": [{"type": "number"},{"type": "number"},{"type": "number"}], "items": false},
+    "transform": {
+      "type": "object", "additionalProperties": false,
+      "required": ["basis_x", "basis_y", "basis_z", "origin", "source_unit"],
+      "properties": {"basis_x":{"$ref":"#/$defs/vector"},"basis_y":{"$ref":"#/$defs/vector"},"basis_z":{"$ref":"#/$defs/vector"},"origin":{"$ref":"#/$defs/vector"},"source_unit":{"const":"revit_internal"}}
+    },
+    "sourceModel": {
+      "type":"object", "required":["id","role","title","model_identity_kind","model_identity"],
+      "properties":{"id":{"type":"string"},"role":{"enum":["host","link"]},"title":{"type":"string"},"model_identity_kind":{"type":"string"},"model_identity":{"type":"string"},"transform_to_host":{"anyOf":[{"$ref":"#/$defs/transform"},{"type":"null"}]}}
+    },
+    "geometry": {
+      "type":"object", "required":["id","coordinate_system","unit","geometry"],
+      "properties":{"id":{"type":"string"},"coordinate_system":{"const":"host_revit_internal_origin"},"unit":{"const":"mm"},"geometry":{"type":"object"}}
+    }
+  }
+}
