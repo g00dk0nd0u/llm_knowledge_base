@@ -16,6 +16,11 @@ This repository is a private personal knowledge base for LLM-assisted retrieval 
 - Do not commit bulk rendered page images unless explicitly required.
 - Temporary PNG/WebP/crops/tiles belong outside version control by default.
 - Pipeline changes must remain reproducible and deterministic where practical.
+- PDF pipeline v1 extracts embedded text only; do not add OCR, LLM summaries, inferred
+  metadata, or image captions to generated output.
+- Treat `.pdf-pipeline-v1` as the ownership marker for generated document directories;
+  stale cleanup must never delete an unmarked directory.
+- Keep on-demand rendered images in ignored artifact locations, never under `knowledge/`.
 
 ## Project structure
 Each project should follow:
@@ -37,3 +42,10 @@ projects/<project-id>/
 - Use stable, filesystem-safe project IDs.
 - Keep original PDF filenames unless there is a strong reason to normalize them.
 - Generated Markdown filenames should remain traceable to the source document.
+
+## Pipeline checks
+
+- Use Python 3.12 and install test dependencies with `python -m pip install -e '.[test]'`.
+- Run `python -m pytest` after pipeline or schema changes.
+- Run `python -m tools.pdf_pipeline process --all` from the repository root; a second run
+  should produce no tracked diff.

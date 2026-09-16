@@ -61,4 +61,40 @@ When visual confirmation is needed:
 source PDF → selected page → high-resolution PNG/crop/tile → Vision LLM
 ```
 
-The PDF processing workflow is intentionally not implemented in the initial repository skeleton.
+## PDF pipeline v1
+
+Use Python 3.12 and install the local package:
+
+```bash
+python -m pip install -e '.[test]'
+```
+
+1. Create `projects/<project-id>/source/` and place unchanged original PDFs there.
+2. Run `python -m tools.pdf_pipeline process --all` from the repository root.
+3. Review `projects/<project-id>/manifest.json` and the generated directory under
+   `projects/<project-id>/knowledge/`.
+
+Each document directory contains `document.json`, `index.md`, and one Markdown file per
+source page under `pages/`. These files record the repository-relative source path,
+source SHA-256, stable path-derived document ID, and original one-based PDF page number.
+Reruns skip unchanged sources; updates retain the document ID; removed PDFs have their
+pipeline-managed knowledge removed.
+
+The pipeline extracts embedded text only. It performs **no OCR, LLM summarization,
+metadata inference, image captioning, or architectural interpretation**. A textless or
+low-text page is explicitly marked and recommended for visual review. This recommendation
+is only a processing hint. The original PDF and cited page remain the authority, especially
+for layouts, drawings, diagrams, symbols, and tables.
+
+Render only required pages for temporary vision inspection (the page selector or `--all`
+is mandatory):
+
+```bash
+python -m tools.pdf_pipeline render \
+  projects/example/source/test.pdf --pages 1,3-5 --dpi 300 \
+  --output artifacts/vision
+```
+
+`artifacts/` is ignored by Git. The renderer refuses to write into a project's
+`knowledge/` directory and never modifies the source PDF. See
+[`tools/pdf_pipeline/README.md`](tools/pdf_pipeline/README.md) for details.

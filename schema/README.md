@@ -23,3 +23,7 @@ Minimum derived Markdown metadata:
 - project ID
 
 Unknown values must remain null/empty rather than being inferred without evidence.
+
+`document.schema.json` validates each generated `document.json` file.
+`manifest.schema.json` validates reconciled project manifests. Both use JSON Schema draft
+2020-12. `python -m pytest` validates synthetic generated examples without real documents.

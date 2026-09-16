@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "manifest.schema.json",
+  "title": "Project manifest",
+  "type": "object",
+  "required": ["project_id", "pipeline_version", "documents"],
+  "properties": {
+    "project_id": { "type": "string", "minLength": 1 },
+    "project_name": { "type": "string" },
+    "description": { "type": "string" },
+    "pipeline_version": { "const": "1" },
+    "documents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "document_id", "source_file", "source_sha256", "knowledge_path",
+          "page_count", "pipeline_version"
+        ],
+        "properties": {
+          "document_id": { "type": "string", "pattern": "^doc-[a-f0-9]{24}$" },
+          "source_file": { "type": "string", "minLength": 1 },
+          "source_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "knowledge_path": { "type": "string", "minLength": 1 },
+          "page_count": { "type": "integer", "minimum": 1 },
+          "pipeline_version": { "const": "1" }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}
