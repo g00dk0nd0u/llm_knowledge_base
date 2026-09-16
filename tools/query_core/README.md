@@ -71,3 +71,16 @@ python -m tools.query_core build-fixture artifacts/query-demo
 python -m tools.query_core package artifacts/query-demo/drawing.pdf artifacts/query-demo/project.sqlite artifacts/query-demo/enhanced.pdf
 python -m tools.query_core inspect artifacts/query-demo/enhanced.pdf
 ```
+
+## Finalize a Revit offline export
+
+After the Revit Phase B1 command has completed its staged export, validate its snapshot,
+verify the drawing SHA, build the existing v2 payload, and package the portable PDF:
+
+```bash
+python -m tools.query_core finalize-revit-export /path/to/export-run
+```
+
+This writes `project.sqlite` and `enhanced.pdf` alongside the diagnostic export files.
+See [`../../revit_exporter/README.md`](../../revit_exporter/README.md) for host builds,
+deployment, smoke testing, and known limitations.

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <AssemblyName>LlmKnowledgeBase.Revit2027</AssemblyName>
+    <RootNamespace>LlmKnowledgeBase.Revit</RootNamespace>
+    <RevitInstallDir Condition="'$(RevitInstallDir)' == ''">C:\Program Files\Autodesk\Revit 2027</RevitInstallDir>
+    <DefineConstants>$(DefineConstants);REVIT2027</DefineConstants>
+    <EnableDefaultItems>true</EnableDefaultItems>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup><FrameworkReference Include="Microsoft.WindowsDesktop.App" /></ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../LlmKnowledgeBase.Revit.Core/LlmKnowledgeBase.Revit.Core.csproj" />
+    <Compile Include="../Revit.Shared/**/*.cs" Link="Shared/%(RecursiveDir)%(Filename)%(Extension)" />
+    <Reference Include="RevitAPI"><HintPath>$(RevitInstallDir)\RevitAPI.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="RevitAPIUI"><HintPath>$(RevitInstallDir)\RevitAPIUI.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+  <Target Name="RequireRevitAssemblies" BeforeTargets="ResolveReferences">
+    <Error Condition="!Exists('$(RevitInstallDir)\RevitAPI.dll')" Text="RevitAPI.dll was not found. Set RevitInstallDir to the installed Revit 2027 directory." />
+    <Error Condition="!Exists('$(RevitInstallDir)\RevitAPIUI.dll')" Text="RevitAPIUI.dll was not found. Set RevitInstallDir to the installed Revit 2027 directory." />
+  </Target>
+</Project>

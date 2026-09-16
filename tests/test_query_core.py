@@ -482,6 +482,30 @@ def test_synthetic_revit_snapshot_import_and_version(tmp_path: Path) -> None:
         load_snapshot(snapshot)
 
 
+def test_finalize_revit_export_and_reject_hash_mismatch(tmp_path: Path) -> None:
+    from tools.query_core.fixtures import (
+        create_synthetic_pdf,
+        write_synthetic_revit_snapshot,
+    )
+    from tools.query_core.revit_snapshot import finalize_revit_export
+
+    export = tmp_path / "export"
+    export.mkdir()
+    drawing = create_synthetic_pdf(export / "drawing.pdf")
+    write_synthetic_revit_snapshot(drawing, export / "revit_snapshot.json")
+    enhanced = finalize_revit_export(export)
+    assert enhanced == export / "enhanced.pdf"
+    assert (export / "project.sqlite").is_file()
+    assert inspect_pdf(enhanced)["source_document_sha256"] == hashlib.sha256(
+        drawing.read_bytes()
+    ).hexdigest()
+
+    drawing.write_bytes(drawing.read_bytes() + b"changed")
+    with pytest.raises(QueryCoreError, match="SHA-256 does not match"):
+        finalize_revit_export(export, export / "must-not-exist.pdf")
+    assert not (export / "must-not-exist.pdf").exists()
+
+
 def test_repeated_link_model_placements(fixture: tuple[Path, Path]) -> None:
     with QueryCore(fixture[1]) as core:
         element = core.get_entity("element", "element-linked-collision")

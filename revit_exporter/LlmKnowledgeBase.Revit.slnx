@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="src/LlmKnowledgeBase.Revit.Core/LlmKnowledgeBase.Revit.Core.csproj" />
+  <Project Path="src/LlmKnowledgeBase.Revit2025/LlmKnowledgeBase.Revit2025.csproj" />
+  <Project Path="src/LlmKnowledgeBase.Revit2026/LlmKnowledgeBase.Revit2026.csproj" />
+  <Project Path="src/LlmKnowledgeBase.Revit2027/LlmKnowledgeBase.Revit2027.csproj" />
+  <Project Path="tests/LlmKnowledgeBase.Revit.Core.Tests/LlmKnowledgeBase.Revit.Core.Tests.csproj" />
+</Solution>
