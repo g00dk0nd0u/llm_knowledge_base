@@ -89,6 +89,28 @@ def test_idempotency_update_and_stale_cleanup(repository: Path) -> None:
     assert json.loads((repository / "projects/example/manifest.json").read_text())["documents"] == []
 
 
+@pytest.mark.parametrize("damaged", ["index", "page", "document"])
+def test_incomplete_generated_tree_is_rebuilt(repository: Path, damaged: str) -> None:
+    pdf = repository / "projects/example/source/sample.pdf"
+    make_pdf(pdf, ["First page source text.", "Second page source text."])
+    process_all(repository)
+    _manifest, _document, knowledge = load_outputs(repository)
+
+    if damaged == "index":
+        (knowledge / "index.md").unlink()
+    elif damaged == "page":
+        (knowledge / "pages/p0002.md").unlink()
+    else:
+        (knowledge / "document.json").write_text("{corrupt", encoding="utf-8")
+
+    assert process_all(repository).processed == 1
+    assert (knowledge / "index.md").stat().st_size > 0
+    assert (knowledge / "pages/p0001.md").stat().st_size > 0
+    assert (knowledge / "pages/p0002.md").stat().st_size > 0
+    json.loads((knowledge / "document.json").read_text(encoding="utf-8"))
+    assert process_all(repository).unchanged == 1
+
+
 def test_textless_page_is_not_reported_as_success(repository: Path) -> None:
     make_pdf(repository / "projects/example/source/scan.pdf", [""])
     process_all(repository)
@@ -125,22 +147,39 @@ def test_selected_page_rendering(repository: Path) -> None:
         render_pages(repository, pdf, pages="4", all_pages=False, dpi=300, output=Path("artifacts"))
 
 
-def test_render_rejects_non_source_and_knowledge_output(repository: Path) -> None:
+def test_render_restricts_repository_outputs_to_artifact_roots(
+    repository: Path, tmp_path: Path
+) -> None:
     outside = repository / "outside.pdf"
     make_pdf(outside, ["outside"])
     with pytest.raises(PipelineError, match="inside projects"):
         render_pages(repository, outside, pages="1", all_pages=False, dpi=300, output=Path("artifacts"))
     source = repository / "projects/example/source/sample.pdf"
     make_pdf(source, ["source"])
-    assert not (repository / "projects/example/knowledge").exists()
-    with pytest.raises(PipelineError, match="knowledge"):
-        render_pages(repository, source, pages="1", all_pages=False, dpi=300, output=Path("projects/example/knowledge/images"))
-    assert not (repository / "projects/example/knowledge").exists()
-    alias = repository / "artifacts/knowledge-alias"
+    rejected = [
+        Path("projects/example/source/renders"),
+        Path("projects/example/knowledge/images"),
+        Path("schema/rendered"),
+    ]
+    for destination in rejected:
+        with pytest.raises(PipelineError, match="artifact root"):
+            render_pages(
+                repository, source, pages="1", all_pages=False, dpi=300, output=destination
+            )
+        assert not (repository / destination).exists()
+
+    tracked = repository / "schema"
+    alias = repository / "artifacts/tracked-alias"
     alias.parent.mkdir()
-    alias.symlink_to(repository / "projects/example/knowledge", target_is_directory=True)
-    with pytest.raises(PipelineError, match="knowledge"):
-        render_pages(repository, source, pages="1", all_pages=False, dpi=300, output=alias / "images")
+    alias.symlink_to(tracked, target_is_directory=True)
+    with pytest.raises(PipelineError, match="artifact root"):
+        render_pages(repository, source, pages="1", all_pages=False, dpi=300, output=alias)
+
+    external = tmp_path.parent / f"{tmp_path.name}-external-render"
+    outputs = render_pages(
+        repository, source, pages="1", all_pages=False, dpi=300, output=external.resolve()
+    )
+    assert outputs[0].is_file()
 
 
 def test_process_refuses_to_replace_unmanaged_directory(repository: Path) -> None:

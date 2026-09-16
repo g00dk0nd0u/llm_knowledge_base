@@ -19,6 +19,7 @@ from . import PIPELINE_VERSION
 LOW_TEXT_THRESHOLD = 40
 MANY_DRAWINGS_THRESHOLD = 200
 MANAGED_MARKER = ".pdf-pipeline-v1"
+RENDER_ROOTS = frozenset({".tmp", ".cache", "artifacts", "vision", "renders", "tiles"})
 
 
 class PipelineError(RuntimeError):
@@ -215,6 +216,50 @@ def _atomic_json(path: Path, data: dict[str, Any]) -> None:
         raise
 
 
+def _generated_tree_is_valid(
+    output: Path,
+    *,
+    document_id: str,
+    source_file: str,
+    source_sha256: str,
+) -> bool:
+    """Check that a pipeline-owned retrieval tree is complete and internally consistent."""
+    if not (output / MANAGED_MARKER).is_file():
+        return False
+    document_path = output / "document.json"
+    try:
+        data = json.loads(document_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    expected = {
+        "document_id": document_id,
+        "source_file": source_file,
+        "source_sha256": source_sha256,
+        "pipeline_version": PIPELINE_VERSION,
+    }
+    if any(data.get(key) != value for key, value in expected.items()):
+        return False
+    page_count = data.get("page_count")
+    pages = data.get("pages")
+    if (
+        not isinstance(page_count, int)
+        or isinstance(page_count, bool)
+        or page_count < 1
+        or not isinstance(pages, list)
+        or len(pages) != page_count
+        or [page.get("page") if isinstance(page, dict) else None for page in pages]
+        != list(range(1, page_count + 1))
+    ):
+        return False
+    required = [output / "index.md"] + [
+        output / "pages" / f"p{number:04d}.md" for number in range(1, page_count + 1)
+    ]
+    try:
+        return all(path.is_file() and path.stat().st_size > 0 for path in required)
+    except OSError:
+        return False
+
+
 def _rollback_project(
     applied: list[tuple[Path, Path | None, Path]],
     removed: list[tuple[Path, Path]],
@@ -283,8 +328,12 @@ def process_all(root: Path) -> ProcessResult:
                     and previous.get("source_sha256") == source_hash
                     and previous.get("pipeline_version") == PIPELINE_VERSION
                     and previous.get("knowledge_path") == output_rel
-                    and (output / "document.json").is_file()
-                    and (output / MANAGED_MARKER).is_file()
+                    and _generated_tree_is_valid(
+                        output,
+                        document_id=doc_id,
+                        source_file=source_file,
+                        source_sha256=source_hash,
+                    )
                 ):
                     unchanged += 1
                 else:
@@ -404,17 +453,34 @@ def render_pages(
         raise PipelineError(f"cannot open corrupt or invalid PDF {pdf}: {exc}") from exc
     try:
         chosen = list(range(1, document.page_count + 1)) if all_pages else _parse_pages(pages or "", document.page_count)
-        logical_output = Path(os.path.abspath(root / output if not output.is_absolute() else output))
+        requested_absolute = output.is_absolute()
+        logical_output = Path(os.path.abspath(output if requested_absolute else root / output))
         output = logical_output.resolve()
-        # This structural check does not depend on knowledge/ already existing. Resolution
-        # above also prevents traversal and symlink aliases from bypassing it.
-        for candidate in (logical_output, output):
-            try:
-                output_relative = candidate.relative_to(root / "projects")
-            except ValueError:
-                continue
-            if len(output_relative.parts) >= 2 and output_relative.parts[1] == "knowledge":
-                raise PipelineError("render output must not be inside a project knowledge directory")
+        try:
+            logical_relative = logical_output.relative_to(root)
+        except ValueError:
+            logical_relative = None
+        try:
+            resolved_relative = output.relative_to(root)
+        except ValueError:
+            resolved_relative = None
+        logical_allowed = (
+            logical_relative is not None
+            and bool(logical_relative.parts)
+            and logical_relative.parts[0] in RENDER_ROOTS
+        )
+        resolved_allowed = (
+            resolved_relative is not None
+            and bool(resolved_relative.parts)
+            and resolved_relative.parts[0] in RENDER_ROOTS
+        )
+        if (not requested_absolute and not logical_allowed) or (
+            resolved_relative is not None and not resolved_allowed
+        ):
+            raise PipelineError(
+                "repository-local render output must be under an ignored artifact root: "
+                + ", ".join(sorted(RENDER_ROOTS))
+            )
         output.mkdir(parents=True, exist_ok=True)
         results: list[Path] = []
         matrix = fitz.Matrix(dpi / 72, dpi / 72)
