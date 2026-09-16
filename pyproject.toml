@@ -22,3 +22,6 @@ addopts = "-q"
 
 [tool.setuptools.packages.find]
 include = ["tools*"]
+
+[tool.setuptools.package-data]
+"tools.query_core" = ["schema.sql"]

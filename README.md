@@ -98,3 +98,17 @@ python -m tools.pdf_pipeline render \
 `artifacts/` is ignored by Git. The renderer refuses to write into a project's
 `knowledge/` directory and never modifies the source PDF. See
 [`tools/pdf_pipeline/README.md`](tools/pdf_pipeline/README.md) for details.
+
+## Portable Query Core v1
+
+The [Query Core](tools/query_core/README.md) is a separate, Revit-independent layer.
+It builds a versioned SQLite payload containing architectural entities, numeric
+annotations, relationships, exact compact geometry, provenance, and one-based PDF
+evidence. The payload can be embedded in an ordinary drawing PDF, extracted to an
+ignored content-addressed cache, and queried read-only through a structured Python
+API. The included fixture data is entirely synthetic.
+
+The intended boundary is: **Revit = future export-time source; Enhanced PDF =
+portable handover artifact; SQLite = embedded v1 machine payload; Query Core =
+runtime; LLM = optional consumer.** The current implementation does not include a
+Revit exporter, corridor compliance reasoning, or change-impact analysis.
