@@ -135,6 +135,8 @@ def test_fts_japanese_relationships_and_spatial_exact_geometry(
         candidates = core.get_spatial_candidates((-100, 10100, -100, 1900, -1, 3001))
         assert {row["id"] for row in candidates} == {
             "geo-corridor",
+            "geo-linked-a",
+            "geo-linked-b",
             "geo-wall-n",
             "geo-wall-s",
         }
@@ -378,7 +380,8 @@ def test_revit_composite_identity_and_source_transform(
         linked = core.get_entity("element", "element-linked-collision")
         assert host["source_unique_id"] == linked["source_unique_id"]
         assert host["source_model_id"] != linked["source_model_id"]
-        transform = core.get_source_model("model-link")["transform_to_host"]
+        assert core.get_source_model("model-link")["role"] == "link"
+        transform = core.get_link_instance("link-instance-a")["transform_to_host"]
         assert transform["origin"] == [100, 200, 0]
         assert transform["source_unit"] == "revit_internal"
 
@@ -418,7 +421,7 @@ def test_v2_revit_validation_errors(tmp_path: Path) -> None:
         build_database(bad, tmp_path / "bad.sqlite")
 
     bad = json.loads(json.dumps(base))
-    bad["source_models"][1]["transform_to_host"]["basis_x"] = [1, 0]
+    bad["link_instances"][0]["transform_to_host"]["basis_x"] = [1, 0]
     with pytest.raises(QueryCoreError, match="invalid link transform"):
         build_database(bad, tmp_path / "bad.sqlite")
 
@@ -443,6 +446,21 @@ def test_v2_revit_validation_errors(tmp_path: Path) -> None:
     with pytest.raises(QueryCoreError, match="malformed spatial boundary loop"):
         build_database(bad, tmp_path / "bad.sqlite")
 
+    bad = json.loads(json.dumps(base))
+    bad["link_instances"][1]["source_unique_id"] = bad["link_instances"][0][
+        "source_unique_id"
+    ]
+    with pytest.raises(QueryCoreError, match="duplicate link instance identity"):
+        build_database(bad, tmp_path / "bad.sqlite")
+
+    bad = json.loads(json.dumps(base))
+    linked_geometry = next(
+        row for row in bad["geometries"] if row["link_instance_id"] is not None
+    )
+    linked_geometry["entity_id"] = "element-sd03"
+    with pytest.raises(QueryCoreError, match="link instance model mismatch"):
+        build_database(bad, tmp_path / "bad.sqlite")
+
 
 def test_synthetic_revit_snapshot_import_and_version(tmp_path: Path) -> None:
     from tools.query_core.fixtures import (
@@ -462,3 +480,134 @@ def test_synthetic_revit_snapshot_import_and_version(tmp_path: Path) -> None:
     snapshot.write_text(json.dumps(payload))
     with pytest.raises(QueryCoreError, match="unsupported snapshot version"):
         load_snapshot(snapshot)
+
+
+def test_repeated_link_model_placements(fixture: tuple[Path, Path]) -> None:
+    with QueryCore(fixture[1]) as core:
+        element = core.get_entity("element", "element-linked-collision")
+        assert element["source_model_id"] == "model-link"
+        instances = core.get_link_instances("model-link")
+        assert [row["id"] for row in instances] == [
+            "link-instance-a",
+            "link-instance-b",
+        ]
+        assert [row["transform_to_host"]["origin"] for row in instances] == [
+            [100, 200, 0],
+            [10100, 200, 0],
+        ]
+        geometries = [
+            row
+            for row in core.get_spatial_candidates((0, 11000, 0, 1000, 0, 1100))
+            if row["entity_id"] == element["id"]
+        ]
+        assert {row["link_instance_id"] for row in geometries} == {
+            "link-instance-a",
+            "link-instance-b",
+        }
+        appearances = core.get_appearances("element", element["id"])
+        assert {row["link_instance_id"] for row in appearances} == {
+            "link-instance-a",
+            "link-instance-b",
+        }
+
+
+def test_snapshot_json_schema_is_enforced_before_build(tmp_path: Path) -> None:
+    from tools.query_core.fixtures import (
+        create_synthetic_pdf,
+        write_synthetic_revit_snapshot,
+    )
+    from tools.query_core.revit_snapshot import load_snapshot
+
+    drawing = create_synthetic_pdf(tmp_path / "drawing.pdf")
+    source = write_synthetic_revit_snapshot(drawing, tmp_path / "snapshot.json")
+    valid = json.loads(source.read_text())
+    assert load_snapshot(source)["snapshot_version"] == 1
+
+    mutations = [
+        (
+            "unknown property",
+            lambda value: value["records"]["documents"][0].update({"titel": "typo"}),
+            "records.documents.0",
+        ),
+        (
+            "missing field",
+            lambda value: value["records"]["elements"][0].pop("category"),
+            "records.elements.0",
+        ),
+        (
+            "wrong enum",
+            lambda value: value["records"]["source_models"][0].update(role="primary"),
+            "role",
+        ),
+        (
+            "wrong type",
+            lambda value: value["records"]["parameters"][0].update(
+                numeric_value="4500"
+            ),
+            "numeric_value",
+        ),
+        (
+            "invalid page",
+            lambda value: value["records"]["evidence"][0].update(pdf_page="1"),
+            "pdf_page",
+        ),
+        (
+            "bad vector",
+            lambda value: value["records"]["link_instances"][0][
+                "transform_to_host"
+            ].update(origin=[1, 2]),
+            "origin",
+        ),
+        (
+            "coordinate system",
+            lambda value: value.update(coordinate_system="link_local"),
+            "coordinate_system",
+        ),
+        ("unit", lambda value: value.update(unit="ft"), "unit"),
+    ]
+    for name, mutate, expected_path in mutations:
+        payload = json.loads(json.dumps(valid))
+        mutate(payload)
+        candidate = tmp_path / f"bad-{name.replace(' ', '-')}.json"
+        candidate.write_text(json.dumps(payload))
+        with pytest.raises(QueryCoreError, match=expected_path):
+            load_snapshot(candidate)
+
+
+def test_sqlite_v2_structural_validation_is_complete(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    _drawing, valid_database = fixture
+    damages = [
+        ("DROP TABLE link_instances", "missing tables: link_instances"),
+        (
+            "ALTER TABLE link_instances RENAME COLUMN linked_source_model_id TO broken",
+            "link_instances missing columns: linked_source_model_id",
+        ),
+        (
+            "ALTER TABLE entity_appearances RENAME COLUMN link_instance_id TO broken",
+            "entity_appearances missing columns: link_instance_id",
+        ),
+        (
+            "ALTER TABLE viewports RENAME COLUMN pdf_y_max TO broken",
+            "viewports missing columns: pdf_y_max",
+        ),
+        (
+            "ALTER TABLE annotation_references RENAME COLUMN target_link_instance_id TO broken",
+            "annotation_references missing columns: target_link_instance_id",
+        ),
+        (
+            "ALTER TABLE geometries RENAME COLUMN link_instance_id TO broken",
+            "geometries missing columns: link_instance_id",
+        ),
+    ]
+    for index, (statement, message) in enumerate(damages):
+        damaged = tmp_path / f"damaged-{index}.sqlite"
+        shutil.copyfile(valid_database, damaged)
+        connection = sqlite3.connect(damaged)
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute(statement)
+        connection.commit()
+        connection.close()
+        with pytest.raises(QueryCoreError, match=message):
+            validate_database(damaged)

@@ -4,43 +4,1710 @@
   "title": "Revit Snapshot v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["snapshot_version", "coordinate_system", "unit", "project", "records"],
+  "required": [
+    "snapshot_version",
+    "coordinate_system",
+    "unit",
+    "project",
+    "records"
+  ],
   "properties": {
-    "snapshot_version": {"const": 1},
-    "coordinate_system": {"const": "host_revit_internal_origin"},
-    "unit": {"const": "mm"},
+    "snapshot_version": {
+      "const": 1
+    },
+    "coordinate_system": {
+      "const": "host_revit_internal_origin"
+    },
+    "unit": {
+      "const": "mm"
+    },
     "project": {
-      "type": "object", "additionalProperties": false,
-      "required": ["project_id", "created_from", "source_document_identity", "source_document_sha256"],
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project_id",
+        "created_from",
+        "source_document_identity",
+        "source_document_sha256"
+      ],
       "properties": {
-        "project_id": {"type": "string", "minLength": 1}, "created_from": {"type": "string", "minLength": 1},
-        "source_document_identity": {"type": "string", "minLength": 1}, "source_document_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "project_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "created_from": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_document_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_document_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
       }
     },
     "records": {
       "type": "object",
-      "required": ["documents", "source_models", "sheets", "views", "levels", "spaces", "element_types", "elements", "parameters", "relationships", "annotations", "geometries"],
-      "additionalProperties": {"type": "array", "items": {"type": "object"}},
+      "additionalProperties": false,
+      "required": [
+        "documents",
+        "source_models",
+        "link_instances",
+        "sheets",
+        "views",
+        "viewports",
+        "levels",
+        "spaces",
+        "element_types",
+        "elements",
+        "evidence",
+        "parameters",
+        "relationships",
+        "annotations",
+        "annotation_segments",
+        "annotation_references",
+        "entity_appearances",
+        "spatial_boundaries",
+        "spatial_boundary_segments",
+        "geometries",
+        "search_content"
+      ],
       "properties": {
-        "source_models": {"type": "array", "items": {"$ref": "#/$defs/sourceModel"}},
-        "geometries": {"type": "array", "items": {"$ref": "#/$defs/geometry"}}
+        "documents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identity",
+              "title",
+              "source_filename",
+              "source_sha256"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "identity": {
+                "type": "string",
+                "minLength": 1
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source_filename": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            }
+          }
+        },
+        "source_models": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "role",
+              "title",
+              "revit_version",
+              "model_identity_kind",
+              "model_identity",
+              "snapshot_version_guid",
+              "snapshot_save_number"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "role": {
+                "enum": [
+                  "host",
+                  "link"
+                ]
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "revit_version": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model_identity_kind": {
+                "type": "string",
+                "minLength": 1
+              },
+              "model_identity": {
+                "type": "string",
+                "minLength": 1
+              },
+              "snapshot_version_guid": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "snapshot_save_number": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "link_instances": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "host_source_model_id",
+              "linked_source_model_id",
+              "source_unique_id",
+              "name",
+              "transform_to_host",
+              "provenance"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "host_source_model_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "linked_source_model_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source_unique_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "transform_to_host": {
+                "$ref": "#/$defs/transform"
+              },
+              "provenance": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "sheets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "document_id",
+              "number",
+              "name",
+              "pdf_page",
+              "export_order",
+              "source_model_id",
+              "source_unique_id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "document_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "number": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "pdf_page": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "export_order": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "source_model_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_unique_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "views": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "document_id",
+              "name",
+              "view_type",
+              "export_order",
+              "source_model_id",
+              "source_unique_id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "document_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "view_type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "export_order": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 1
+              },
+              "source_model_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_unique_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "viewports": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "sheet_id",
+              "view_id",
+              "placement_kind",
+              "sheet_x_min",
+              "sheet_y_min",
+              "sheet_x_max",
+              "sheet_y_max",
+              "sheet_coordinate_unit",
+              "pdf_x_min",
+              "pdf_y_min",
+              "pdf_x_max",
+              "pdf_y_max",
+              "pdf_coordinate_space",
+              "sheet_to_pdf_transform",
+              "mapping_quality"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sheet_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "view_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "placement_kind": {
+                "enum": [
+                  "viewport",
+                  "schedule"
+                ]
+              },
+              "sheet_x_min": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "sheet_y_min": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "sheet_x_max": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "sheet_y_max": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "sheet_coordinate_unit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "pdf_x_min": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "pdf_y_min": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "pdf_x_max": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "pdf_y_max": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "pdf_coordinate_space": {
+                "enum": [
+                  "pdf_points_top_left",
+                  null
+                ]
+              },
+              "sheet_to_pdf_transform": {
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "number"
+                      }
+                    ],
+                    "items": false,
+                    "minItems": 6,
+                    "maxItems": 6
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "mapping_quality": {
+                "enum": [
+                  "unknown",
+                  "approximate",
+                  "calibrated",
+                  "exact"
+                ]
+              }
+            }
+          }
+        },
+        "levels": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "name",
+              "elevation",
+              "unit",
+              "source_model_id",
+              "source_unique_id",
+              "provenance",
+              "confidence"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "elevation": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "unit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_model_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_unique_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "provenance": {
+                "type": "string",
+                "minLength": 1
+              },
+              "confidence": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "spaces": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "kind",
+              "name",
+              "number",
+              "level_id",
+              "phase_source_unique_id",
+              "source_model_id",
+              "source_unique_id",
+              "provenance",
+              "confidence"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "enum": [
+                  "Room",
+                  "Space",
+                  "Zone",
+                  "Corridor"
+                ]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "number": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "level_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "phase_source_unique_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_model_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_unique_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "provenance": {
+                "type": "string",
+                "minLength": 1
+              },
+              "confidence": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "element_types": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "family_name",
+              "type_name",
+              "category",
+              "source_model_id",
+              "source_unique_id",
+              "provenance",
+              "confidence"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "family_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type_name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "category": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source_model_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_unique_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "provenance": {
+                "type": "string",
+                "minLength": 1
+              },
+              "confidence": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "elements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "name",
+              "category",
+              "type_id",
+              "space_id",
+              "level_id",
+              "source_model_id",
+              "source_unique_id",
+              "provenance",
+              "confidence"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "category": {
+                "type": "string",
+                "minLength": 1
+              },
+              "type_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "space_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "level_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_model_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_unique_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "provenance": {
+                "type": "string",
+                "minLength": 1
+              },
+              "confidence": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "document_id",
+              "sheet_id",
+              "view_id",
+              "pdf_page",
+              "x_min",
+              "y_min",
+              "x_max",
+              "y_max",
+              "coordinate_space"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "document_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sheet_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "view_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "pdf_page": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "x_min": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "y_min": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "x_max": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "y_max": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "coordinate_space": {
+                "enum": [
+                  "pdf_points_top_left",
+                  null
+                ]
+              }
+            }
+          }
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "entity_kind",
+              "entity_id",
+              "scope",
+              "definition_name",
+              "definition_key",
+              "storage_type",
+              "data_type_id",
+              "parameter_type_id",
+              "shared_parameter_guid",
+              "unit_type_id",
+              "raw_value_text",
+              "raw_numeric_value",
+              "numeric_value",
+              "unit",
+              "value_text",
+              "provenance",
+              "confidence",
+              "evidence_id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "entity_kind": {
+                "type": "string",
+                "minLength": 1
+              },
+              "entity_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "scope": {
+                "enum": [
+                  "instance",
+                  "type",
+                  null
+                ]
+              },
+              "definition_name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "definition_key": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "storage_type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "data_type_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "parameter_type_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "shared_parameter_guid": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "unit_type_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "raw_value_text": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "raw_numeric_value": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "numeric_value": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "unit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "value_text": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "provenance": {
+                "type": "string",
+                "minLength": 1
+              },
+              "confidence": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "evidence_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "relationships": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "source_kind",
+              "source_id",
+              "relation_type",
+              "target_kind",
+              "target_id",
+              "phase_source_unique_id",
+              "provenance",
+              "confidence",
+              "evidence_id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source_kind": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "relation_type": {
+                "type": "string",
+                "minLength": 1
+              },
+              "target_kind": {
+                "type": "string",
+                "minLength": 1
+              },
+              "target_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "phase_source_unique_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "provenance": {
+                "type": "string",
+                "minLength": 1
+              },
+              "confidence": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "evidence_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "annotations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "kind",
+              "semantic_type",
+              "display_text",
+              "numeric_value",
+              "unit",
+              "related_entity_kind",
+              "related_entity_id",
+              "source_model_id",
+              "source_unique_id",
+              "view_id",
+              "provenance",
+              "confidence",
+              "evidence_id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "enum": [
+                  "dimension",
+                  "spot_elevation",
+                  "spot_coordinate",
+                  "text_annotation",
+                  "tag",
+                  "grid_reference"
+                ]
+              },
+              "semantic_type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "display_text": {
+                "type": "string",
+                "minLength": 1
+              },
+              "numeric_value": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "unit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "related_entity_kind": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "related_entity_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_model_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_unique_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "view_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "provenance": {
+                "type": "string",
+                "minLength": 1
+              },
+              "confidence": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "evidence_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "annotation_segments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "annotation_id",
+              "segment_index",
+              "numeric_value",
+              "unit",
+              "display_text",
+              "value_override",
+              "prefix",
+              "suffix",
+              "above",
+              "below",
+              "origin",
+              "text_position"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "annotation_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "segment_index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "numeric_value": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "unit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "display_text": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "value_override": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "prefix": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suffix": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "above": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "below": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "origin": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/vector"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "text_position": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/vector"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "annotation_references": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "annotation_id",
+              "reference_index",
+              "target_source_model_id",
+              "target_source_unique_id",
+              "target_link_instance_id",
+              "stable_reference",
+              "reference_type",
+              "is_linked",
+              "resolution_state"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "annotation_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reference_index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "target_source_model_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target_source_unique_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target_link_instance_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stable_reference": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reference_type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "is_linked": {
+                "enum": [
+                  0,
+                  1
+                ]
+              },
+              "resolution_state": {
+                "enum": [
+                  "resolved",
+                  "unresolved",
+                  "orphan"
+                ]
+              }
+            }
+          }
+        },
+        "entity_appearances": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "entity_kind",
+              "entity_id",
+              "sheet_id",
+              "view_id",
+              "viewport_id",
+              "link_instance_id",
+              "pdf_page",
+              "x_min",
+              "y_min",
+              "x_max",
+              "y_max",
+              "coordinate_space",
+              "appearance_kind",
+              "bbox_quality",
+              "provenance"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "entity_kind": {
+                "type": "string",
+                "minLength": 1
+              },
+              "entity_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sheet_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "view_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "viewport_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "link_instance_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "pdf_page": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "x_min": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "y_min": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "x_max": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "y_max": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "coordinate_space": {
+                "const": "pdf_points_top_left"
+              },
+              "appearance_kind": {
+                "enum": [
+                  "model",
+                  "annotation",
+                  "schedule",
+                  "detail"
+                ]
+              },
+              "bbox_quality": {
+                "enum": [
+                  "page_only",
+                  "may_be_visible",
+                  "view_bbox",
+                  "projected_bbox",
+                  "exact"
+                ]
+              },
+              "provenance": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "spatial_boundaries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "space_id",
+              "loop_index",
+              "loop_kind",
+              "coordinate_system",
+              "unit",
+              "provenance"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "space_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "loop_index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "loop_kind": {
+                "enum": [
+                  "outer",
+                  "inner"
+                ]
+              },
+              "coordinate_system": {
+                "const": "host_revit_internal_origin"
+              },
+              "unit": {
+                "const": "mm"
+              },
+              "provenance": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "spatial_boundary_segments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "boundary_id",
+              "segment_index",
+              "start_x",
+              "start_y",
+              "start_z",
+              "end_x",
+              "end_y",
+              "end_z",
+              "source_model_id",
+              "source_unique_id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "boundary_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "segment_index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "start_x": {
+                "type": "number"
+              },
+              "start_y": {
+                "type": "number"
+              },
+              "start_z": {
+                "type": "number"
+              },
+              "end_x": {
+                "type": "number"
+              },
+              "end_y": {
+                "type": "number"
+              },
+              "end_z": {
+                "type": "number"
+              },
+              "source_model_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_unique_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "geometries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "entity_kind",
+              "entity_id",
+              "link_instance_id",
+              "geometry_type",
+              "geometry",
+              "coordinate_system",
+              "unit",
+              "min_x",
+              "max_x",
+              "min_y",
+              "max_y",
+              "min_z",
+              "max_z",
+              "provenance",
+              "confidence",
+              "evidence_id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "entity_kind": {
+                "type": "string",
+                "minLength": 1
+              },
+              "entity_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "link_instance_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "geometry_type": {
+                "enum": [
+                  "point",
+                  "oriented_point",
+                  "bbox2d",
+                  "bbox3d",
+                  "line",
+                  "polyline",
+                  "footprint"
+                ]
+              },
+              "geometry": {
+                "type": "object"
+              },
+              "coordinate_system": {
+                "const": "host_revit_internal_origin"
+              },
+              "unit": {
+                "const": "mm"
+              },
+              "min_x": {
+                "type": "number"
+              },
+              "max_x": {
+                "type": "number"
+              },
+              "min_y": {
+                "type": "number"
+              },
+              "max_y": {
+                "type": "number"
+              },
+              "min_z": {
+                "type": "number"
+              },
+              "max_z": {
+                "type": "number"
+              },
+              "provenance": {
+                "type": "string",
+                "minLength": 1
+              },
+              "confidence": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "evidence_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "search_content": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "record_kind",
+              "record_id",
+              "content"
+            ],
+            "properties": {
+              "record_kind": {
+                "type": "string",
+                "minLength": 1
+              },
+              "record_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
       }
     }
   },
   "$defs": {
-    "vector": {"type": "array", "prefixItems": [{"type": "number"},{"type": "number"},{"type": "number"}], "items": false},
+    "vector": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "items": false,
+      "minItems": 3,
+      "maxItems": 3
+    },
     "transform": {
-      "type": "object", "additionalProperties": false,
-      "required": ["basis_x", "basis_y", "basis_z", "origin", "source_unit"],
-      "properties": {"basis_x":{"$ref":"#/$defs/vector"},"basis_y":{"$ref":"#/$defs/vector"},"basis_z":{"$ref":"#/$defs/vector"},"origin":{"$ref":"#/$defs/vector"},"source_unit":{"const":"revit_internal"}}
-    },
-    "sourceModel": {
-      "type":"object", "required":["id","role","title","model_identity_kind","model_identity"],
-      "properties":{"id":{"type":"string"},"role":{"enum":["host","link"]},"title":{"type":"string"},"model_identity_kind":{"type":"string"},"model_identity":{"type":"string"},"transform_to_host":{"anyOf":[{"$ref":"#/$defs/transform"},{"type":"null"}]}}
-    },
-    "geometry": {
-      "type":"object", "required":["id","coordinate_system","unit","geometry"],
-      "properties":{"id":{"type":"string"},"coordinate_system":{"const":"host_revit_internal_origin"},"unit":{"const":"mm"},"geometry":{"type":"object"}}
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "basis_x",
+        "basis_y",
+        "basis_z",
+        "origin",
+        "source_unit"
+      ],
+      "properties": {
+        "basis_x": {
+          "$ref": "#/$defs/vector"
+        },
+        "basis_y": {
+          "$ref": "#/$defs/vector"
+        },
+        "basis_z": {
+          "$ref": "#/$defs/vector"
+        },
+        "origin": {
+          "$ref": "#/$defs/vector"
+        },
+        "source_unit": {
+          "const": "revit_internal"
+        }
+      }
     }
   }
 }

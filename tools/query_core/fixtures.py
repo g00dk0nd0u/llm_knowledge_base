@@ -435,21 +435,25 @@ def synthetic_records(source_pdf: Path) -> dict:
             "model_identity": "synthetic-host",
             "snapshot_version_guid": "snapshot-host-1",
             "snapshot_save_number": 7,
-            "host_source_model_id": None,
-            "link_instance_unique_id": None,
-            "transform_to_host": None,
         },
         {
             "id": "model-link",
             "role": "link",
-            "title": "Linked Model",
+            "title": "Linked Model MEP",
             "revit_version": "2026",
             "model_identity_kind": "explicit",
             "model_identity": "synthetic-link",
             "snapshot_version_guid": "snapshot-link-1",
             "snapshot_save_number": 3,
+        },
+    ]
+    records["link_instances"] = [
+        {
+            "id": "link-instance-a",
             "host_source_model_id": "model-host",
-            "link_instance_unique_id": "link-instance-01",
+            "linked_source_model_id": "model-link",
+            "source_unique_id": "revit-link-instance-a",
+            "name": "MEP Instance A",
             "transform_to_host": {
                 "basis_x": [0, 1, 0],
                 "basis_y": [-1, 0, 0],
@@ -457,6 +461,22 @@ def synthetic_records(source_pdf: Path) -> dict:
                 "origin": [100, 200, 0],
                 "source_unit": "revit_internal",
             },
+            "provenance": provenance,
+        },
+        {
+            "id": "link-instance-b",
+            "host_source_model_id": "model-host",
+            "linked_source_model_id": "model-link",
+            "source_unique_id": "revit-link-instance-b",
+            "name": "MEP Instance B",
+            "transform_to_host": {
+                "basis_x": [0, 1, 0],
+                "basis_y": [-1, 0, 0],
+                "basis_z": [0, 0, 1],
+                "origin": [10100, 200, 0],
+                "source_unit": "revit_internal",
+            },
+            "provenance": provenance,
         },
     ]
     for index, row in enumerate(records["sheets"], 1):
@@ -608,6 +628,7 @@ def synthetic_records(source_pdf: Path) -> dict:
             "reference_index": 0,
             "target_source_model_id": "model-host",
             "target_source_unique_id": "synthetic-dl03",
+            "target_link_instance_id": None,
             "stable_reference": "stable:host:dl03",
             "reference_type": "surface",
             "is_linked": 0,
@@ -619,6 +640,7 @@ def synthetic_records(source_pdf: Path) -> dict:
             "reference_index": 1,
             "target_source_model_id": "model-link",
             "target_source_unique_id": "synthetic-sd03",
+            "target_link_instance_id": "link-instance-a",
             "stable_reference": "stable:link:sd03",
             "reference_type": "surface",
             "is_linked": 1,
@@ -630,6 +652,7 @@ def synthetic_records(source_pdf: Path) -> dict:
             "reference_index": 0,
             "target_source_model_id": "model-host",
             "target_source_unique_id": "synthetic-office-roof",
+            "target_link_instance_id": None,
             "stable_reference": "stable:roof",
             "reference_type": "face",
             "is_linked": 0,
@@ -644,6 +667,7 @@ def synthetic_records(source_pdf: Path) -> dict:
             "sheet_id": sheet,
             "view_id": view,
             "viewport_id": "vp-dock" if i == 0 else None,
+            "link_instance_id": None,
             "pdf_page": page,
             "x_min": 120 + i * 10,
             "y_min": 150,
@@ -666,6 +690,30 @@ def synthetic_records(source_pdf: Path) -> dict:
     records["entity_appearances"][2].update(
         x_min=None, y_min=None, x_max=None, y_max=None
     )
+    for suffix, instance_id, offset in (
+        ("a", "link-instance-a", 0),
+        ("b", "link-instance-b", 300),
+    ):
+        records["entity_appearances"].append(
+            {
+                "id": f"appearance-linked-{suffix}",
+                "entity_kind": "element",
+                "entity_id": "element-linked-collision",
+                "sheet_id": "sheet-a201",
+                "view_id": "view-level2",
+                "viewport_id": None,
+                "link_instance_id": instance_id,
+                "pdf_page": 3,
+                "x_min": 100 + offset,
+                "y_min": 200,
+                "x_max": 150 + offset,
+                "y_max": 250,
+                "coordinate_space": "pdf_points_top_left",
+                "appearance_kind": "model",
+                "bbox_quality": "projected_bbox",
+                "provenance": provenance,
+            }
+        )
     points = [(0, 0, 0), (10000, 0, 0), (10000, 1800, 0), (0, 1800, 0)]
     records["spatial_boundaries"] = [
         {
@@ -696,6 +744,32 @@ def synthetic_records(source_pdf: Path) -> dict:
     ]
     for row in records["geometries"]:
         row["coordinate_system"] = "host_revit_internal_origin"
+        row["link_instance_id"] = None
+    for suffix, instance_id, x in (
+        ("a", "link-instance-a", 100),
+        ("b", "link-instance-b", 10100),
+    ):
+        records["geometries"].append(
+            {
+                "id": f"geo-linked-{suffix}",
+                "entity_kind": "element",
+                "entity_id": "element-linked-collision",
+                "link_instance_id": instance_id,
+                "geometry_type": "bbox3d",
+                "geometry": {"min": [x, 200, 0], "max": [x + 500, 700, 1000]},
+                "coordinate_system": "host_revit_internal_origin",
+                "unit": "mm",
+                "min_x": x,
+                "max_x": x + 500,
+                "min_y": 200,
+                "max_y": 700,
+                "min_z": 0,
+                "max_z": 1000,
+                "provenance": provenance,
+                "confidence": None,
+                "evidence_id": None,
+            }
+        )
     return records
 
 

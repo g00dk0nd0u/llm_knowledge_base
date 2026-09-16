@@ -14,6 +14,7 @@ GENERATOR_VERSION = "query-core/2.0"
 TABLES = (
     "documents",
     "source_models",
+    "link_instances",
     "sheets",
     "views",
     "viewports",
@@ -52,7 +53,11 @@ def _validate(records: dict[str, Any]) -> None:
         or any(c not in "0123456789abcdef" for c in sha)
     ):
         raise QueryCoreError("source_document_sha256 must be a lowercase SHA-256")
-    source_models = {row.get("id") for row in records.get("source_models", [])}
+    model_rows = records.get("source_models", [])
+    source_models = {row.get("id"): row for row in model_rows}
+    hosts = [row for row in model_rows if row.get("role") == "host"]
+    if len(hosts) != 1:
+        raise QueryCoreError("snapshot must contain exactly one host source model")
     for table in (
         "levels",
         "spaces",
@@ -74,11 +79,34 @@ def _validate(records: dict[str, Any]) -> None:
                         f"duplicate source identity: {model}/{unique_id}"
                     )
                 identities.add(identity)
-    for row in records.get("source_models", []):
-        if row.get("role") == "link":
-            if row.get("host_source_model_id") not in source_models:
-                raise QueryCoreError("linked source model references nonexistent host")
-            _validate_transform(row.get("transform_to_host"), row.get("id"))
+    link_instances: dict[str, dict[str, Any]] = {}
+    instance_identities: set[tuple[str, str]] = set()
+    for row in records.get("link_instances", []):
+        host = source_models.get(row.get("host_source_model_id"))
+        linked = source_models.get(row.get("linked_source_model_id"))
+        if host is None or host.get("role") != "host":
+            raise QueryCoreError(
+                f"link instance has invalid host source model: {row.get('id')}"
+            )
+        if linked is None or linked.get("role") != "link":
+            raise QueryCoreError(
+                f"link instance has invalid linked source model: {row.get('id')}"
+            )
+        if (
+            not isinstance(row.get("source_unique_id"), str)
+            or not row["source_unique_id"].strip()
+        ):
+            raise QueryCoreError(
+                f"link instance requires source_unique_id: {row.get('id')}"
+            )
+        identity = (row["host_source_model_id"], row["source_unique_id"])
+        if identity in instance_identities:
+            raise QueryCoreError(
+                f"duplicate link instance identity: {identity[0]}/{identity[1]}"
+            )
+        instance_identities.add(identity)
+        _validate_transform(row.get("transform_to_host"), row.get("id"))
+        link_instances[row["id"]] = row
     for collection in ("evidence", "entity_appearances"):
         for row in records.get(collection, []):
             if not isinstance(row.get("pdf_page"), int) or row["pdf_page"] < 1:
@@ -110,10 +138,60 @@ def _validate(records: dict[str, Any]) -> None:
             raise QueryCoreError(
                 "indexed geometry must use host_revit_internal_origin/mm"
             )
+        instance_id = row.get("link_instance_id")
+        if instance_id is not None:
+            instance = link_instances.get(instance_id)
+            if instance is None:
+                raise QueryCoreError(
+                    f"geometry references nonexistent link instance: {instance_id}"
+                )
+            if row.get("entity_kind") == "element":
+                element = next(
+                    (
+                        item
+                        for item in records.get("elements", [])
+                        if item.get("id") == row.get("entity_id")
+                    ),
+                    None,
+                )
+                if (
+                    element is not None
+                    and element.get("source_model_id")
+                    != instance["linked_source_model_id"]
+                ):
+                    raise QueryCoreError(
+                        f"geometry link instance model mismatch: {row.get('id')}"
+                    )
     for row in records.get("annotation_references", []):
         model = row.get("target_source_model_id")
         if model is not None and model not in source_models:
             raise QueryCoreError(f"reference to nonexistent source model: {model}")
+        instance_id = row.get("target_link_instance_id")
+        if row.get("is_linked") == 1 and row.get("resolution_state") == "resolved":
+            if (
+                model is None
+                or not row.get("target_source_unique_id")
+                or instance_id is None
+            ):
+                raise QueryCoreError(
+                    f"resolved linked reference requires model, element, and link instance: {row.get('id')}"
+                )
+        if instance_id is not None:
+            instance = link_instances.get(instance_id)
+            if instance is None:
+                raise QueryCoreError(
+                    f"reference to nonexistent link instance: {instance_id}"
+                )
+            if model != instance["linked_source_model_id"]:
+                raise QueryCoreError(
+                    f"annotation reference link instance model mismatch: {row.get('id')}"
+                )
+    for row in records.get("entity_appearances", []):
+        instance_id = row.get("link_instance_id")
+        if instance_id is not None and instance_id not in link_instances:
+            raise QueryCoreError(
+                f"appearance references nonexistent link instance: {instance_id}"
+            )
     _validate_order(records, "annotation_segments", "annotation_id", "segment_index")
     _validate_order(
         records, "annotation_references", "annotation_id", "reference_index"
@@ -206,7 +284,7 @@ def build_database(records: dict[str, Any], output: Path) -> Path:
                         separators=(",", ":"),
                     )
                     del values["geometry"]
-                elif table == "source_models" and "transform_to_host" in values:
+                elif table == "link_instances" and "transform_to_host" in values:
                     transform = values.pop("transform_to_host")
                     values["transform_to_host_json"] = (
                         json.dumps(transform, sort_keys=True, separators=(",", ":"))

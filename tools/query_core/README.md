@@ -14,6 +14,11 @@ Revit entities use `(source_model_id, source_unique_id)` uniqueness, so equal
 `Element.UniqueId` values in unrelated host/link documents are valid. Element types
 retain family, type, and category separately.
 
+`link_instances` represents placement separately: one linked `source_models` row may
+be referenced by many host link instances, each with its own Revit instance UniqueId
+and transform. Linked geometry, appearances, and annotation references carry the
+applicable link instance ID without duplicating the linked element identity.
+
 Parameters retain instance/type scope, definition key and name, storage type,
 data/spec/parameter/unit identifiers, shared GUID, raw text/internal numeric value,
 and normalized `numeric_value + unit`. A Double alone never implies a physical unit.

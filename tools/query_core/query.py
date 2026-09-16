@@ -147,16 +147,39 @@ REQUIRED_COLUMNS.update(
         "source_models": {
             "id",
             "role",
+            "title",
+            "revit_version",
             "model_identity_kind",
             "model_identity",
+            "snapshot_version_guid",
+            "snapshot_save_number",
+        },
+        "link_instances": {
+            "id",
+            "host_source_model_id",
+            "linked_source_model_id",
+            "source_unique_id",
+            "name",
             "transform_to_host_json",
+            "provenance",
         },
         "entity_appearances": {
             "id",
             "entity_kind",
             "entity_id",
+            "sheet_id",
+            "view_id",
+            "viewport_id",
+            "link_instance_id",
             "pdf_page",
+            "x_min",
+            "y_min",
+            "x_max",
+            "y_max",
+            "coordinate_space",
+            "appearance_kind",
             "bbox_quality",
+            "provenance",
         },
         "annotation_segments": {
             "id",
@@ -164,6 +187,14 @@ REQUIRED_COLUMNS.update(
             "segment_index",
             "numeric_value",
             "display_text",
+            "unit",
+            "value_override",
+            "prefix",
+            "suffix",
+            "above",
+            "below",
+            "origin_json",
+            "text_position_json",
         },
         "annotation_references": {
             "id",
@@ -171,6 +202,11 @@ REQUIRED_COLUMNS.update(
             "reference_index",
             "target_source_model_id",
             "target_source_unique_id",
+            "target_link_instance_id",
+            "stable_reference",
+            "reference_type",
+            "is_linked",
+            "resolution_state",
         },
         "spatial_boundaries": {
             "id",
@@ -179,13 +215,20 @@ REQUIRED_COLUMNS.update(
             "loop_kind",
             "coordinate_system",
             "unit",
+            "provenance",
         },
         "spatial_boundary_segments": {
             "id",
             "boundary_id",
             "segment_index",
             "start_x",
+            "start_y",
+            "start_z",
             "end_x",
+            "end_y",
+            "end_z",
+            "source_model_id",
+            "source_unique_id",
         },
     }
 )
@@ -215,7 +258,15 @@ REQUIRED_COLUMNS["viewports"] = {
     "view_id",
     "placement_kind",
     "sheet_x_min",
+    "sheet_y_min",
+    "sheet_x_max",
+    "sheet_y_max",
+    "sheet_coordinate_unit",
     "pdf_x_min",
+    "pdf_y_min",
+    "pdf_x_max",
+    "pdf_y_max",
+    "pdf_coordinate_space",
     "sheet_to_pdf_transform_json",
     "mapping_quality",
 }
@@ -295,6 +346,7 @@ REQUIRED_COLUMNS["annotations"] = {
     "view_id",
     "evidence_id",
 }
+REQUIRED_COLUMNS["geometries"].add("link_instance_id")
 ENTITY_TABLES = {
     "level": "levels",
     "space": "spaces",
@@ -433,9 +485,31 @@ class QueryCore:
         rows = self._rows("SELECT * FROM source_models WHERE id=?", (model_id,))
         if not rows:
             return None
-        row = rows[0]
+        return rows[0]
+
+    def get_link_instance(self, link_instance_id: str) -> dict[str, Any] | None:
+        rows = self._rows(
+            "SELECT * FROM link_instances WHERE id=?", (link_instance_id,)
+        )
+        return self._decode_link_instance(rows[0]) if rows else None
+
+    def get_link_instances(
+        self, linked_source_model_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM link_instances"
+        values: tuple[Any, ...] = ()
+        if linked_source_model_id is not None:
+            sql += " WHERE linked_source_model_id=?"
+            values = (linked_source_model_id,)
+        return [
+            self._decode_link_instance(row)
+            for row in self._rows(sql + " ORDER BY id", values)
+        ]
+
+    @staticmethod
+    def _decode_link_instance(row: dict[str, Any]) -> dict[str, Any]:
         transform = row.pop("transform_to_host_json")
-        row["transform_to_host"] = json.loads(transform) if transform else None
+        row["transform_to_host"] = json.loads(transform)
         return row
 
     def get_appearances(self, entity_kind: str, entity_id: str) -> list[dict[str, Any]]:
