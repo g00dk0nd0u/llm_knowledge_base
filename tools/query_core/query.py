@@ -8,6 +8,139 @@ from typing import Any
 from .errors import QueryCoreError
 
 SCHEMA_VERSION = 1
+REQUIRED_METADATA = {
+    "schema_version",
+    "generator_version",
+    "project_id",
+    "created_from",
+    "source_document_identity",
+    "source_document_sha256",
+}
+REQUIRED_VIRTUAL_TABLES = {"geometry_rtree", "search_fts"}
+REQUIRED_COLUMNS = {
+    "metadata": {"key", "value"},
+    "documents": {"id", "identity", "title", "source_filename", "source_sha256"},
+    "sheets": {"id", "document_id", "number", "name", "pdf_page"},
+    "views": {"id", "document_id", "name", "view_type"},
+    "viewports": {
+        "id",
+        "sheet_id",
+        "view_id",
+        "x_min",
+        "y_min",
+        "x_max",
+        "y_max",
+        "coordinate_space",
+    },
+    "levels": {
+        "id",
+        "name",
+        "elevation",
+        "unit",
+        "source_id",
+        "provenance",
+        "confidence",
+    },
+    "spaces": {
+        "id",
+        "kind",
+        "name",
+        "number",
+        "level_id",
+        "source_id",
+        "provenance",
+        "confidence",
+    },
+    "element_types": {
+        "id",
+        "name",
+        "category",
+        "source_id",
+        "provenance",
+        "confidence",
+    },
+    "elements": {
+        "id",
+        "name",
+        "category",
+        "type_id",
+        "space_id",
+        "level_id",
+        "source_id",
+        "provenance",
+        "confidence",
+    },
+    "evidence": {
+        "id",
+        "document_id",
+        "sheet_id",
+        "view_id",
+        "pdf_page",
+        "x_min",
+        "y_min",
+        "x_max",
+        "y_max",
+        "coordinate_space",
+    },
+    "parameters": {
+        "id",
+        "entity_kind",
+        "entity_id",
+        "name",
+        "value_text",
+        "numeric_value",
+        "unit",
+        "provenance",
+        "confidence",
+        "evidence_id",
+    },
+    "relationships": {
+        "id",
+        "source_kind",
+        "source_id",
+        "relation_type",
+        "target_kind",
+        "target_id",
+        "provenance",
+        "confidence",
+        "evidence_id",
+    },
+    "annotations": {
+        "id",
+        "kind",
+        "semantic_type",
+        "display_text",
+        "numeric_value",
+        "unit",
+        "related_entity_kind",
+        "related_entity_id",
+        "provenance",
+        "confidence",
+        "evidence_id",
+    },
+    "geometries": {
+        "rowid",
+        "id",
+        "entity_kind",
+        "entity_id",
+        "geometry_type",
+        "geometry_json",
+        "coordinate_system",
+        "unit",
+        "min_x",
+        "max_x",
+        "min_y",
+        "max_y",
+        "min_z",
+        "max_z",
+        "provenance",
+        "confidence",
+        "evidence_id",
+    },
+    "search_content": {"rowid", "record_kind", "record_id", "content"},
+    "geometry_rtree": {"rowid", "min_x", "max_x", "min_y", "max_y", "min_z", "max_z"},
+    "search_fts": {"content"},
+}
 ENTITY_TABLES = {
     "level": "levels",
     "space": "spaces",
@@ -17,24 +150,77 @@ ENTITY_TABLES = {
 
 
 def validate_database(path: Path) -> dict[str, str]:
+    connection: sqlite3.Connection | None = None
     try:
         connection = sqlite3.connect(f"file:{Path(path).resolve()}?mode=ro", uri=True)
         connection.row_factory = sqlite3.Row
         integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
+        if integrity != "ok":
+            raise QueryCoreError(f"SQLite integrity check failed: {integrity}")
+        objects = {
+            row["name"]: row
+            for row in connection.execute(
+                "SELECT name,type,sql FROM sqlite_master WHERE type IN ('table','view')"
+            )
+        }
+        missing_tables = sorted(REQUIRED_COLUMNS.keys() - objects.keys())
+        if missing_tables:
+            raise QueryCoreError(
+                f"incomplete Query Core v1 schema; missing tables: {', '.join(missing_tables)}"
+            )
+        invalid_virtual_tables = sorted(
+            table
+            for table in REQUIRED_VIRTUAL_TABLES
+            if not (objects[table]["sql"] or "")
+            .lstrip()
+            .upper()
+            .startswith("CREATE VIRTUAL TABLE")
+        )
+        if invalid_virtual_tables:
+            raise QueryCoreError(
+                "incompatible Query Core v1 schema; expected virtual tables: "
+                + ", ".join(invalid_virtual_tables)
+            )
+        for table, required in REQUIRED_COLUMNS.items():
+            actual = {
+                row["name"]
+                for row in connection.execute(f"PRAGMA table_info({json.dumps(table)})")
+            }
+            missing_columns = sorted(required - actual)
+            if missing_columns:
+                raise QueryCoreError(
+                    f"incompatible Query Core v1 schema; {table} missing columns: "
+                    + ", ".join(missing_columns)
+                )
         metadata = dict(connection.execute("SELECT key,value FROM metadata"))
         user_version = connection.execute("PRAGMA user_version").fetchone()[0]
-        connection.close()
+        missing_metadata = sorted(REQUIRED_METADATA - metadata.keys())
+        if missing_metadata:
+            raise QueryCoreError(
+                f"payload missing required metadata: {', '.join(missing_metadata)}"
+            )
     except sqlite3.Error as error:
         raise QueryCoreError(f"invalid SQLite payload: {error}") from error
-    if integrity != "ok":
-        raise QueryCoreError(f"SQLite integrity check failed: {integrity}")
+    finally:
+        if connection is not None:
+            connection.close()
     try:
         version = int(metadata["schema_version"])
-    except (KeyError, ValueError) as error:
+    except (TypeError, ValueError) as error:
         raise QueryCoreError("payload has no valid schema version") from error
     if version != SCHEMA_VERSION or user_version != SCHEMA_VERSION:
         raise QueryCoreError(
             f"unsupported schema version: metadata={version}, user_version={user_version}"
+        )
+    for key in REQUIRED_METADATA - {"schema_version"}:
+        if not isinstance(metadata[key], str) or not metadata[key].strip():
+            raise QueryCoreError(f"payload metadata {key} must be a non-empty string")
+    source_hash = metadata["source_document_sha256"]
+    if len(source_hash) != 64 or any(
+        character not in "0123456789abcdef" for character in source_hash
+    ):
+        raise QueryCoreError(
+            "payload source_document_sha256 must be a lowercase SHA-256"
         )
     return metadata
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import tempfile
 from pathlib import Path
 
@@ -24,27 +23,24 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _set_associated_file_semantics(document: fitz.Document) -> None:
-    """Add PDF 2.0 AF links and MIME metadata to PyMuPDF's file spec."""
-    candidates: list[int] = []
-    for xref in range(1, document.xref_length()):
-        try:
-            obj = document.xref_object(xref, compressed=True)
-        except RuntimeError:
-            continue
-        if "/Filespec" in obj and PAYLOAD_NAME in obj:
-            candidates.append(xref)
-    if len(candidates) != 1:
-        raise QueryCoreError(
-            "could not uniquely identify embedded project SQLite file specification"
-        )
-    filespec = candidates[0]
-    document.xref_set_key(filespec, "AFRelationship", "/Data")
-    ef_type, ef_value = document.xref_get_key(filespec, "EF")
-    match = re.search(r"/F\s+(\d+)\s+0\s+R", ef_value if ef_type == "dict" else "")
-    if not match:
-        raise QueryCoreError("embedded project SQLite stream is missing")
-    document.xref_set_key(int(match.group(1)), "Subtype", "/application#2Fvnd.sqlite3")
+def _set_associated_file_semantics(
+    document: fitz.Document, stream_xref: int, description: str
+) -> None:
+    """Associate the stream returned by embfile_add without scanning PDF internals.
+
+    PyMuPDF 1.28 emits the name-tree FileSpec inline and returns the indirect
+    EmbeddedFile stream xref.  A separate indirect FileSpec for the catalog AF
+    array is valid PDF 2.0 and works for both inline and indirect name-tree forms.
+    """
+    document.xref_set_key(stream_xref, "Subtype", "/application#2Fvnd.sqlite3")
+    filespec = document.get_new_xref()
+    filename = fitz.get_pdf_str(PAYLOAD_NAME)
+    pdf_description = fitz.get_pdf_str(description)
+    document.update_object(
+        filespec,
+        f"<</Type/Filespec/F{filename}/UF{filename}/Desc{pdf_description}"
+        f"/EF<</F {stream_xref} 0 R>>/AFRelationship/Data>>",
+    )
     catalog = document.pdf_catalog()
     af_type, af_value = document.xref_get_key(catalog, "AF")
     reference = f"{filespec} 0 R"
@@ -52,6 +48,8 @@ def _set_associated_file_semantics(document: fitz.Document) -> None:
         document.xref_set_key(catalog, "AF", f"[{reference}]")
     elif af_type == "array" and reference not in af_value:
         document.xref_set_key(catalog, "AF", af_value[:-1] + f" {reference}]")
+    elif af_type != "array":
+        raise QueryCoreError(f"unsupported catalog AF representation: {af_type}")
 
 
 def _payload_attachment_names(document: fitz.Document) -> list[str]:
@@ -70,6 +68,8 @@ def package_pdf(drawing_pdf: Path, database: Path, output: Path) -> Path:
     metadata = validate_database(database)
     if drawing_pdf.resolve() == output.resolve():
         raise QueryCoreError("enhanced PDF must not overwrite its source drawing")
+    if sha256(drawing_pdf) != metadata["source_document_sha256"]:
+        raise QueryCoreError("SQLite payload was built for a different source drawing")
     descriptor = json.dumps(
         {
             "af_relationship": "Data",
@@ -85,49 +85,65 @@ def package_pdf(drawing_pdf: Path, database: Path, output: Path) -> Path:
         separators=(",", ":"),
     )
     output.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{output.name}.", suffix=".pdf", dir=output.parent
+    )
+    os.close(fd)
+    temporary = Path(temporary_name)
     try:
-        document = fitz.open(drawing_pdf)
-        if _payload_attachment_names(document):
-            raise QueryCoreError("source PDF already contains a project SQLite payload")
-        document.embfile_add(
-            PAYLOAD_NAME,
-            database.read_bytes(),
-            filename=PAYLOAD_NAME,
-            ufilename=PAYLOAD_NAME,
-            desc=descriptor,
-        )
-        _set_associated_file_semantics(document)
-        document.save(output)
-        document.close()
+        with fitz.open(drawing_pdf) as document:
+            if _payload_attachment_names(document):
+                raise QueryCoreError(
+                    "source PDF already contains a project SQLite payload"
+                )
+            stream_xref = document.embfile_add(
+                PAYLOAD_NAME,
+                database.read_bytes(),
+                filename=PAYLOAD_NAME,
+                ufilename=PAYLOAD_NAME,
+                desc=descriptor,
+            )
+            _set_associated_file_semantics(document, stream_xref, descriptor)
+            document.save(temporary)
+        os.replace(temporary, output)
     except QueryCoreError:
-        output.unlink(missing_ok=True)
         raise
     except (fitz.FileDataError, RuntimeError, OSError) as error:
-        output.unlink(missing_ok=True)
         raise QueryCoreError(f"failed to package enhanced PDF: {error}") from error
+    finally:
+        temporary.unlink(missing_ok=True)
     return output
 
 
 def inspect_pdf(enhanced_pdf: Path) -> dict:
     try:
-        document = fitz.open(enhanced_pdf)
-        matches = _payload_attachment_names(document)
-        if not matches:
-            raise QueryCoreError("no embedded project SQLite payload")
-        if len(matches) != 1:
-            raise QueryCoreError("multiple ambiguous project SQLite payloads")
-        name = matches[0]
-        info = document.embfile_info(name)
-        raw_description = info.get("desc", "")
+        with fitz.open(enhanced_pdf) as document:
+            matches = _payload_attachment_names(document)
+            if not matches:
+                raise QueryCoreError("no embedded project SQLite payload")
+            if len(matches) != 1:
+                raise QueryCoreError("multiple ambiguous project SQLite payloads")
+            name = matches[0]
+            info = document.embfile_info(name)
+            raw_description = info.get("description")
+            if raw_description is None:
+                raw_description = info.get("desc")
+            if raw_description is None:
+                raise QueryCoreError("embedded payload descriptor is missing")
+            payload = document.embfile_get(name)
         try:
             descriptor = json.loads(raw_description)
         except (TypeError, json.JSONDecodeError) as error:
             raise QueryCoreError("embedded payload descriptor is invalid") from error
-        payload = document.embfile_get(name)
-        document.close()
         actual = hashlib.sha256(payload).hexdigest()
         if actual != descriptor.get("payload_sha256"):
             raise QueryCoreError("embedded payload SHA-256 mismatch")
+        if descriptor.get("af_relationship") != "Data":
+            raise QueryCoreError(
+                "embedded payload descriptor has invalid AF relationship"
+            )
+        if descriptor.get("mime_type") != MIME_TYPE:
+            raise QueryCoreError("embedded payload descriptor has invalid MIME type")
         fd, temporary_name = tempfile.mkstemp(suffix=".sqlite")
         try:
             with os.fdopen(fd, "wb") as stream:
@@ -159,9 +175,8 @@ def inspect_pdf(enhanced_pdf: Path) -> dict:
 
 def extract_payload(enhanced_pdf: Path, output: Path) -> Path:
     details = inspect_pdf(enhanced_pdf)
-    document = fitz.open(enhanced_pdf)
-    payload = document.embfile_get(details["payload_name"])
-    document.close()
+    with fitz.open(enhanced_pdf) as document:
+        payload = document.embfile_get(details["payload_name"])
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=f".{output.name}.", dir=output.parent)

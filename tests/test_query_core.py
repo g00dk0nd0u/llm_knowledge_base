@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -180,19 +182,46 @@ def test_pdf_round_trip_and_ordinary_pdf_behavior(
         for page in packaged
     ] == source_pages
     assert "project.sqlite" in packaged.embfile_names()
+    assert "description" in packaged.embfile_info("project.sqlite")
     catalog = packaged.xref_object(packaged.pdf_catalog(), compressed=True)
     assert "/AF[" in catalog
     assert any(
         "/AFRelationship/Data" in packaged.xref_object(xref, compressed=True)
         for xref in range(1, packaged.xref_length())
     )
+    assert any(
+        "/Type/EmbeddedFile" in packaged.xref_object(xref, compressed=True)
+        and "/Subtype/application#2Fvnd.sqlite3"
+        in packaged.xref_object(xref, compressed=True)
+        for xref in range(1, packaged.xref_length())
+    )
     extracted = extract_payload(enhanced, tmp_path / "extracted.sqlite")
     assert extracted.read_bytes() == database.read_bytes()
     details = inspect_pdf(enhanced)
     assert details["schema_version"] == 1
+    assert details["af_relationship"] == "Data"
+    assert details["mime_type"] == "application/vnd.sqlite3"
     assert (
         details["payload_sha256"] == hashlib.sha256(database.read_bytes()).hexdigest()
     )
+
+
+def test_package_rejects_database_for_different_drawing(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing_a, database_for_a = fixture
+    drawing_b = tmp_path / "drawing-b.pdf"
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text((72, 72), "A different synthetic drawing")
+    document.save(drawing_b)
+    document.close()
+
+    rejected_output = tmp_path / "must-not-exist.pdf"
+    with pytest.raises(QueryCoreError, match="different source drawing"):
+        package_pdf(drawing_b, database_for_a, rejected_output)
+    assert not rejected_output.exists()
+    assert package_pdf(drawing_a, database_for_a, tmp_path / "valid.pdf").exists()
 
 
 def test_cache_reuse_invalidation_and_corruption(
@@ -243,7 +272,13 @@ def test_missing_corrupt_and_unsupported_payload_fail(
         b"not sqlite",
         filename="project.sqlite",
         ufilename="project.sqlite",
-        desc='{"payload_sha256":"' + hashlib.sha256(b"not sqlite").hexdigest() + '"}',
+        desc=json.dumps(
+            {
+                "payload_sha256": hashlib.sha256(b"not sqlite").hexdigest(),
+                "af_relationship": "Data",
+                "mime_type": "application/vnd.sqlite3",
+            }
+        ),
     )
     document.save(corrupt_pdf)
     document.close()
@@ -263,6 +298,67 @@ def test_missing_corrupt_and_unsupported_payload_fail(
     document.close()
     with pytest.raises(QueryCoreError, match="multiple ambiguous"):
         inspect_pdf(ambiguous_pdf)
+
+
+def test_schema_validation_rejects_incomplete_v1_payloads(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    _drawing, valid_database = fixture
+
+    metadata_only = tmp_path / "metadata-only.sqlite"
+    connection = sqlite3.connect(metadata_only)
+    connection.execute(
+        "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
+    connection.executemany(
+        "INSERT INTO metadata VALUES (?,?)",
+        [
+            ("schema_version", "1"),
+            ("generator_version", "query-core/1.0"),
+            ("project_id", "fake"),
+            ("created_from", "test"),
+            ("source_document_identity", "fake"),
+            ("source_document_sha256", "0" * 64),
+        ],
+    )
+    connection.execute("PRAGMA user_version=1")
+    connection.commit()
+    connection.close()
+    with pytest.raises(QueryCoreError, match="missing tables"):
+        validate_database(metadata_only)
+    with pytest.raises(QueryCoreError, match="missing tables"):
+        QueryCore(metadata_only)
+
+    missing_table = tmp_path / "missing-table.sqlite"
+    shutil.copyfile(valid_database, missing_table)
+    connection = sqlite3.connect(missing_table)
+    connection.execute("ALTER TABLE annotations RENAME TO removed_annotations")
+    connection.commit()
+    connection.close()
+    with pytest.raises(QueryCoreError, match="missing tables: annotations"):
+        validate_database(missing_table)
+
+    missing_metadata = tmp_path / "missing-metadata.sqlite"
+    shutil.copyfile(valid_database, missing_metadata)
+    connection = sqlite3.connect(missing_metadata)
+    connection.execute("DELETE FROM metadata WHERE key='generator_version'")
+    connection.commit()
+    connection.close()
+    with pytest.raises(
+        QueryCoreError, match="missing required metadata: generator_version"
+    ):
+        validate_database(missing_metadata)
+
+    missing_column = tmp_path / "missing-column.sqlite"
+    shutil.copyfile(valid_database, missing_column)
+    connection = sqlite3.connect(missing_column)
+    connection.execute(
+        "ALTER TABLE documents RENAME COLUMN title TO incompatible_title"
+    )
+    connection.commit()
+    connection.close()
+    with pytest.raises(QueryCoreError, match="documents missing columns: title"):
+        validate_database(missing_column)
 
 
 def test_query_connection_is_read_only(fixture: tuple[Path, Path]) -> None:
