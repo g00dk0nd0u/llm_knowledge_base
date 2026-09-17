@@ -461,6 +461,14 @@ def test_v2_revit_validation_errors(tmp_path: Path) -> None:
     with pytest.raises(QueryCoreError, match="link instance model mismatch"):
         build_database(bad, tmp_path / "bad.sqlite")
 
+    bad = json.loads(json.dumps(base))
+    linked_appearance = next(
+        row for row in bad["entity_appearances"] if row["link_instance_id"] is not None
+    )
+    linked_appearance["entity_id"] = "element-sd03"
+    with pytest.raises(QueryCoreError, match="link instance model mismatch"):
+        build_database(bad, tmp_path / "bad.sqlite")
+
 
 def test_synthetic_revit_snapshot_import_and_version(tmp_path: Path) -> None:
     from tools.query_core.fixtures import (
@@ -493,6 +501,12 @@ def test_finalize_revit_export_and_reject_hash_mismatch(tmp_path: Path) -> None:
     export.mkdir()
     drawing = create_synthetic_pdf(export / "drawing.pdf")
     write_synthetic_revit_snapshot(drawing, export / "revit_snapshot.json")
+    diagnostic = export / "project.sqlite"
+    diagnostic.write_bytes(b"existing diagnostic")
+    with pytest.raises(QueryCoreError, match="project.sqlite"):
+        finalize_revit_export(export, diagnostic)
+    assert diagnostic.read_bytes() == b"existing diagnostic"
+
     enhanced = finalize_revit_export(export)
     assert enhanced == export / "enhanced.pdf"
     assert (export / "project.sqlite").is_file()

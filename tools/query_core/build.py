@@ -188,10 +188,29 @@ def _validate(records: dict[str, Any]) -> None:
                 )
     for row in records.get("entity_appearances", []):
         instance_id = row.get("link_instance_id")
-        if instance_id is not None and instance_id not in link_instances:
-            raise QueryCoreError(
-                f"appearance references nonexistent link instance: {instance_id}"
+        if instance_id is not None:
+            instance = link_instances.get(instance_id)
+            if instance is None:
+                raise QueryCoreError(
+                    f"appearance references nonexistent link instance: {instance_id}"
+                )
+            element = next(
+                (
+                    item
+                    for item in records.get("elements", [])
+                    if item.get("id") == row.get("entity_id")
+                ),
+                None,
             )
+            if (
+                row.get("entity_kind") != "element"
+                or element is None
+                or element.get("source_model_id")
+                != instance["linked_source_model_id"]
+            ):
+                raise QueryCoreError(
+                    f"appearance link instance model mismatch: {row.get('id')}"
+                )
     _validate_order(records, "annotation_segments", "annotation_id", "segment_index")
     _validate_order(
         records, "annotation_references", "annotation_id", "reference_index"

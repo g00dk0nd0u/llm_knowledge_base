@@ -6,7 +6,7 @@ Phase B should extract only; it must not duplicate the Python SQLite writer.
 |---|---|
 | Entity/type identity | `Element.UniqueId`, `Element.GetTypeId()`, `FamilySymbol`, `ElementType` family/type data |
 | PDF and ordering | `Document.Export(..., PDFExportOptions, ...)`, `PDFExportOptions.Combine`; preserve supplied export order |
-| Visible candidates | `FilteredElementCollector(document, viewId)`; linked view collection via `FilteredElementCollector(hostDocument, viewId, linkInstanceId)`; quality is no better than `may_be_visible` without projection proof |
+| Visible candidates | `FilteredElementCollector(document, viewId)` for host-view candidates; a safe host-view collection identifies candidate `RevitLinkInstance` placements, then linked documents are collected independently. Linked appearance quality is no better than `may_be_visible` without projection proof; the three-argument linked-view collector is deliberately not used. |
 | Linked document | `RevitLinkInstance.GetLinkDocument()` resolves the single linked `source_models` identity |
 | Link placement | `RevitLinkInstance.UniqueId` maps to `link_instances.source_unique_id`; `RevitLinkInstance.GetTotalTransform()` maps to that instance's basis/origin `transform_to_host` |
 | Dimensions | `Dimension.Value`, `Dimension.Segments`, `Dimension.References`, `DimensionSegment.Value`, `DimensionSegment.ValueString` |
@@ -20,6 +20,6 @@ They share one linked element identity but produce distinct host-space geometry 
 drawing occurrences. Future `LinkElementId` extraction maps, where available, to the
 target source model, linked element UniqueId, and target link instance together.
 
-The first adapter targets Revit 2026 only. No Autodesk binary, add-in manifest, UI,
-RVT parser, or live-query dependency belongs in Phase A. Other Revit versions may
-later emit the same versioned, Revit-independent snapshot.
+The adapters target Revit 2025, 2026, and 2027 while emitting the same versioned,
+Revit-independent snapshot. No Autodesk binary, RVT parser, or live-query dependency
+belongs in the offline Query Core.
