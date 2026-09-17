@@ -68,7 +68,10 @@ def finalize_revit_export(export_directory: Path, output: Path | None = None) ->
         raise QueryCoreError("drawing.pdf SHA-256 does not match Revit snapshot")
     database = directory / "project.sqlite"
     enhanced = Path(output) if output is not None else directory / "enhanced.pdf"
-    if enhanced.resolve() in {drawing.resolve(), snapshot_path.resolve()}:
-        raise QueryCoreError("final output must not overwrite Revit export inputs")
+    protected = {drawing.resolve(), snapshot_path.resolve(), database.resolve()}
+    if enhanced.resolve() in protected:
+        raise QueryCoreError(
+            "final output must not overwrite Revit export inputs or project.sqlite"
+        )
     import_snapshot(snapshot_path, database)
     return package_pdf(drawing, database, enhanced)
