@@ -60,7 +60,8 @@ workshared central path, normalized saved path, then `CreationGUID`; document ve
 GUID/save count is recorded separately. Loaded linked documents are deduplicated as
 source models while every link instance retains its own UniqueId and total transform.
 Linked occurrence geometry is transformed to host coordinates before centralized
-Revit-unit conversion to millimetres.
+Revit-unit conversion to millimetres. Linked rooms/spaces likewise retain one shared
+source identity regardless of how many times their model is placed.
 
 The exporter collects elements in placed host views plus a bounded model-context
 category set, types, useful instance/type parameters, levels, rooms/spaces, finish-face
@@ -91,6 +92,9 @@ For **each** installed version (2025, 2026, 2027):
 * No exact linked-element per-view visibility; linked collection is conservative.
 * PDF evidence is generally page-level, not an exact element bbox.
 * Curved spatial boundaries retain endpoints and emit an approximation warning.
+* Linked room/space boundaries are deferred because the current boundary contract
+  cannot identify and transform each distinct link-instance occurrence safely; the
+  exporter emits an explicit warning instead of ambiguous link-local coordinates.
 * Linked tag/reference resolution is conservative when the API cannot safely resolve it.
 * GitHub CI builds/tests only the Autodesk-independent Core. Autodesk-dependent hosts
   require local compilation against matching installed `RevitAPI.dll` and
