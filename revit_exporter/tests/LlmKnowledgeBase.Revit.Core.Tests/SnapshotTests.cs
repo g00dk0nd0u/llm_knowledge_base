@@ -15,6 +15,17 @@ public sealed class SnapshotTests
     }
 
     [Fact]
+    public void SpatialIdsAreScopedToTheirSourceModelAndRemainStable()
+    {
+        var host = StableIds.For("space", "model-host", "room-unique-id");
+        var linked = StableIds.For("space", "model-link", "room-unique-id");
+
+        Assert.Equal(host, StableIds.For("space", "model-host", "room-unique-id"));
+        Assert.NotEqual(host, linked);
+        Assert.Equal(2, new HashSet<string> { host, linked, linked }.Count);
+    }
+
+    [Fact]
     public void DocumentIdDoesNotDependOnPdfHash()
     {
         var firstSnapshot = SnapshotContract.Create("p", "Revit", "c:/models/test.rvt", new string('a', 64));

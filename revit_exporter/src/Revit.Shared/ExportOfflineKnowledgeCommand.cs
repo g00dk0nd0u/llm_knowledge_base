@@ -74,7 +74,7 @@ internal sealed class RevitSnapshotExporter
             AddLevels(_document, _hostModelId);
             AddLinks();
             CollectHostElements();
-            AddSpatialElements(_document, _hostModelId, includeBoundaries: true);
+            AddSpatialElements(_document, _hostModelId, Transform.Identity);
             AddAnnotations();
             FlushElements();
             SortRecords();
@@ -169,15 +169,16 @@ internal sealed class RevitSnapshotExporter
             {
                 var linked = link.GetLinkDocument();
                 if (linked is null) { _warnings.Add(new("unloaded_revit_link", $"Link '{link.Name}' is unloaded.", link.UniqueId)); continue; }
+                var transform = link.GetTotalTransform();
                 if (!models.TryGetValue(linked, out var modelId))
                 {
                     var identity = DocumentIdentityResolver.Resolve(linked);
                     modelId = StableIds.Hash("model", identity.Kind, identity.Value); models[linked] = modelId;
                     Add("source_models", SourceModel(linked, modelId, "link", identity));
                     AddLevels(linked, modelId);
-                    AddSpatialElements(linked, modelId, includeBoundaries: false);
+                    AddSpatialElements(linked, modelId, transform);
                 }
-                var linkId = Id("link", _hostModelId, link.UniqueId); var transform = link.GetTotalTransform();
+                var linkId = Id("link", _hostModelId, link.UniqueId);
                 Add("link_instances", Obj(("id", linkId), ("host_source_model_id", _hostModelId), ("linked_source_model_id", modelId),
                     ("source_unique_id", link.UniqueId), ("name", link.Name), ("transform_to_host", TransformJson(transform)), ("provenance", Provenance)));
                 // Deliberately avoid the Revit 2025-unsafe three-argument linked-view collector.
@@ -329,10 +330,9 @@ internal sealed class RevitSnapshotExporter
         }
     }
 
-    private void AddSpatialElements(Document document, string modelId, bool includeBoundaries)
+    private void AddSpatialElements(Document document, string modelId, Transform transform)
     {
         var options = new SpatialElementBoundaryOptions { SpatialElementBoundaryLocation = SpatialElementBoundaryLocation.Finish };
-        var deferredBoundaries = false;
         foreach (var spatial in new FilteredElementCollector(document).WhereElementIsNotElementType()
                      .Where(e => e is Room or Space).Cast<SpatialElement>().OrderBy(e => e.UniqueId))
         {
@@ -345,11 +345,6 @@ internal sealed class RevitSnapshotExporter
                     ("level_id", levelId), ("phase_source_unique_id", PhaseUniqueId(spatial)), ("source_model_id", modelId),
                     ("source_unique_id", spatial.UniqueId), ("provenance", Provenance), ("confidence", null)));
                 AddSearch("space", id, $"{number} {spatial.Name}");
-                if (!includeBoundaries)
-                {
-                    deferredBoundaries = true;
-                    continue;
-                }
                 var loops = spatial.GetBoundarySegments(options); if (loops is null) continue;
                 for (var loopIndex = 0; loopIndex < loops.Count; loopIndex++)
                 {
@@ -360,7 +355,7 @@ internal sealed class RevitSnapshotExporter
                     for (var segmentIndex = 0; segmentIndex < loops[loopIndex].Count; segmentIndex++)
                     {
                         var segment = loops[loopIndex][segmentIndex]; var curve = segment.GetCurve();
-                        var a = Units.Point(curve.GetEndPoint(0), Transform.Identity); var b = Units.Point(curve.GetEndPoint(1), Transform.Identity);
+                        var a = Units.Point(curve.GetEndPoint(0), transform); var b = Units.Point(curve.GetEndPoint(1), transform);
                         var source = document.GetElement(segment.ElementId);
                         Add("spatial_boundary_segments", Obj(("id", StableIds.Hash("boundary-segment", boundaryId, segmentIndex.ToString())),
                             ("boundary_id", boundaryId), ("segment_index", segmentIndex), ("start_x", a.X), ("start_y", a.Y), ("start_z", a.Z),
@@ -373,9 +368,6 @@ internal sealed class RevitSnapshotExporter
             }
             catch (Exception error) { _warnings.Add(new("space_extraction_failed", error.Message, spatial.UniqueId)); }
         }
-        if (deferredBoundaries)
-            _warnings.Add(new("linked_spatial_boundaries_deferred",
-                "Linked Room/Space semantic records were exported, but Phase B1 does not project linked spatial boundaries into host coordinates."));
     }
 
     private void AddAnnotations()
