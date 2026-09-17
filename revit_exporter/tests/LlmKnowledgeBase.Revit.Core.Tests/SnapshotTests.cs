@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Text.Json.Nodes;
 using LlmKnowledgeBase.Revit.Core;
 using Xunit;
@@ -23,6 +24,19 @@ public sealed class SnapshotTests
         Assert.Equal(host, StableIds.For("space", "model-host", "room-unique-id"));
         Assert.NotEqual(host, linked);
         Assert.Equal(2, new HashSet<string> { host, linked, linked }.Count);
+    }
+
+    [Fact]
+    public void LinkedSpatialBoundaryIdsAreScopedToLinkOccurrence()
+    {
+        var first = StableIds.Hash("boundary", "space-id", "link-instance-a", "0");
+        var second = StableIds.Hash("boundary", "space-id", "link-instance-b", "0");
+
+        Assert.NotEqual(first, second);
+        Assert.Equal(first, StableIds.Hash("boundary", "space-id", "link-instance-a", "0"));
+        Assert.NotEqual(
+            StableIds.Hash("boundary-segment", first, "0"),
+            StableIds.Hash("boundary-segment", second, "0"));
     }
 
     [Fact]
