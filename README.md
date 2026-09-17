@@ -110,5 +110,6 @@ API. The included fixture data is entirely synthetic.
 
 The intended boundary is: **Revit = future export-time source; Enhanced PDF =
 portable handover artifact; SQLite = embedded v2 machine payload; Query Core =
-runtime; LLM = optional consumer.** The current implementation does not include a
-Revit exporter, corridor compliance reasoning, or change-impact analysis.
+runtime; LLM = optional consumer.** A Revit 2025/2026/2027 Phase B1 offline exporter is available under
+`revit_exporter/`; it emits this contract but adds no corridor compliance reasoning
+or change-impact analysis.

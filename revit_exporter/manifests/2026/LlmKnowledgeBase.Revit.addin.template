@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Command">
+    <Name>Export Offline Knowledge Package</Name>
+    <Assembly>{{ASSEMBLY_PATH}}</Assembly>
+    <AddInId>8D56ED5A-1D6B-4B4E-A026-000000000004</AddInId>
+    <FullClassName>LlmKnowledgeBase.Revit.ExportOfflineKnowledgeCommand</FullClassName>
+    <VendorId>LLMK</VendorId>
+    <VendorDescription>LLM Knowledge Base offline exporter</VendorDescription>
+  </AddIn>
+</RevitAddIns>

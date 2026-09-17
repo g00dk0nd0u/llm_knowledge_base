@@ -211,6 +211,7 @@ REQUIRED_COLUMNS.update(
         "spatial_boundaries": {
             "id",
             "space_id",
+            "link_instance_id",
             "loop_index",
             "loop_kind",
             "coordinate_system",
@@ -220,6 +221,7 @@ REQUIRED_COLUMNS.update(
         "spatial_boundary_segments": {
             "id",
             "boundary_id",
+            "link_instance_id",
             "segment_index",
             "start_x",
             "start_y",
@@ -537,7 +539,7 @@ class QueryCore:
 
     def get_spatial_boundaries(self, space_id: str) -> list[dict[str, Any]]:
         boundaries = self._rows(
-            "SELECT * FROM spatial_boundaries WHERE space_id=? ORDER BY loop_index",
+            "SELECT * FROM spatial_boundaries WHERE space_id=? ORDER BY link_instance_id,loop_index",
             (space_id,),
         )
         for boundary in boundaries:

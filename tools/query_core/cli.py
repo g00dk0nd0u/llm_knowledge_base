@@ -7,6 +7,7 @@ from pathlib import Path
 from .fixtures import build_synthetic_fixture
 from .package import cached_payload, extract_payload, inspect_pdf, package_pdf
 from .query import QueryCore
+from .revit_snapshot import finalize_revit_export
 
 
 def parser() -> argparse.ArgumentParser:
@@ -26,6 +27,12 @@ def parser() -> argparse.ArgumentParser:
     search = commands.add_parser("search")
     search.add_argument("source", type=Path)
     search.add_argument("query")
+    finalize = commands.add_parser(
+        "finalize-revit-export",
+        help="validate a Revit export and create its Enhanced PDF",
+    )
+    finalize.add_argument("directory", type=Path)
+    finalize.add_argument("--output", type=Path)
     return root
 
 
@@ -56,4 +63,6 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 json.dumps(core.search_text(args.query), ensure_ascii=False, indent=2)
             )
+    elif args.command == "finalize-revit-export":
+        print(finalize_revit_export(args.directory, args.output))
     return 0

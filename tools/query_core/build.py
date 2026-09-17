@@ -55,6 +55,7 @@ def _validate(records: dict[str, Any]) -> None:
         raise QueryCoreError("source_document_sha256 must be a lowercase SHA-256")
     model_rows = records.get("source_models", [])
     source_models = {row.get("id"): row for row in model_rows}
+    spaces = {row.get("id"): row for row in records.get("spaces", [])}
     hosts = [row for row in model_rows if row.get("role") == "host"]
     if len(hosts) != 1:
         raise QueryCoreError("snapshot must contain exactly one host source model")
@@ -188,24 +189,88 @@ def _validate(records: dict[str, Any]) -> None:
                 )
     for row in records.get("entity_appearances", []):
         instance_id = row.get("link_instance_id")
-        if instance_id is not None and instance_id not in link_instances:
-            raise QueryCoreError(
-                f"appearance references nonexistent link instance: {instance_id}"
+        if instance_id is not None:
+            instance = link_instances.get(instance_id)
+            if instance is None:
+                raise QueryCoreError(
+                    f"appearance references nonexistent link instance: {instance_id}"
+                )
+            element = next(
+                (
+                    item
+                    for item in records.get("elements", [])
+                    if item.get("id") == row.get("entity_id")
+                ),
+                None,
             )
+            if (
+                row.get("entity_kind") != "element"
+                or element is None
+                or element.get("source_model_id")
+                != instance["linked_source_model_id"]
+            ):
+                raise QueryCoreError(
+                    f"appearance link instance model mismatch: {row.get('id')}"
+                )
     _validate_order(records, "annotation_segments", "annotation_id", "segment_index")
     _validate_order(
         records, "annotation_references", "annotation_id", "reference_index"
     )
-    _validate_order(records, "spatial_boundaries", "space_id", "loop_index")
+    _validate_order(
+        records,
+        "spatial_boundaries",
+        ("space_id", "link_instance_id"),
+        "loop_index",
+    )
     _validate_order(
         records, "spatial_boundary_segments", "boundary_id", "segment_index"
     )
+    boundaries = {
+        row.get("id"): row for row in records.get("spatial_boundaries", [])
+    }
+    for boundary in records.get("spatial_boundaries", []):
+        space = spaces.get(boundary.get("space_id"))
+        if space is None:
+            raise QueryCoreError(
+                f"boundary references nonexistent space: {boundary.get('space_id')}"
+            )
+        instance_id = boundary.get("link_instance_id")
+        space_model = source_models.get(space.get("source_model_id"))
+        if instance_id is None:
+            if space_model is not None and space_model.get("role") == "link":
+                raise QueryCoreError(
+                    f"linked space boundary requires link instance: {boundary.get('id')}"
+                )
+        else:
+            instance = link_instances.get(instance_id)
+            if instance is None:
+                raise QueryCoreError(
+                    f"boundary references nonexistent link instance: {instance_id}"
+                )
+            if space.get("source_model_id") != instance["linked_source_model_id"]:
+                raise QueryCoreError(
+                    f"boundary link instance model mismatch: {boundary.get('id')}"
+                )
     boundary_segments: dict[str, list[dict[str, Any]]] = {}
     for row in records.get("spatial_boundary_segments", []):
         boundary_segments.setdefault(row["boundary_id"], []).append(row)
+        boundary = boundaries.get(row["boundary_id"])
+        if boundary is None:
+            raise QueryCoreError(
+                f"segment references nonexistent spatial boundary: {row['boundary_id']}"
+            )
+        if row.get("link_instance_id") != boundary.get("link_instance_id"):
+            raise QueryCoreError(
+                f"boundary segment link instance mismatch: {row.get('id')}"
+            )
         model = row.get("source_model_id")
         if model is not None and model not in source_models:
             raise QueryCoreError(f"reference to nonexistent source model: {model}")
+        space = spaces[boundary["space_id"]]
+        if model is not None and model != space.get("source_model_id"):
+            raise QueryCoreError(
+                f"boundary segment source model mismatch: {row.get('id')}"
+            )
     for boundary in records.get("spatial_boundaries", []):
         segments = sorted(
             boundary_segments.get(boundary["id"], []), key=lambda r: r["segment_index"]
@@ -219,11 +284,19 @@ def _validate(records: dict[str, Any]) -> None:
 
 
 def _validate_order(
-    records: dict[str, Any], table: str, parent_key: str, index_key: str
+    records: dict[str, Any],
+    table: str,
+    parent_key: str | tuple[str, ...],
+    index_key: str,
 ) -> None:
-    grouped: dict[str, list[int]] = {}
+    grouped: dict[Any, list[int]] = {}
     for row in records.get(table, []):
-        grouped.setdefault(row[parent_key], []).append(row[index_key])
+        parent = (
+            tuple(row.get(key) for key in parent_key)
+            if isinstance(parent_key, tuple)
+            else row[parent_key]
+        )
+        grouped.setdefault(parent, []).append(row[index_key])
     for parent, indexes in grouped.items():
         if sorted(indexes) != list(range(len(indexes))):
             raise QueryCoreError(f"{table} ordering error for {parent}")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ import jsonschema
 
 from .build import build_database
 from .errors import QueryCoreError
+from .package import package_pdf
 
 SNAPSHOT_VERSION = 1
 SCHEMA_PATH = Path(__file__).parents[2] / "schema" / "revit_snapshot_v1.schema.json"
@@ -48,3 +50,28 @@ def import_snapshot(path: Path, output: Path) -> Path:
     records = dict(snapshot["records"])
     records.update(snapshot["project"])
     return build_database(records, output)
+
+
+def finalize_revit_export(export_directory: Path, output: Path | None = None) -> Path:
+    """Validate and package one completed, immutable Revit export run."""
+    directory = Path(export_directory)
+    drawing = directory / "drawing.pdf"
+    snapshot_path = directory / "revit_snapshot.json"
+    if not drawing.is_file() or not snapshot_path.is_file():
+        raise QueryCoreError(
+            "Revit export must contain drawing.pdf and revit_snapshot.json"
+        )
+    snapshot = load_snapshot(snapshot_path)
+    actual_sha = hashlib.sha256(drawing.read_bytes()).hexdigest()
+    expected_sha = snapshot["project"]["source_document_sha256"]
+    if actual_sha != expected_sha:
+        raise QueryCoreError("drawing.pdf SHA-256 does not match Revit snapshot")
+    database = directory / "project.sqlite"
+    enhanced = Path(output) if output is not None else directory / "enhanced.pdf"
+    protected = {drawing.resolve(), snapshot_path.resolve(), database.resolve()}
+    if enhanced.resolve() in protected:
+        raise QueryCoreError(
+            "final output must not overwrite Revit export inputs or project.sqlite"
+        )
+    import_snapshot(snapshot_path, database)
+    return package_pdf(drawing, database, enhanced)

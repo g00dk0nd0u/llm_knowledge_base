@@ -447,6 +447,42 @@ def test_v2_revit_validation_errors(tmp_path: Path) -> None:
         build_database(bad, tmp_path / "bad.sqlite")
 
     bad = json.loads(json.dumps(base))
+    linked_boundary = next(
+        row
+        for row in bad["spatial_boundaries"]
+        if row["link_instance_id"] is not None
+    )
+    linked_boundary["link_instance_id"] = "missing-link-instance"
+    with pytest.raises(QueryCoreError, match="nonexistent link instance"):
+        build_database(bad, tmp_path / "bad.sqlite")
+
+    bad = json.loads(json.dumps(base))
+    linked_boundary = next(
+        row
+        for row in bad["spatial_boundaries"]
+        if row["link_instance_id"] is not None
+    )
+    linked_boundary["link_instance_id"] = None
+    with pytest.raises(QueryCoreError, match="linked space boundary requires"):
+        build_database(bad, tmp_path / "bad.sqlite")
+
+    bad = json.loads(json.dumps(base))
+    linked_space = next(row for row in bad["spaces"] if row["id"] == "space-linked-room")
+    linked_space["source_model_id"] = "model-host"
+    with pytest.raises(QueryCoreError, match="boundary link instance model mismatch"):
+        build_database(bad, tmp_path / "bad.sqlite")
+
+    bad = json.loads(json.dumps(base))
+    linked_segment = next(
+        row
+        for row in bad["spatial_boundary_segments"]
+        if row["link_instance_id"] is not None
+    )
+    linked_segment["link_instance_id"] = "link-instance-b"
+    with pytest.raises(QueryCoreError, match="boundary segment link instance mismatch"):
+        build_database(bad, tmp_path / "bad.sqlite")
+
+    bad = json.loads(json.dumps(base))
     bad["link_instances"][1]["source_unique_id"] = bad["link_instances"][0][
         "source_unique_id"
     ]
@@ -458,6 +494,14 @@ def test_v2_revit_validation_errors(tmp_path: Path) -> None:
         row for row in bad["geometries"] if row["link_instance_id"] is not None
     )
     linked_geometry["entity_id"] = "element-sd03"
+    with pytest.raises(QueryCoreError, match="link instance model mismatch"):
+        build_database(bad, tmp_path / "bad.sqlite")
+
+    bad = json.loads(json.dumps(base))
+    linked_appearance = next(
+        row for row in bad["entity_appearances"] if row["link_instance_id"] is not None
+    )
+    linked_appearance["entity_id"] = "element-sd03"
     with pytest.raises(QueryCoreError, match="link instance model mismatch"):
         build_database(bad, tmp_path / "bad.sqlite")
 
@@ -480,6 +524,59 @@ def test_synthetic_revit_snapshot_import_and_version(tmp_path: Path) -> None:
     snapshot.write_text(json.dumps(payload))
     with pytest.raises(QueryCoreError, match="unsupported snapshot version"):
         load_snapshot(snapshot)
+
+
+def test_finalize_revit_export_and_reject_hash_mismatch(tmp_path: Path) -> None:
+    from tools.query_core.fixtures import (
+        create_synthetic_pdf,
+        write_synthetic_revit_snapshot,
+    )
+    from tools.query_core.revit_snapshot import finalize_revit_export
+
+    export = tmp_path / "export"
+    export.mkdir()
+    drawing = create_synthetic_pdf(export / "drawing.pdf")
+    write_synthetic_revit_snapshot(drawing, export / "revit_snapshot.json")
+    diagnostic = export / "project.sqlite"
+    diagnostic.write_bytes(b"existing diagnostic")
+    with pytest.raises(QueryCoreError, match="project.sqlite"):
+        finalize_revit_export(export, diagnostic)
+    assert diagnostic.read_bytes() == b"existing diagnostic"
+
+    enhanced = finalize_revit_export(export)
+    assert enhanced == export / "enhanced.pdf"
+    assert (export / "project.sqlite").is_file()
+    assert inspect_pdf(enhanced)["source_document_sha256"] == hashlib.sha256(
+        drawing.read_bytes()
+    ).hexdigest()
+
+    drawing.write_bytes(drawing.read_bytes() + b"changed")
+    with pytest.raises(QueryCoreError, match="SHA-256 does not match"):
+        finalize_revit_export(export, export / "must-not-exist.pdf")
+    assert not (export / "must-not-exist.pdf").exists()
+
+
+@pytest.mark.parametrize(
+    ("version", "runtime", "project", "framework"),
+    [
+        ("2025", "net8", "LlmKnowledgeBase.Revit2025", "net8.0-windows"),
+        ("2026", "net8", "LlmKnowledgeBase.Revit2026", "net8.0-windows"),
+        ("2026", "net10", "LlmKnowledgeBase.Revit2026Net10", "net10.0-windows"),
+        ("2027", "net10", "LlmKnowledgeBase.Revit2027", "net10.0-windows"),
+    ],
+)
+def test_revit_runtime_profiles(version: str, runtime: str, project: str, framework: str) -> None:
+    from tools.revit_exporter.cli import select_profile
+
+    assert select_profile(version, runtime)[:2] == (project, framework)
+
+
+@pytest.mark.parametrize(("version", "runtime"), [("2027", "net8"), ("2026", "invalid")])
+def test_invalid_revit_runtime_profiles_rejected(version: str, runtime: str) -> None:
+    from tools.revit_exporter.cli import select_profile
+
+    with pytest.raises(ValueError, match="unsupported Revit/runtime profile"):
+        select_profile(version, runtime)
 
 
 def test_repeated_link_model_placements(fixture: tuple[Path, Path]) -> None:
@@ -509,6 +606,21 @@ def test_repeated_link_model_placements(fixture: tuple[Path, Path]) -> None:
             "link-instance-a",
             "link-instance-b",
         }
+        boundaries = core.get_spatial_boundaries("space-linked-room")
+        assert len(boundaries) == 2
+        assert {row["link_instance_id"] for row in boundaries} == {
+            "link-instance-a",
+            "link-instance-b",
+        }
+        assert len({row["id"] for row in boundaries}) == 2
+        assert all(
+            {segment["link_instance_id"] for segment in row["segments"]}
+            == {row["link_instance_id"]}
+            for row in boundaries
+        )
+        assert boundaries[0]["segments"][0]["start_x"] != boundaries[1][
+            "segments"
+        ][0]["start_x"]
 
 
 def test_snapshot_json_schema_is_enforced_before_build(tmp_path: Path) -> None:

@@ -28,6 +28,13 @@ tiles/
 vector_store/
 embeddings/
 
+# Revit/.NET local build and export output
+**/bin/
+**/obj/
+revit_exporter/exports/
+revit_exporter/local/
+*.local.addin
+
 # Secrets / local config
 .env
 .env.*

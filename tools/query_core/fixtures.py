@@ -516,6 +516,20 @@ def synthetic_records(source_pdf: Path) -> dict:
             row["source_unique_id"] = row.pop("source_id")
     for row in records["spaces"]:
         row["phase_source_unique_id"] = "phase-new-construction"
+    records["spaces"].append(
+        {
+            "id": "space-linked-room",
+            "kind": "Room",
+            "name": "Linked Room",
+            "number": "L-101",
+            "level_id": None,
+            "phase_source_unique_id": "phase-linked",
+            "source_model_id": "model-link",
+            "source_unique_id": "linked-room-unique-id",
+            "provenance": provenance,
+            "confidence": None,
+        }
+    )
     element_type = records["element_types"][0]
     element_type.update(
         family_name="Industrial Shutters",
@@ -719,6 +733,7 @@ def synthetic_records(source_pdf: Path) -> dict:
         {
             "id": "boundary-corridor-outer",
             "space_id": "space-corridor",
+            "link_instance_id": None,
             "loop_index": 0,
             "loop_kind": "outer",
             "coordinate_system": "host_revit_internal_origin",
@@ -730,6 +745,7 @@ def synthetic_records(source_pdf: Path) -> dict:
         {
             "id": f"boundary-segment-{i}",
             "boundary_id": "boundary-corridor-outer",
+            "link_instance_id": None,
             "segment_index": i,
             "start_x": a[0],
             "start_y": a[1],
@@ -742,6 +758,48 @@ def synthetic_records(source_pdf: Path) -> dict:
         }
         for i, (a, b) in enumerate(zip(points, points[1:] + points[:1]))
     ]
+    for suffix, instance_id, offset in (
+        ("a", "link-instance-a", 100),
+        ("b", "link-instance-b", 10100),
+    ):
+        boundary_id = f"boundary-linked-room-{suffix}"
+        linked_points = [
+            (offset, 200, 0),
+            (offset + 1000, 200, 0),
+            (offset + 1000, 1200, 0),
+            (offset, 1200, 0),
+        ]
+        records["spatial_boundaries"].append(
+            {
+                "id": boundary_id,
+                "space_id": "space-linked-room",
+                "link_instance_id": instance_id,
+                "loop_index": 0,
+                "loop_kind": "outer",
+                "coordinate_system": "host_revit_internal_origin",
+                "unit": "mm",
+                "provenance": provenance,
+            }
+        )
+        records["spatial_boundary_segments"].extend(
+            {
+                "id": f"boundary-linked-segment-{suffix}-{i}",
+                "boundary_id": boundary_id,
+                "link_instance_id": instance_id,
+                "segment_index": i,
+                "start_x": a[0],
+                "start_y": a[1],
+                "start_z": a[2],
+                "end_x": b[0],
+                "end_y": b[1],
+                "end_z": b[2],
+                "source_model_id": "model-link",
+                "source_unique_id": f"linked-boundary-wall-{i}",
+            }
+            for i, (a, b) in enumerate(
+                zip(linked_points, linked_points[1:] + linked_points[:1])
+            )
+        )
     for row in records["geometries"]:
         row["coordinate_system"] = "host_revit_internal_origin"
         row["link_instance_id"] = None
