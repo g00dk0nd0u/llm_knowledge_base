@@ -447,6 +447,42 @@ def test_v2_revit_validation_errors(tmp_path: Path) -> None:
         build_database(bad, tmp_path / "bad.sqlite")
 
     bad = json.loads(json.dumps(base))
+    linked_boundary = next(
+        row
+        for row in bad["spatial_boundaries"]
+        if row["link_instance_id"] is not None
+    )
+    linked_boundary["link_instance_id"] = "missing-link-instance"
+    with pytest.raises(QueryCoreError, match="nonexistent link instance"):
+        build_database(bad, tmp_path / "bad.sqlite")
+
+    bad = json.loads(json.dumps(base))
+    linked_boundary = next(
+        row
+        for row in bad["spatial_boundaries"]
+        if row["link_instance_id"] is not None
+    )
+    linked_boundary["link_instance_id"] = None
+    with pytest.raises(QueryCoreError, match="linked space boundary requires"):
+        build_database(bad, tmp_path / "bad.sqlite")
+
+    bad = json.loads(json.dumps(base))
+    linked_space = next(row for row in bad["spaces"] if row["id"] == "space-linked-room")
+    linked_space["source_model_id"] = "model-host"
+    with pytest.raises(QueryCoreError, match="boundary link instance model mismatch"):
+        build_database(bad, tmp_path / "bad.sqlite")
+
+    bad = json.loads(json.dumps(base))
+    linked_segment = next(
+        row
+        for row in bad["spatial_boundary_segments"]
+        if row["link_instance_id"] is not None
+    )
+    linked_segment["link_instance_id"] = "link-instance-b"
+    with pytest.raises(QueryCoreError, match="boundary segment link instance mismatch"):
+        build_database(bad, tmp_path / "bad.sqlite")
+
+    bad = json.loads(json.dumps(base))
     bad["link_instances"][1]["source_unique_id"] = bad["link_instances"][0][
         "source_unique_id"
     ]
@@ -570,6 +606,21 @@ def test_repeated_link_model_placements(fixture: tuple[Path, Path]) -> None:
             "link-instance-a",
             "link-instance-b",
         }
+        boundaries = core.get_spatial_boundaries("space-linked-room")
+        assert len(boundaries) == 2
+        assert {row["link_instance_id"] for row in boundaries} == {
+            "link-instance-a",
+            "link-instance-b",
+        }
+        assert len({row["id"] for row in boundaries}) == 2
+        assert all(
+            {segment["link_instance_id"] for segment in row["segments"]}
+            == {row["link_instance_id"]}
+            for row in boundaries
+        )
+        assert boundaries[0]["segments"][0]["start_x"] != boundaries[1][
+            "segments"
+        ][0]["start_x"]
 
 
 def test_snapshot_json_schema_is_enforced_before_build(tmp_path: Path) -> None:

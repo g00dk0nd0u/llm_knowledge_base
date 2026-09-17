@@ -1432,6 +1432,7 @@
             "required": [
               "id",
               "space_id",
+              "link_instance_id",
               "loop_index",
               "loop_kind",
               "coordinate_system",
@@ -1446,6 +1447,12 @@
               "space_id": {
                 "type": "string",
                 "minLength": 1
+              },
+              "link_instance_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "loop_index": {
                 "type": "integer",
@@ -1478,6 +1485,7 @@
             "required": [
               "id",
               "boundary_id",
+              "link_instance_id",
               "segment_index",
               "start_x",
               "start_y",
@@ -1496,6 +1504,12 @@
               "boundary_id": {
                 "type": "string",
                 "minLength": 1
+              },
+              "link_instance_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "segment_index": {
                 "type": "integer",
