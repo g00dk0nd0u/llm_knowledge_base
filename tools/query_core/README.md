@@ -64,6 +64,38 @@ Public APIs include `search_text`, `find_entities`, `get_entity`,
 `get_source_model`, `get_appearances`, `get_annotation_segments`,
 `get_annotation_references`, and `get_spatial_boundaries`.
 
+## Practical structured queries
+
+Two intent-specific operations compose entity, relationship, structured fact, and
+PDF-evidence lookup. They use only stored data; they require no LLM, Revit runtime,
+RVT file, OCR, or external API.
+
+```python
+from tools.query_core import QueryCore
+
+with QueryCore("artifacts/query-demo/project.sqlite") as query:
+    opening = query.get_opening_width("element-dl03")
+    # status=ok, 4500 mm, Shutter SD-03, A-312, PDF page 1, evidence bbox
+
+    roof = query.get_relative_elevation("element-roof")
+    # status=ok, RFL + 1250 mm, A-421, PDF page 2, evidence bbox
+```
+
+`get_opening_width` first checks an explicit opening-width parameter, then an
+explicit opening-width dimension. It follows only one outgoing, recognized opening
+relationship when the subject has no direct fact. `get_relative_elevation` prefers
+stored spot-elevation annotations over explicit relative-elevation parameters. The
+returned dictionaries retain source provenance and confidence and contain compact,
+deduplicated evidence ordered by document, PDF page, sheet, view, and stable ID.
+
+Ordinary domain outcomes use `ok`, `not_found`, `ambiguous`, or `conflict` status.
+Multiple plausible related openings are `ambiguous`; conflicting equally preferred
+facts are `conflict`. Neither operation guesses a target or value. Invalid inputs or
+unsupported/malformed databases still raise errors.
+
+These APIs do not perform corridor clear-width, obstruction, or other geometry
+analysis. Such analysis and real-Revit smoke testing are intentionally deferred.
+
 See [`REVIT_2026_MAPPING.md`](REVIT_2026_MAPPING.md) for the Phase B extraction map.
 
 ```bash

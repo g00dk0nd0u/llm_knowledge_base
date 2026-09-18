@@ -606,6 +606,20 @@ class QueryCore:
     def get_spot_elevations(self, entity_id: str | None = None) -> list[dict[str, Any]]:
         return self._annotations("spot_elevation", entity_id)
 
+    def get_opening_width(self, entity_id: str) -> dict[str, Any]:
+        """Return an explicit opening-width fact and its compact PDF evidence."""
+        from .practical import get_opening_width
+
+        return get_opening_width(self, entity_id)
+
+    def get_relative_elevation(
+        self, entity_id: str, reference: str | None = None
+    ) -> dict[str, Any]:
+        """Return an explicit relative elevation and its compact PDF evidence."""
+        from .practical import get_relative_elevation
+
+        return get_relative_elevation(self, entity_id, reference)
+
     def get_related_entities(
         self, entity_kind: str, entity_id: str
     ) -> list[dict[str, Any]]:

@@ -119,6 +119,95 @@ def test_roof_spot_elevation_is_numeric(fixture: tuple[Path, Path]) -> None:
         ) == ("A-421", 2)
 
 
+def test_practical_opening_width_direct_indirect_and_deterministic(
+    fixture: tuple[Path, Path],
+) -> None:
+    with QueryCore(fixture[1]) as core:
+        indirect = core.get_opening_width("element-dl03")
+        direct = core.get_opening_width("element-sd03")
+        assert indirect == core.get_opening_width("element-dl03")
+
+    assert indirect["status"] == "ok"
+    assert indirect["resolved_target"]["id"] == "element-sd03"
+    assert (indirect["numeric_value"], indirect["unit"]) == (4500, "mm")
+    assert indirect["fact_source_kind"] == "parameter"
+    assert indirect["relationship_path"][0]["relationship_id"] == "rel-dock-shutter"
+    assert direct["fact_id"] == indirect["fact_id"] == "param-shutter-width"
+    assert direct["evidence"] == indirect["evidence"]
+    assert len(indirect["evidence"]) == 1
+    assert indirect["evidence"][0]["sheet_number"] == "A-312"
+    assert indirect["evidence"][0]["pdf_page"] == 1
+    assert indirect["evidence"][0]["bbox"] == [120, 150, 330, 240]
+
+
+def test_practical_relative_roof_elevation(fixture: tuple[Path, Path]) -> None:
+    with QueryCore(fixture[1]) as core:
+        result = core.get_relative_elevation("element-roof")
+        assert result == core.get_relative_elevation("element-roof", reference="rfl")
+
+    assert result["status"] == "ok"
+    assert result["reference"] == "RFL"
+    assert (result["numeric_value"], result["unit"]) == (1250, "mm")
+    assert result["display_text"] == "RFL + 1250 mm"
+    assert result["annotation_id"] == "ann-roof-rfl"
+    assert result["provenance"] == "synthetic_fixture"
+    assert result["evidence"][0]["sheet_number"] == "A-421"
+    assert result["evidence"][0]["pdf_page"] == 2
+    assert result["evidence"][0]["bbox"] == [410, 110, 560, 180]
+
+
+def test_practical_opening_width_does_not_guess(fixture: tuple[Path, Path]) -> None:
+    with QueryCore(fixture[1]) as core:
+        result = core.get_opening_width("wall-north")
+    assert result["status"] == "not_found"
+    assert result["evidence"] == []
+
+
+def test_practical_opening_width_reports_ambiguous_target(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, _database = fixture
+    records = synthetic_records(drawing)
+    second = dict(next(row for row in records["elements"] if row["id"] == "element-sd03"))
+    second.update(id="element-sd04", name="Shutter SD-04", source_unique_id="synthetic-sd04")
+    records["elements"].append(second)
+    parameter = dict(records["parameters"][0])
+    parameter.update(id="param-shutter-width-04", entity_id="element-sd04")
+    records["parameters"].append(parameter)
+    relation = dict(records["relationships"][0])
+    relation.update(id="rel-dock-shutter-04", target_id="element-sd04")
+    records["relationships"].append(relation)
+    database = build_database(records, tmp_path / "ambiguous.sqlite")
+
+    with QueryCore(database) as core:
+        result = core.get_opening_width("element-dl03")
+    assert result["status"] == "ambiguous"
+    assert result["candidate_ids"] == ["element-sd03", "element-sd04"]
+    assert len(result["evidence"]) == 1
+
+
+def test_practical_opening_width_reports_conflicting_exact_facts(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, _database = fixture
+    records = synthetic_records(drawing)
+    conflicting = dict(records["parameters"][0])
+    conflicting.update(
+        id="param-shutter-width-conflict",
+        numeric_value=4600,
+        value_text="4600 mm",
+        raw_numeric_value=15.0918635171,
+        raw_value_text="15.0919 ft",
+    )
+    records["parameters"].append(conflicting)
+    database = build_database(records, tmp_path / "conflict.sqlite")
+
+    with QueryCore(database) as core:
+        result = core.get_opening_width("element-sd03")
+    assert result["status"] == "conflict"
+    assert [item["numeric_value"] for item in result["candidates"]] == [4500, 4600]
+
+
 def test_fts_japanese_relationships_and_spatial_exact_geometry(
     fixture: tuple[Path, Path],
 ) -> None:
