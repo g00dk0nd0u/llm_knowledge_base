@@ -355,6 +355,64 @@ def test_opening_semantics_and_same_target_relationships(
         assert core.get_opening_width("element-sd03")["status"] == "not_found"
 
 
+def test_type_scoped_opening_width_and_instance_precedence(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, _database = fixture
+
+    def type_parameter(records: dict, *, key: str = "builtin:DOOR_WIDTH") -> dict:
+        return {
+            **records["parameters"][0],
+            "id": "param-type-shutter-width",
+            "entity_kind": "element_type",
+            "entity_id": "type-shutter",
+            "scope": "type",
+            "definition_name": "Width",
+            "definition_key": key,
+            "numeric_value": 4500,
+            "value_text": "4500 mm",
+        }
+
+    records = synthetic_records(drawing)
+    records["parameters"] = [type_parameter(records)]
+    next(
+        row for row in records["annotations"] if row["id"] == "ann-opening-width"
+    )["semantic_type"] = None
+    database = build_database(records, tmp_path / "type-width.sqlite")
+    with QueryCore(database) as core:
+        type_result = core.get_opening_width("element-sd03")
+        indirect_result = core.get_opening_width("element-dl03")
+    assert type_result["status"] == indirect_result["status"] == "ok"
+    assert (type_result["numeric_value"], type_result["unit"]) == (4500, "mm")
+    assert type_result["fact_source_kind"] == "parameter"
+    assert type_result["parameter_scope"] == "type"
+    assert type_result["fact_entity"] == {
+        "kind": "element_type",
+        "id": "type-shutter",
+    }
+
+    records = synthetic_records(drawing)
+    records["parameters"][0].update(numeric_value=4400, value_text="4400 mm")
+    records["parameters"].append(type_parameter(records))
+    database = build_database(records, tmp_path / "instance-overrides-type.sqlite")
+    with QueryCore(database) as core:
+        result = core.get_opening_width("element-sd03")
+    assert result["status"] == "ok"
+    assert (result["numeric_value"], result["unit"]) == (4400, "mm")
+    assert result["parameter_scope"] == "instance"
+    assert result["fact_entity"] == {"kind": "element", "id": "element-sd03"}
+
+    records = synthetic_records(drawing)
+    records["parameters"] = [type_parameter(records, key="id:123")]
+    next(
+        row for row in records["annotations"] if row["id"] == "ann-opening-width"
+    )["semantic_type"] = None
+    database = build_database(records, tmp_path / "generic-type-width.sqlite")
+    with QueryCore(database) as core:
+        result = core.get_opening_width("element-sd03")
+    assert result["status"] == "not_found"
+
+
 def test_relative_elevation_requires_and_distinguishes_datum(
     fixture: tuple[Path, Path], tmp_path: Path
 ) -> None:

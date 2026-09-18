@@ -134,28 +134,59 @@ def _fact_key(record: dict[str, Any]) -> tuple[float, str]:
 def _opening_facts(
     core: QueryCore, entity_id: str
 ) -> tuple[int, list[dict[str, Any]]]:
-    parameters = core.get_numeric_facts("element", entity_id)
+    element = core.get_entity("element", entity_id)
+    if element is None:
+        return (0, [])
+
+    instance_parameters = [
+        row
+        for row in core.get_numeric_facts("element", entity_id)
+        if row.get("scope") == "instance"
+    ]
     builtin = [
         row
-        for row in parameters
+        for row in instance_parameters
         if (row.get("definition_key") or "").casefold() == "builtin:door_width"
     ]
     if builtin:
         return 1, builtin
     named = [
         row
-        for row in parameters
+        for row in instance_parameters
         if row["definition_name"].strip().casefold() in OPENING_WIDTH_NAMES
     ]
     if named:
         return 2, named
+
+    if element.get("type_id"):
+        type_parameters = [
+            row
+            for row in core.get_numeric_facts("element_type", element["type_id"])
+            if row.get("scope") == "type"
+        ]
+        builtin = [
+            row
+            for row in type_parameters
+            if (row.get("definition_key") or "").casefold()
+            == "builtin:door_width"
+        ]
+        if builtin:
+            return 3, builtin
+        named = [
+            row
+            for row in type_parameters
+            if row["definition_name"].strip().casefold() in OPENING_WIDTH_NAMES
+        ]
+        if named:
+            return 4, named
+
     annotations = [
         row
         for row in core.get_dimensions(entity_id)
         if (row.get("semantic_type") or "").strip().casefold() == "opening_width"
         and row.get("numeric_value") is not None
     ]
-    return (3, annotations) if annotations else (0, [])
+    return (5, annotations) if annotations else (0, [])
 
 
 def _relationship_path(relationships: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -184,7 +215,7 @@ def get_opening_width(core: QueryCore, entity_id: str) -> dict[str, Any]:
     rank, direct_facts = _opening_facts(core, entity_id) if subject_kind == "element" else (0, [])
     # A dimension may reference equipment beside an opening. Prefer an explicit
     # related opening target over treating that referenced equipment as the opening.
-    facts = direct_facts if rank in {1, 2} else []
+    facts = direct_facts if rank in {1, 2, 3, 4} else []
     relationships: list[dict[str, Any]] = []
     target_kind, target_row = subject_kind, subject_row
 
@@ -229,7 +260,7 @@ def get_opening_width(core: QueryCore, entity_id: str) -> dict[str, Any]:
             rank, facts, relationships = target["rank"], target["facts"], target["relations"]
 
     records = relationships + facts
-    annotation_facts = facts if rank == 3 else [
+    annotation_facts = facts if rank == 5 else [
         row
         for row in core.get_dimensions(target_row["id"])
         if (row.get("semantic_type") or "").strip().casefold() == "opening_width"
@@ -260,7 +291,13 @@ def get_opening_width(core: QueryCore, entity_id: str) -> dict[str, Any]:
         "resolved_target": _compact_entity(target_kind, target_row),
         "numeric_value": chosen["numeric_value"], "unit": chosen["unit"],
         "display_text": chosen.get("value_text") or chosen.get("display_text"),
-        "fact_source_kind": "annotation" if rank == 3 else "parameter",
+        "fact_source_kind": "annotation" if rank == 5 else "parameter",
+        "parameter_scope": chosen.get("scope") if rank != 5 else None,
+        "fact_entity": (
+            {"kind": chosen["entity_kind"], "id": chosen["entity_id"]}
+            if rank != 5
+            else {"kind": "annotation", "id": chosen["id"]}
+        ),
         "fact_id": chosen["id"], "supporting_fact_ids": sorted(row["id"] for row in facts),
         "provenance": chosen["provenance"], "confidence": chosen["confidence"],
         "relationship_path": path, "evidence": _evidence(records, occurrences),

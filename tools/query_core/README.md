@@ -88,6 +88,12 @@ explicit opening-width dimension. A generic parameter named `Width` is not suffi
 without the semantic key. The query follows only one bounded relationship step and
 deduplicates parallel relationships to the same target.
 
+For an element, qualifying instance parameters take precedence over parameters on its
+`element_type`; a valid instance value therefore overrides a different type value
+without creating a conflict. Parameter results expose `parameter_scope` (`instance`
+or `type`) and `fact_entity` so callers can audit which element or type supplied the
+answer.
+
 Annotations may be associated either by canonical `related_entity_id` or by resolved
 `annotation_references`. Revit reference matching always uses the
 `source_model_id + source_unique_id` identity pair; a UniqueId alone is not globally
