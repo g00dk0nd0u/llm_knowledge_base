@@ -320,7 +320,7 @@ internal sealed class RevitSnapshotExporter
                 var normalized = ParameterNormalizer.Normalize(parameter, dataType);
                 Add("parameters", Obj(("id", StableIds.Hash("parameter", entityId, scope, parameter.Id.Value.ToString())),
                     ("entity_kind", kind), ("entity_id", entityId), ("scope", scope), ("definition_name", parameter.Definition.Name),
-                    ("definition_key", parameter.Id.Value.ToString()), ("storage_type", parameter.StorageType.ToString()), ("data_type_id", dataTypeId),
+                    ("definition_key", ParameterDefinitionKey(parameter)), ("storage_type", parameter.StorageType.ToString()), ("data_type_id", dataTypeId),
                     ("parameter_type_id", dataTypeId), ("shared_parameter_guid", parameter.IsShared ? parameter.GUID.ToString("D") : null),
                     ("unit_type_id", parameter.GetUnitTypeId()?.TypeId), ("raw_value_text", SafeValueString(parameter)),
                     ("raw_numeric_value", rawNumeric), ("numeric_value", normalized.Value), ("unit", normalized.Unit),
@@ -633,6 +633,13 @@ internal sealed class RevitSnapshotExporter
     private static string? PhaseUniqueId(Element e) => e.CreatedPhaseId == ElementId.InvalidElementId ? null : e.Document.GetElement(e.CreatedPhaseId)?.UniqueId;
     private static string CategoryName(Element e) => e.Category?.Name ?? "Uncategorized";
     private static string SafeValueString(Parameter p) { try { return p.AsValueString() ?? p.AsString() ?? p.AsElementId()?.Value.ToString() ?? ""; } catch { return ""; } }
+    private static string ParameterDefinitionKey(Parameter parameter)
+    {
+        if (parameter.IsShared) return $"shared:{parameter.GUID:D}";
+        var value = parameter.Id.Value;
+        var name = value < 0 ? Enum.GetName(typeof(BuiltInParameter), (BuiltInParameter)value) : null;
+        return name is null ? $"id:{value}" : $"builtin:{name}";
+    }
     private static string Id(string kind, string model, string unique) => StableIds.For(kind, model, unique);
     private void Add(string collection, JsonObject value)
     {

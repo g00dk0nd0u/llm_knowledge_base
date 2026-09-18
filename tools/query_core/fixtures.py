@@ -553,8 +553,9 @@ def synthetic_records(source_pdf: Path) -> dict:
         }
     )
     parameter = records["parameters"][0]
-    parameter["definition_name"] = parameter.pop("name")
+    parameter.pop("name")
     parameter.update(
+        definition_name="Width",
         scope="instance",
         definition_key="builtin:DOOR_WIDTH",
         storage_type="Double",

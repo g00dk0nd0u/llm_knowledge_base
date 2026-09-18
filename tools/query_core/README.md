@@ -62,7 +62,8 @@ Public APIs include `search_text`, `find_entities`, `get_entity`,
 `get_numeric_facts`, `get_dimensions`, `get_spot_elevations`,
 `get_spatial_candidates`, `get_related_entities`, `get_pdf_evidence`, plus v2
 `get_source_model`, `get_appearances`, `get_annotation_segments`,
-`get_annotation_references`, and `get_spatial_boundaries`.
+`get_annotation_references`, `get_occurrence_evidence`, and
+`get_spatial_boundaries`.
 
 ## Practical structured queries
 
@@ -81,14 +82,28 @@ with QueryCore("artifacts/query-demo/project.sqlite") as query:
     # status=ok, RFL + 1250 mm, A-421, PDF page 2, evidence bbox
 ```
 
-`get_opening_width` first checks an explicit opening-width parameter, then an
-explicit opening-width dimension. It follows only one outgoing, recognized opening
-relationship when the subject has no direct fact. `get_relative_elevation` prefers
-stored spot-elevation annotations over explicit relative-elevation parameters. The
-returned dictionaries retain source provenance and confidence and contain compact,
-deduplicated evidence ordered by document, PDF page, sheet, view, and stable ID.
+`get_opening_width` first checks the stable Revit semantic parameter key
+`builtin:DOOR_WIDTH`, then an explicit normalized opening-width name, and finally an
+explicit opening-width dimension. A generic parameter named `Width` is not sufficient
+without the semantic key. The query follows only one bounded relationship step and
+deduplicates parallel relationships to the same target.
 
-Ordinary domain outcomes use `ok`, `not_found`, `ambiguous`, or `conflict` status.
+Annotations may be associated either by canonical `related_entity_id` or by resolved
+`annotation_references`. Revit reference matching always uses the
+`source_model_id + source_unique_id` identity pair; a UniqueId alone is not globally
+unique. `get_relative_elevation` uses `kind=spot_elevation` as its primary
+classification, but returns a datum such as RFL only when stored display or segment
+text proves it. A requested but unproven datum returns `insufficient_data`; different
+explicit datums are not collapsed merely because their numbers match.
+
+Practical evidence can come from explicit `evidence` records or joined Revit
+`entity_appearances` for the subject, target, and selected annotation. Appearance IDs
+remain distinct from evidence IDs. Page-only occurrences retain their sheet, page,
+and view while returning `bbox=null`; Query Core never fabricates PDF coordinates.
+Results preserve provenance and confidence and order deduplicated evidence by
+document, PDF page, sheet, view, and stable ID.
+
+Ordinary domain outcomes use `ok`, `not_found`, `insufficient_data`, `ambiguous`, or `conflict` status.
 Multiple plausible related openings are `ambiguous`; conflicting equally preferred
 facts are `conflict`. Neither operation guesses a target or value. Invalid inputs or
 unsupported/malformed databases still raise errors.

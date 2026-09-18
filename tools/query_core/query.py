@@ -520,6 +520,37 @@ class QueryCore:
             (entity_kind, entity_id),
         )
 
+    def get_occurrence_evidence(
+        self, entity_kind: str, entity_id: str
+    ) -> list[dict[str, Any]]:
+        """Return drawing occurrences with resolved document, sheet, and view data."""
+        rows = self._rows(
+            "SELECT a.*,d.id AS document_id,d.identity AS document_identity,"
+            "d.source_filename,s.number AS sheet_number,s.name AS sheet_name,"
+            "v.name AS view_name FROM entity_appearances a "
+            "JOIN sheets s ON s.id=a.sheet_id "
+            "JOIN documents d ON d.id=s.document_id "
+            "LEFT JOIN views v ON v.id=a.view_id "
+            "WHERE a.entity_kind=? AND a.entity_id=? "
+            "ORDER BY d.identity,a.pdf_page,s.number,v.name,a.id",
+            (entity_kind, entity_id),
+        )
+        for row in rows:
+            row["appearance_id"] = row.pop("id")
+            row["document"] = {
+                "id": row.pop("document_id"),
+                "identity": row.pop("document_identity"),
+                "source_filename": row.pop("source_filename"),
+            }
+            row["bbox"] = (
+                [row.pop(key) for key in ("x_min", "y_min", "x_max", "y_max")]
+                if all(row[key] is not None for key in ("x_min", "y_min", "x_max", "y_max"))
+                else None
+            )
+            for key in ("x_min", "y_min", "x_max", "y_max"):
+                row.pop(key, None)
+        return rows
+
     def get_annotation_segments(self, annotation_id: str) -> list[dict[str, Any]]:
         rows = self._rows(
             "SELECT * FROM annotation_segments WHERE annotation_id=? ORDER BY segment_index",
@@ -596,9 +627,29 @@ class QueryCore:
         sql = "SELECT * FROM annotations WHERE kind=?"
         values: tuple[Any, ...] = (kind,)
         if entity_id is not None:
-            sql += " AND related_entity_id=?"
-            values += (entity_id,)
-        return self._with_evidence(self._rows(sql + " ORDER BY id", values))
+            matches = []
+            for entity_kind in ENTITY_TABLES:
+                entity = self.get_entity(entity_kind, entity_id)
+                if entity is not None:
+                    matches.append(entity)
+            if len(matches) != 1:
+                return []
+            entity = matches[0]
+            sql += (
+                " AND (related_entity_id=? OR EXISTS ("
+                "SELECT 1 FROM annotation_references r WHERE r.annotation_id=annotations.id "
+                "AND r.resolution_state='resolved' AND r.target_source_model_id=? "
+                "AND r.target_source_unique_id=?))"
+            )
+            values += (
+                entity_id,
+                entity.get("source_model_id"),
+                entity.get("source_unique_id"),
+            )
+        rows = self._with_evidence(self._rows(sql + " ORDER BY id", values))
+        for row in rows:
+            row["annotation_references"] = self.get_annotation_references(row["id"])
+        return rows
 
     def get_dimensions(self, entity_id: str | None = None) -> list[dict[str, Any]]:
         return self._annotations("dimension", entity_id)
