@@ -119,6 +119,369 @@ def test_roof_spot_elevation_is_numeric(fixture: tuple[Path, Path]) -> None:
         ) == ("A-421", 2)
 
 
+def test_practical_opening_width_direct_indirect_and_deterministic(
+    fixture: tuple[Path, Path],
+) -> None:
+    with QueryCore(fixture[1]) as core:
+        indirect = core.get_opening_width("element-dl03")
+        direct = core.get_opening_width("element-sd03")
+        assert indirect == core.get_opening_width("element-dl03")
+
+    assert indirect["status"] == "ok"
+    assert indirect["resolved_target"]["id"] == "element-sd03"
+    assert (indirect["numeric_value"], indirect["unit"]) == (4500, "mm")
+    assert indirect["fact_source_kind"] == "parameter"
+    assert indirect["relationship_path"][0]["relationship_id"] == "rel-dock-shutter"
+    assert direct["fact_id"] == indirect["fact_id"] == "param-shutter-width"
+    assert direct["evidence"] == indirect["evidence"]
+    explicit = next(item for item in indirect["evidence"] if item.get("evidence_id"))
+    assert explicit["sheet_number"] == "A-312"
+    assert explicit["pdf_page"] == 1
+    assert explicit["bbox"] == [120, 150, 330, 240]
+
+
+def test_practical_relative_roof_elevation(fixture: tuple[Path, Path]) -> None:
+    with QueryCore(fixture[1]) as core:
+        result = core.get_relative_elevation("element-roof")
+        assert result == core.get_relative_elevation("element-roof", reference="rfl")
+
+    assert result["status"] == "ok"
+    assert result["reference"] == "RFL"
+    assert (result["numeric_value"], result["unit"]) == (1250, "mm")
+    assert result["display_text"] == "RFL + 1250 mm"
+    assert result["annotation_id"] == "ann-roof-rfl"
+    assert result["provenance"] == "synthetic_fixture"
+    assert result["evidence"][0]["sheet_number"] == "A-421"
+    assert result["evidence"][0]["pdf_page"] == 2
+    assert result["evidence"][0]["bbox"] == [410, 110, 560, 180]
+
+
+def test_practical_opening_width_does_not_guess(fixture: tuple[Path, Path]) -> None:
+    with QueryCore(fixture[1]) as core:
+        result = core.get_opening_width("wall-north")
+    assert result["status"] == "not_found"
+    assert result["evidence"] == []
+
+
+def test_practical_opening_width_reports_ambiguous_target(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, _database = fixture
+    records = synthetic_records(drawing)
+    second = dict(next(row for row in records["elements"] if row["id"] == "element-sd03"))
+    second.update(id="element-sd04", name="Shutter SD-04", source_unique_id="synthetic-sd04")
+    records["elements"].append(second)
+    parameter = dict(records["parameters"][0])
+    parameter.update(id="param-shutter-width-04", entity_id="element-sd04")
+    records["parameters"].append(parameter)
+    relation = dict(records["relationships"][0])
+    relation.update(id="rel-dock-shutter-04", target_id="element-sd04")
+    records["relationships"].append(relation)
+    database = build_database(records, tmp_path / "ambiguous.sqlite")
+
+    with QueryCore(database) as core:
+        result = core.get_opening_width("element-dl03")
+    assert result["status"] == "ambiguous"
+    assert result["candidate_ids"] == ["element-sd03", "element-sd04"]
+    assert len({item.get("evidence_id") for item in result["evidence"] if item.get("evidence_id")}) == 1
+
+
+def test_practical_opening_width_reports_conflicting_exact_facts(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, _database = fixture
+    records = synthetic_records(drawing)
+    conflicting = dict(records["parameters"][0])
+    conflicting.update(
+        id="param-shutter-width-conflict",
+        numeric_value=4600,
+        value_text="4600 mm",
+        raw_numeric_value=15.0918635171,
+        raw_value_text="15.0919 ft",
+    )
+    records["parameters"].append(conflicting)
+    database = build_database(records, tmp_path / "conflict.sqlite")
+
+    with QueryCore(database) as core:
+        result = core.get_opening_width("element-sd03")
+    assert result["status"] == "conflict"
+    assert [item["numeric_value"] for item in result["candidates"]] == [4500, 4600]
+
+
+def test_annotations_resolve_by_model_scoped_references(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, _database = fixture
+    records = synthetic_records(drawing)
+    for annotation in records["annotations"]:
+        annotation.update(related_entity_kind=None, related_entity_id=None)
+    width_reference = next(
+        row for row in records["annotation_references"] if row["id"] == "ref-width-1"
+    )
+    width_reference.update(
+        target_source_model_id="model-host",
+        target_source_unique_id="synthetic-sd03",
+        target_link_instance_id=None,
+        is_linked=0,
+    )
+    database = build_database(records, tmp_path / "references.sqlite")
+
+    with QueryCore(database) as core:
+        assert [row["id"] for row in core.get_dimensions("element-sd03")] == [
+            "ann-opening-width"
+        ]
+        assert [row["id"] for row in core.get_spot_elevations("element-roof")] == [
+            "ann-roof-rfl"
+        ]
+        # Same UniqueId in another model must not associate the annotation.
+        assert core.get_dimensions("element-linked-collision") == []
+
+
+def test_occurrence_evidence_is_compact_page_safe_and_link_scoped(
+    fixture: tuple[Path, Path],
+) -> None:
+    with QueryCore(fixture[1]) as core:
+        occurrences = core.get_occurrence_evidence("element", "element-sd03")
+        assert occurrences == core.get_occurrence_evidence("element", "element-sd03")
+        page_only = next(row for row in occurrences if row["bbox_quality"] == "page_only")
+        linked = core.get_occurrence_evidence("element", "element-linked-collision")
+
+    assert page_only["sheet_number"] == "A-201"
+    assert page_only["pdf_page"] == 3
+    assert page_only["view_name"] == "Level 2 Data Hall Plan"
+    assert page_only["bbox"] is None
+    assert [row["link_instance_id"] for row in linked] == [
+        "link-instance-a",
+        "link-instance-b",
+    ]
+
+
+def test_revit_shaped_practical_queries_use_references_and_appearances(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, _database = fixture
+    records = synthetic_records(drawing)
+    for collection in ("parameters", "relationships", "annotations"):
+        for record in records[collection]:
+            record["evidence_id"] = None
+    for annotation in records["annotations"]:
+        annotation.update(related_entity_kind=None, related_entity_id=None)
+    next(row for row in records["annotations"] if row["id"] == "ann-roof-rfl")[
+        "semantic_type"
+    ] = None
+    records["entity_appearances"].append(
+        {
+            "id": "appearance-roof-annotation",
+            "entity_kind": "annotation",
+            "entity_id": "ann-roof-rfl",
+            "sheet_id": "sheet-a421",
+            "view_id": "view-roof",
+            "viewport_id": None,
+            "link_instance_id": None,
+            "pdf_page": 2,
+            "x_min": None,
+            "y_min": None,
+            "x_max": None,
+            "y_max": None,
+            "coordinate_space": "pdf_points_top_left",
+            "appearance_kind": "annotation",
+            "bbox_quality": "page_only",
+            "provenance": "synthetic_fixture",
+        }
+    )
+    database = build_database(records, tmp_path / "revit-shaped.sqlite")
+
+    with QueryCore(database) as core:
+        opening = core.get_opening_width("element-dl03")
+        roof = core.get_relative_elevation("element-roof", reference="RFL")
+
+    assert opening["status"] == "ok"
+    assert opening["resolved_target"]["id"] == "element-sd03"
+    assert (opening["numeric_value"], opening["unit"]) == (4500, "mm")
+    assert any(
+        item.get("appearance_id") == "appearance-sd03-0"
+        and item["sheet_number"] == "A-312"
+        and item["pdf_page"] == 1
+        for item in opening["evidence"]
+    )
+    assert roof["status"] == "ok"
+    assert (roof["reference"], roof["numeric_value"], roof["unit"]) == (
+        "RFL",
+        1250,
+        "mm",
+    )
+    roof_evidence = next(
+        item for item in roof["evidence"] if item.get("appearance_id")
+    )
+    assert (roof_evidence["sheet_number"], roof_evidence["pdf_page"]) == ("A-421", 2)
+    assert roof_evidence["bbox"] is None
+    assert roof_evidence["bbox_quality"] == "page_only"
+
+
+def test_opening_semantics_and_same_target_relationships(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, _database = fixture
+    records = synthetic_records(drawing)
+    assert records["parameters"][0]["definition_name"] == "Width"
+    assert records["parameters"][0]["definition_key"] == "builtin:DOOR_WIDTH"
+    duplicate = dict(records["relationships"][0])
+    duplicate.update(id="rel-dock-opening", relation_type="related_opening")
+    records["relationships"].append(duplicate)
+    duplicate_fact = dict(records["parameters"][0])
+    duplicate_fact["id"] = "param-shutter-width-duplicate"
+    records["parameters"].append(duplicate_fact)
+    database = build_database(records, tmp_path / "same-target.sqlite")
+    with QueryCore(database) as core:
+        result = core.get_opening_width("element-dl03")
+    assert result["status"] == "ok"
+    assert result["resolved_target"]["id"] == "element-sd03"
+    assert [row["relationship_id"] for row in result["relationship_path"]] == [
+        "rel-dock-opening",
+        "rel-dock-shutter",
+    ]
+    assert result["supporting_fact_ids"] == [
+        "param-shutter-width",
+        "param-shutter-width-duplicate",
+    ]
+
+    records = synthetic_records(drawing)
+    records["parameters"][0].update(definition_key="id:123", definition_name="Width")
+    next(
+        row for row in records["annotations"] if row["id"] == "ann-opening-width"
+    )["semantic_type"] = None
+    database = build_database(records, tmp_path / "generic-width.sqlite")
+    with QueryCore(database) as core:
+        assert core.get_opening_width("element-sd03")["status"] == "not_found"
+
+
+def test_type_scoped_opening_width_and_instance_precedence(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, _database = fixture
+
+    def type_parameter(records: dict, *, key: str = "builtin:DOOR_WIDTH") -> dict:
+        return {
+            **records["parameters"][0],
+            "id": "param-type-shutter-width",
+            "entity_kind": "element_type",
+            "entity_id": "type-shutter",
+            "scope": "type",
+            "definition_name": "Width",
+            "definition_key": key,
+            "numeric_value": 4500,
+            "value_text": "4500 mm",
+        }
+
+    records = synthetic_records(drawing)
+    records["parameters"] = [type_parameter(records)]
+    next(
+        row for row in records["annotations"] if row["id"] == "ann-opening-width"
+    )["semantic_type"] = None
+    database = build_database(records, tmp_path / "type-width.sqlite")
+    with QueryCore(database) as core:
+        type_result = core.get_opening_width("element-sd03")
+        indirect_result = core.get_opening_width("element-dl03")
+    assert type_result["status"] == indirect_result["status"] == "ok"
+    assert (type_result["numeric_value"], type_result["unit"]) == (4500, "mm")
+    assert type_result["fact_source_kind"] == "parameter"
+    assert type_result["parameter_scope"] == "type"
+    assert type_result["fact_entity"] == {
+        "kind": "element_type",
+        "id": "type-shutter",
+    }
+
+    records = synthetic_records(drawing)
+    records["parameters"][0].update(numeric_value=4400, value_text="4400 mm")
+    records["parameters"].append(type_parameter(records))
+    database = build_database(records, tmp_path / "instance-overrides-type.sqlite")
+    with QueryCore(database) as core:
+        result = core.get_opening_width("element-sd03")
+    assert result["status"] == "ok"
+    assert (result["numeric_value"], result["unit"]) == (4400, "mm")
+    assert result["parameter_scope"] == "instance"
+    assert result["fact_entity"] == {"kind": "element", "id": "element-sd03"}
+
+    records = synthetic_records(drawing)
+    records["parameters"] = [type_parameter(records, key="id:123")]
+    next(
+        row for row in records["annotations"] if row["id"] == "ann-opening-width"
+    )["semantic_type"] = None
+    database = build_database(records, tmp_path / "generic-type-width.sqlite")
+    with QueryCore(database) as core:
+        result = core.get_opening_width("element-sd03")
+    assert result["status"] == "not_found"
+
+
+def test_relative_elevation_requires_and_distinguishes_datum(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, _database = fixture
+    records = synthetic_records(drawing)
+    roof = next(row for row in records["annotations"] if row["id"] == "ann-roof-rfl")
+    roof["display_text"] = "TOS + 1250 mm"
+    database = build_database(records, tmp_path / "tos.sqlite")
+    with QueryCore(database) as core:
+        result = core.get_relative_elevation("element-roof", reference="RFL")
+    assert result["status"] == "insufficient_data"
+
+    records = synthetic_records(drawing)
+    records["annotations"] = [
+        row for row in records["annotations"] if row["id"] != "ann-roof-rfl"
+    ]
+    records["annotation_references"] = [
+        row for row in records["annotation_references"] if row["annotation_id"] != "ann-roof-rfl"
+    ]
+    records["parameters"].append(
+        {
+            **records["parameters"][0],
+            "id": "param-roof-relative",
+            "entity_id": "element-roof",
+            "definition_name": "relative_elevation",
+            "definition_key": "id:relative",
+            "value_text": "1250 mm",
+            "raw_value_text": "4.101 ft",
+            "numeric_value": 1250,
+        }
+    )
+    database = build_database(records, tmp_path / "reference-free.sqlite")
+    with QueryCore(database) as core:
+        result = core.get_relative_elevation("element-roof", reference="RFL")
+    assert result["status"] == "insufficient_data"
+
+
+def test_relative_elevation_datum_ambiguity_and_conflict(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, _database = fixture
+    records = synthetic_records(drawing)
+    original = next(row for row in records["annotations"] if row["id"] == "ann-roof-rfl")
+    second = dict(original)
+    second.update(id="ann-roof-tos", source_unique_id="annotation-tos", display_text="TOS + 1250 mm")
+    records["annotations"].append(second)
+    database = build_database(records, tmp_path / "datum-ambiguous.sqlite")
+    with QueryCore(database) as core:
+        result = core.get_relative_elevation("element-roof")
+    assert result["status"] == "ambiguous"
+    assert result["candidate_references"] == ["RFL", "TOS"]
+
+    records = synthetic_records(drawing)
+    original = next(row for row in records["annotations"] if row["id"] == "ann-roof-rfl")
+    second = dict(original)
+    second.update(
+        id="ann-roof-rfl-conflict",
+        source_unique_id="annotation-rfl-conflict",
+        display_text="RFL + 1300 mm",
+        numeric_value=1300,
+    )
+    records["annotations"].append(second)
+    database = build_database(records, tmp_path / "datum-conflict.sqlite")
+    with QueryCore(database) as core:
+        result = core.get_relative_elevation("element-roof")
+    assert result["status"] == "conflict"
+    assert result["reference"] == "RFL"
+
+
 def test_fts_japanese_relationships_and_spatial_exact_geometry(
     fixture: tuple[Path, Path],
 ) -> None:

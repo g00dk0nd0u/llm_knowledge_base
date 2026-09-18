@@ -62,7 +62,60 @@ Public APIs include `search_text`, `find_entities`, `get_entity`,
 `get_numeric_facts`, `get_dimensions`, `get_spot_elevations`,
 `get_spatial_candidates`, `get_related_entities`, `get_pdf_evidence`, plus v2
 `get_source_model`, `get_appearances`, `get_annotation_segments`,
-`get_annotation_references`, and `get_spatial_boundaries`.
+`get_annotation_references`, `get_occurrence_evidence`, and
+`get_spatial_boundaries`.
+
+## Practical structured queries
+
+Two intent-specific operations compose entity, relationship, structured fact, and
+PDF-evidence lookup. They use only stored data; they require no LLM, Revit runtime,
+RVT file, OCR, or external API.
+
+```python
+from tools.query_core import QueryCore
+
+with QueryCore("artifacts/query-demo/project.sqlite") as query:
+    opening = query.get_opening_width("element-dl03")
+    # status=ok, 4500 mm, Shutter SD-03, A-312, PDF page 1, evidence bbox
+
+    roof = query.get_relative_elevation("element-roof")
+    # status=ok, RFL + 1250 mm, A-421, PDF page 2, evidence bbox
+```
+
+`get_opening_width` first checks the stable Revit semantic parameter key
+`builtin:DOOR_WIDTH`, then an explicit normalized opening-width name, and finally an
+explicit opening-width dimension. A generic parameter named `Width` is not sufficient
+without the semantic key. The query follows only one bounded relationship step and
+deduplicates parallel relationships to the same target.
+
+For an element, qualifying instance parameters take precedence over parameters on its
+`element_type`; a valid instance value therefore overrides a different type value
+without creating a conflict. Parameter results expose `parameter_scope` (`instance`
+or `type`) and `fact_entity` so callers can audit which element or type supplied the
+answer.
+
+Annotations may be associated either by canonical `related_entity_id` or by resolved
+`annotation_references`. Revit reference matching always uses the
+`source_model_id + source_unique_id` identity pair; a UniqueId alone is not globally
+unique. `get_relative_elevation` uses `kind=spot_elevation` as its primary
+classification, but returns a datum such as RFL only when stored display or segment
+text proves it. A requested but unproven datum returns `insufficient_data`; different
+explicit datums are not collapsed merely because their numbers match.
+
+Practical evidence can come from explicit `evidence` records or joined Revit
+`entity_appearances` for the subject, target, and selected annotation. Appearance IDs
+remain distinct from evidence IDs. Page-only occurrences retain their sheet, page,
+and view while returning `bbox=null`; Query Core never fabricates PDF coordinates.
+Results preserve provenance and confidence and order deduplicated evidence by
+document, PDF page, sheet, view, and stable ID.
+
+Ordinary domain outcomes use `ok`, `not_found`, `insufficient_data`, `ambiguous`, or `conflict` status.
+Multiple plausible related openings are `ambiguous`; conflicting equally preferred
+facts are `conflict`. Neither operation guesses a target or value. Invalid inputs or
+unsupported/malformed databases still raise errors.
+
+These APIs do not perform corridor clear-width, obstruction, or other geometry
+analysis. Such analysis and real-Revit smoke testing are intentionally deferred.
 
 See [`REVIT_2026_MAPPING.md`](REVIT_2026_MAPPING.md) for the Phase B extraction map.
 
