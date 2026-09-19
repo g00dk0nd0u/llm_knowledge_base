@@ -5,6 +5,7 @@
   "archive_timezone": "Asia/Tokyo",
   "python_executable": "C:/Python312/python.exe",
   "repository_root": "D:/src/llm_knowledge_base",
+  "exporter_assembly": "D:/LlmKnowledgeBase/Revit/LlmKnowledgeBase.Revit2026.dll",
   "archive_retention_days": null,
   "include_links": true
 }

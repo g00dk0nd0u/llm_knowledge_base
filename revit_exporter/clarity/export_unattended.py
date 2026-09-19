@@ -6,13 +6,27 @@ import subprocess
 
 import clr
 from System import AppDomain
+from System.Reflection import Assembly
 
-assembly = next((item for item in AppDomain.CurrentDomain.GetAssemblies()
-                 if item.GetName().Name.startswith("LlmKnowledgeBase.Revit20")), None)
-if assembly is None:
-    raise RuntimeError("LlmKnowledgeBase Revit exporter assembly is not loaded")
-clr.AddReference(assembly.GetName().Name)
-from LlmKnowledgeBase.Revit import OfflineExportOptions, OfflineExportService
+from assembly_selection import SERVICE_TYPE, configured_fallback, find_loaded_exporter
+
+
+def load_exporter_assembly(config):
+    assembly = find_loaded_exporter(AppDomain.CurrentDomain.GetAssemblies())
+    if assembly is None:
+        path = configured_fallback(config)
+        if not os.path.isfile(path):
+            raise RuntimeError("Configured exporter_assembly does not exist: " + path)
+        try:
+            assembly = Assembly.LoadFrom(path)
+        except Exception as error:
+            raise RuntimeError("Failed to load configured exporter_assembly: " + path) from error
+    service_type = assembly.GetType(SERVICE_TYPE, False)
+    if service_type is None:
+        raise RuntimeError(
+            "Exporter assembly does not expose LlmKnowledgeBase.Revit.OfflineExportService")
+    clr.AddReference(assembly.GetName().Name)
+    return assembly
 
 
 def main():
@@ -29,6 +43,9 @@ def main():
     for name in ("export_root", "publish_root", "python_executable", "repository_root"):
         if not os.path.isabs(config[name]):
             raise RuntimeError("Invalid unattended config; {0} must be absolute".format(name))
+
+    load_exporter_assembly(config)
+    from LlmKnowledgeBase.Revit import OfflineExportOptions, OfflineExportService
 
     ui_document = getattr(__revit__, "ActiveUIDocument", None)  # noqa: F821 - supplied by pyRevit
     document = getattr(ui_document, "Document", None)

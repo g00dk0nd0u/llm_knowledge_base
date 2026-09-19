@@ -79,6 +79,12 @@ Unattended runs always finalize through Query Core. Invalid configuration fails 
 The first-party `tzdata` dependency supplies IANA timezone data on Windows machines
 that do not provide it through the operating system.
 
+`exporter_assembly` is an optional loading fallback. If the matching exporter host
+assembly is already present in Revit's `AppDomain`, the wrapper reuses it. Otherwise,
+this field must be an absolute path to the deployed host DLL for that worker's exact
+Revit/runtime profile (for example `LlmKnowledgeBase.Revit2026.dll`). The wrapper
+rejects a DLL that does not expose `LlmKnowledgeBase.Revit.OfflineExportService`.
+
 Publication validates the manifest hashes and names, SQLite database, enhanced PDF,
 and its embedded SQLite payload. It converts the manifest export timestamp—not the
 later publication time—to the configured timezone and copies a complete archive to
