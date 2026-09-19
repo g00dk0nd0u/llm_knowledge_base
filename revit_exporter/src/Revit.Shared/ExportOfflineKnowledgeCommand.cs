@@ -523,6 +523,14 @@ internal sealed class RevitSnapshotExporter
         {
             if (target.LinkedElementId != ElementId.InvalidElementId && _document.GetElement(target.HostElementId) is RevitLinkInstance link)
             {
+                if (!_options.IncludeLinks)
+                {
+                    Add("annotation_references", ReferenceObject(annotationId, index++, null, null, null,
+                        true, "unresolved", null));
+                    _warnings.Add(new("linked_annotation_reference_omitted",
+                        "Linked tag target was omitted because link export is disabled.", tag.UniqueId));
+                    continue;
+                }
                 var linkedDocument = link.GetLinkDocument(); var linkedElement = linkedDocument?.GetElement(target.LinkedElementId);
                 if (linkedDocument is not null && linkedElement is not null)
                 {
@@ -556,6 +564,14 @@ internal sealed class RevitSnapshotExporter
         {
             if (reference.LinkedElementId != ElementId.InvalidElementId && _document.GetElement(reference.ElementId) is RevitLinkInstance link)
             {
+                if (!_options.IncludeLinks)
+                {
+                    Add("annotation_references", ReferenceObject(annotationId, index, null, null, null,
+                        true, "unresolved", stable));
+                    _warnings.Add(new("linked_annotation_reference_omitted",
+                        "Linked dimension target was omitted because link export is disabled."));
+                    return;
+                }
                 var linkedDocument = link.GetLinkDocument(); var linkedElement = linkedDocument?.GetElement(reference.LinkedElementId);
                 if (linkedDocument is not null && linkedElement is not null)
                 {

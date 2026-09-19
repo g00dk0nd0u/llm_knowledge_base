@@ -11,7 +11,7 @@ assembly = next((item for item in AppDomain.CurrentDomain.GetAssemblies()
                  if item.GetName().Name.startswith("LlmKnowledgeBase.Revit20")), None)
 if assembly is None:
     raise RuntimeError("LlmKnowledgeBase Revit exporter assembly is not loaded")
-clr.AddReference(assembly)
+clr.AddReference(assembly.GetName().Name)
 from LlmKnowledgeBase.Revit import OfflineExportOptions, OfflineExportService
 
 
@@ -26,12 +26,18 @@ def main():
     missing = [name for name in required if not config.get(name)]
     if missing:
         raise RuntimeError("Invalid unattended config; missing: " + ", ".join(missing))
+    for name in ("export_root", "publish_root", "python_executable", "repository_root"):
+        if not os.path.isabs(config[name]):
+            raise RuntimeError("Invalid unattended config; {0} must be absolute".format(name))
 
-    document = __revit__.ActiveUIDocument.Document  # noqa: F821 - supplied by pyRevit
+    ui_document = getattr(__revit__, "ActiveUIDocument", None)  # noqa: F821 - supplied by pyRevit
+    document = getattr(ui_document, "Document", None)
+    if document is None:
+        raise RuntimeError("No active Revit document is available")
     options = OfflineExportOptions()
     options.ExportRoot = config["export_root"]
     options.IncludeLinks = config.get("include_links", True)
-    completed_run = OfflineExportService.Run(document, options)
+    completed_run = str(OfflineExportService.Run(document, options))
     command = [config["python_executable"], "-m", "tools.unattended_export",
                "finalize-publish", "--config", config_path, "--run", completed_run]
     result = subprocess.call(command, cwd=config["repository_root"])

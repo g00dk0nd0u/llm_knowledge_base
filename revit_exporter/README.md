@@ -74,10 +74,14 @@ python -m tools.unattended_export finalize-publish \
 
 Configuration requires `project_key`, `export_root`, `publish_root`, an IANA
 `archive_timezone`, `python_executable`, and `repository_root`. Optional settings are
-`archive_retention_days` (use `null` to disable pruning), `include_links`, and
-`finalize`. Invalid configuration fails without publication.
+`archive_retention_days` (use `null` to disable pruning) and `include_links`.
+Unattended runs always finalize through Query Core. Invalid configuration fails without publication.
+The first-party `tzdata` dependency supplies IANA timezone data on Windows machines
+that do not provide it through the operating system.
 
-Publication validates all five deliverables, copies a complete archive to
+Publication validates the manifest hashes and names, SQLite database, enhanced PDF,
+and its embedded SQLite payload. It converts the manifest export timestamp—not the
+later publication time—to the configured timezone and copies a complete archive to
 `<publish_root>/<project_key>/archive/YYYY-MM-DD/<run-id>/`, and promotes a fully
 staged directory to `latest/`. A per-project filesystem lock serializes publishers.
 Promotion renames the prior `latest` to a backup and restores it if promotion fails;
