@@ -1,0 +1,11 @@
+{
+  "project_key": "example-project",
+  "export_root": "D:/LlmKnowledgeBase/exports",
+  "publish_root": "D:/LlmKnowledgeBase/published",
+  "archive_timezone": "Asia/Tokyo",
+  "python_executable": "C:/Python312/python.exe",
+  "repository_root": "D:/src/llm_knowledge_base",
+  "archive_retention_days": null,
+  "include_links": true,
+  "finalize": true
+}
