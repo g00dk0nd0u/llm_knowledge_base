@@ -688,52 +688,66 @@ class QueryCore:
         )
 
     def get_related_spaces(self, entity_id: str) -> list[dict[str, Any]]:
-        """Return explicit spatial relationships for an element, without inference."""
+        """Return unique spaces explicitly stored for an element, without inference."""
+        element = self.get_entity("element", entity_id)
+        if element is None:
+            return []
         rows = self._rows(
-            "SELECT r.*,s.kind AS space_kind,s.name AS space_name,"
-            "s.number AS space_number,s.level_id AS space_level_id,"
-            "s.source_model_id AS space_source_model_id,"
-            "s.source_unique_id AS space_source_unique_id,"
-            "s.provenance AS space_provenance,s.confidence AS space_confidence "
-            "FROM relationships r JOIN spaces s ON s.id=r.target_id "
+            "SELECT r.* FROM relationships r JOIN spaces s ON s.id=r.target_id "
             "WHERE r.source_kind='element' AND r.source_id=? "
             "AND r.target_kind='space' "
             "AND r.relation_type IN ('from_space','to_space','contained_in') "
-            "ORDER BY r.relation_type,s.id,r.id",
+            "ORDER BY r.target_id,r.relation_type,r.phase_source_unique_id,r.id",
             (entity_id,),
         )
-        output: list[dict[str, Any]] = []
-        seen: set[tuple[str, str]] = set()
+        spaces: dict[str, dict[str, Any]] = {}
+        context_keys: dict[str, set[str]] = {}
+
+        def add_context(space_id: str, context: dict[str, Any]) -> None:
+            space = spaces.get(space_id)
+            if space is None:
+                stored_space = self.get_entity("space", space_id)
+                if stored_space is None:
+                    return
+                space = {**stored_space, "contexts": []}
+                spaces[space_id] = space
+                context_keys[space_id] = set()
+            key = json.dumps(
+                {key: value for key, value in context.items() if key != "relationship_id"},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if key not in context_keys[space_id]:
+                context_keys[space_id].add(key)
+                space["contexts"].append(context)
+
+        if element.get("space_id"):
+            add_context(
+                element["space_id"],
+                {
+                    "instance_id": entity_id,
+                    "relation_type": "space_id",
+                    "relationship_id": None,
+                    "phase_source_unique_id": None,
+                    "provenance": element["provenance"],
+                    "confidence": element["confidence"],
+                    "evidence_id": None,
+                },
+            )
         for row in rows:
-            key = (row["relation_type"], row["target_id"])
-            if key in seen:
-                continue
-            seen.add(key)
-            output.append(
+            add_context(
+                row["target_id"],
                 {
                     "instance_id": entity_id,
                     "relation_type": row["relation_type"],
-                    "space": {
-                        "id": row["target_id"],
-                        "kind": row.pop("space_kind"),
-                        "name": row.pop("space_name"),
-                        "number": row.pop("space_number"),
-                        "level_id": row.pop("space_level_id"),
-                        "source_model_id": row.pop("space_source_model_id"),
-                        "source_unique_id": row.pop("space_source_unique_id"),
-                        "provenance": row.pop("space_provenance"),
-                        "confidence": row.pop("space_confidence"),
-                    },
-                    "relationship": {
-                        "id": row["id"],
-                        "phase_source_unique_id": row.get("phase_source_unique_id"),
-                        "provenance": row["provenance"],
-                        "confidence": row["confidence"],
-                        "evidence_id": row["evidence_id"],
-                    },
-                }
+                    "relationship_id": row["id"],
+                    "phase_source_unique_id": row.get("phase_source_unique_id"),
+                    "provenance": row["provenance"],
+                    "confidence": row["confidence"],
+                    "evidence_id": row["evidence_id"],
+                },
             )
-        return output
+        return [spaces[space_id] for space_id in sorted(spaces)]
 
     def get_change_impact(self, entity_id: str) -> dict[str, Any]:
         """Resolve a type and return its stored instance, space, and drawing impact."""
@@ -777,7 +791,8 @@ class QueryCore:
             }
 
         instances = self.get_type_instances(element_type["id"])
-        related_spaces: list[dict[str, Any]] = []
+        spaces_by_id: dict[str, dict[str, Any]] = {}
+        space_context_keys: dict[str, set[str]] = {}
         occurrences: list[dict[str, Any]] = []
         occurrence_keys: set[str] = set()
         spatial_instance_ids: set[str] = set()
@@ -786,7 +801,26 @@ class QueryCore:
             spatial = self.get_related_spaces(instance["id"])
             if spatial:
                 spatial_instance_ids.add(instance["id"])
-                related_spaces.extend(spatial)
+                for space in spatial:
+                    aggregate = spaces_by_id.setdefault(
+                        space["id"],
+                        {key: value for key, value in space.items() if key != "contexts"}
+                        | {"contexts": []},
+                    )
+                    seen = space_context_keys.setdefault(space["id"], set())
+                    for context in space["contexts"]:
+                        key = json.dumps(
+                            {
+                                name: value
+                                for name, value in context.items()
+                                if name != "relationship_id"
+                            },
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                        if key not in seen:
+                            seen.add(key)
+                            aggregate["contexts"].append(context)
             instance_occurrences = self.get_occurrence_evidence(
                 "element", instance["id"]
             )
@@ -819,7 +853,7 @@ class QueryCore:
             "subject": {"kind": subject_kind, **subject},
             "element_type": element_type,
             "affected_instances": instances,
-            "related_spaces": related_spaces,
+            "related_spaces": [spaces_by_id[key] for key in sorted(spaces_by_id)],
             "drawing_occurrences": occurrences,
             "coverage": {
                 "total_instances": total,

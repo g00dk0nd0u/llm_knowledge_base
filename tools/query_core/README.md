@@ -68,8 +68,11 @@ Public APIs include `search_text`, `find_entities`, `get_entity`,
 
 `get_change_impact` accepts an element or element-type ID. An element first resolves
 its stored `type_id`; the result then deterministically aggregates every instance of
-that type, explicit `from_space`/`to_space`/`contained_in` relationships, and drawing
-occurrences. Coverage counts distinguish all instances from those with stored spatial
+that type, explicit `elements.space_id` and
+`from_space`/`to_space`/`contained_in` relationships, and drawing occurrences.
+Top-level related spaces are unique by space ID and carry ordered `contexts` containing
+the instance, relation semantic, relationship ID, phase, provenance, confidence, and
+evidence ID. Coverage counts distinguish all instances from those with stored spatial
 context or drawing occurrences. Missing context remains explicit in warnings and is
 never inferred from geometry. Occurrences preserve page-only (`bbox=null`), link
 instance, provenance, and bbox-quality data.
