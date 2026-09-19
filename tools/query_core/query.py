@@ -529,9 +529,9 @@ class QueryCore:
             "SELECT a.*,d.id AS document_id,d.identity AS document_identity,"
             "d.source_filename,s.number AS sheet_number,s.name AS sheet_name,"
             "v.name AS view_name FROM entity_appearances a "
-            "JOIN sheets s ON s.id=a.sheet_id "
-            "JOIN documents d ON d.id=s.document_id "
+            "LEFT JOIN sheets s ON s.id=a.sheet_id "
             "LEFT JOIN views v ON v.id=a.view_id "
+            "JOIN documents d ON d.id=COALESCE(s.document_id,v.document_id) "
             "WHERE a.entity_kind=? AND a.entity_id=? "
             "ORDER BY d.identity,a.pdf_page,s.number,v.name,a.id",
             (entity_kind, entity_id),
@@ -560,9 +560,9 @@ class QueryCore:
             "SELECT a.id AS appearance_id,a.*,d.id AS document_id,"
             "d.identity AS document_identity,d.source_filename,"
             "s.number AS sheet_number,s.name AS sheet_name,v.name AS view_name "
-            "FROM entity_appearances a JOIN sheets s ON s.id=a.sheet_id "
-            "JOIN documents d ON d.id=s.document_id "
+            "FROM entity_appearances a LEFT JOIN sheets s ON s.id=a.sheet_id "
             "LEFT JOIN views v ON v.id=a.view_id "
+            "JOIN documents d ON d.id=COALESCE(s.document_id,v.document_id) "
             "WHERE a.entity_kind=? AND a.entity_id=?",
             (entity_kind, entity_id),
         )
@@ -577,9 +577,10 @@ class QueryCore:
             "SELECT a.id AS appearance_id,a.*,d.id AS document_id,"
             "d.identity AS document_identity,d.source_filename,"
             "s.number AS sheet_number,s.name AS sheet_name,v.name AS view_name "
-            "FROM entity_appearances a JOIN sheets s ON s.id=a.sheet_id "
-            "JOIN documents d ON d.id=s.document_id "
-            "LEFT JOIN views v ON v.id=a.view_id WHERE a.id=?",
+            "FROM entity_appearances a LEFT JOIN sheets s ON s.id=a.sheet_id "
+            "LEFT JOIN views v ON v.id=a.view_id "
+            "JOIN documents d ON d.id=COALESCE(s.document_id,v.document_id) "
+            "WHERE a.id=?",
             (appearance_id,),
         )
         return (
