@@ -256,6 +256,140 @@ def test_occurrence_evidence_is_compact_page_safe_and_link_scoped(
     ]
 
 
+def test_change_impact_is_type_wide_deduplicated_and_evidence_safe(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, _database = fixture
+    records = synthetic_records(drawing)
+    linked = next(
+        row for row in records["elements"] if row["id"] == "element-linked-collision"
+    )
+    linked["type_id"] = "type-shutter"
+    next(row for row in records["elements"] if row["id"] == "element-sd03")[
+        "space_id"
+    ] = "space-hall-a"
+    sibling = dict(
+        next(row for row in records["elements"] if row["id"] == "element-sd03")
+    )
+    sibling.update(
+        id="element-sd04",
+        name="Shutter SD-04",
+        source_unique_id="synthetic-sd04",
+        space_id="space-hall-a",
+    )
+    records["elements"].append(sibling)
+    duplicate = dict(
+        next(
+            row
+            for row in records["relationships"]
+            if row["id"] == "rel-shutter-from"
+        )
+    )
+    duplicate["id"] = "rel-shutter-from-duplicate"
+    records["relationships"].append(duplicate)
+    linked_relationship = dict(duplicate)
+    linked_relationship.update(
+        id="rel-linked-shutter-from", source_id="element-linked-collision"
+    )
+    records["relationships"].append(linked_relationship)
+    duplicate_appearance = dict(records["entity_appearances"][0])
+    duplicate_appearance["id"] = "appearance-sd03-duplicate"
+    records["entity_appearances"].append(duplicate_appearance)
+    database = build_database(records, tmp_path / "change-impact.sqlite")
+
+    with QueryCore(database) as core:
+        instances = core.get_type_instances("type-shutter")
+        spaces = core.get_related_spaces("element-sd03")
+        by_type = core.get_change_impact("type-shutter")
+        by_type_again = core.get_change_impact("type-shutter")
+        by_instance = core.get_change_impact("element-sd03")
+
+    assert [row["id"] for row in instances] == [
+        "element-linked-collision",
+        "element-sd03",
+        "element-sd04",
+    ]
+    assert [row["id"] for row in spaces] == ["space-hall-a", "space-hall-b"]
+    assert [context["relation_type"] for context in spaces[0]["contexts"]] == [
+        "space_id",
+        "from_space",
+    ]
+    assert [context["relation_type"] for context in spaces[1]["contexts"]] == [
+        "to_space"
+    ]
+    assert by_type["status"] == "ok"
+    assert by_type["subject"]["kind"] == "element_type"
+    assert by_instance["subject"]["kind"] == "element"
+    assert by_instance["element_type"] == by_type["element_type"]
+    assert by_instance["affected_instances"] == by_type["affected_instances"]
+    assert by_type["coverage"] == {
+        "total_instances": 3,
+        "instances_with_spatial_context": 3,
+        "instances_with_drawing_occurrence": 2,
+    }
+    assert by_type["warnings"] == ["drawing_occurrence_partial"]
+    assert len(by_type["related_spaces"]) == 2
+    hall_a = by_type["related_spaces"][0]
+    assert hall_a["id"] == "space-hall-a"
+    assert hall_a["source_model_id"] == "model-host"
+    assert hall_a["source_unique_id"] == "synthetic-space-a"
+    assert hall_a["provenance"] == "synthetic_fixture"
+    assert hall_a["confidence"] is None
+    assert [
+        (context["instance_id"], context["relation_type"])
+        for context in hall_a["contexts"]
+    ] == [
+        ("element-linked-collision", "from_space"),
+        ("element-sd03", "space_id"),
+        ("element-sd03", "from_space"),
+        ("element-sd04", "space_id"),
+    ]
+    assert len(
+        [
+            context
+            for context in hall_a["contexts"]
+            if context["instance_id"] == "element-sd03"
+            and context["relation_type"] == "from_space"
+        ]
+    ) == 1
+    assert len(by_type["drawing_occurrences"]) == 5
+    assert by_type == by_type_again
+
+    page_only = next(
+        row
+        for row in by_type["drawing_occurrences"]
+        if row["bbox_quality"] == "page_only"
+    )
+    assert page_only["bbox"] is None
+    assert (page_only["sheet_number"], page_only["view_name"], page_only["pdf_page"]) == (
+        "A-201",
+        "Level 2 Data Hall Plan",
+        3,
+    )
+    linked_occurrences = [
+        row
+        for row in by_type["drawing_occurrences"]
+        if row["instance_id"] == "element-linked-collision"
+    ]
+    assert [row["link_instance_id"] for row in linked_occurrences] == [
+        "link-instance-a",
+        "link-instance-b",
+    ]
+    assert next(
+        row
+        for row in by_type["affected_instances"]
+        if row["id"] == "element-linked-collision"
+    )["source_model_id"] == "model-link"
+
+
+def test_change_impact_unknown_entity_is_explicit(fixture: tuple[Path, Path]) -> None:
+    with QueryCore(fixture[1]) as core:
+        result = core.get_change_impact("missing-entity")
+    assert result["status"] == "not_found"
+    assert result["subject"] is None
+    assert result["warnings"] == ["entity_not_found"]
+
+
 def test_revit_shaped_practical_queries_use_references_and_appearances(
     fixture: tuple[Path, Path], tmp_path: Path
 ) -> None:

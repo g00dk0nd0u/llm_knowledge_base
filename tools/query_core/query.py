@@ -681,6 +681,188 @@ class QueryCore:
             )
         )
 
+    def get_type_instances(self, type_id: str) -> list[dict[str, Any]]:
+        """Return all elements that explicitly reference an element type."""
+        return self._rows(
+            "SELECT * FROM elements WHERE type_id=? ORDER BY id", (type_id,)
+        )
+
+    def get_related_spaces(self, entity_id: str) -> list[dict[str, Any]]:
+        """Return unique spaces explicitly stored for an element, without inference."""
+        element = self.get_entity("element", entity_id)
+        if element is None:
+            return []
+        rows = self._rows(
+            "SELECT r.* FROM relationships r JOIN spaces s ON s.id=r.target_id "
+            "WHERE r.source_kind='element' AND r.source_id=? "
+            "AND r.target_kind='space' "
+            "AND r.relation_type IN ('from_space','to_space','contained_in') "
+            "ORDER BY r.target_id,r.relation_type,r.phase_source_unique_id,r.id",
+            (entity_id,),
+        )
+        spaces: dict[str, dict[str, Any]] = {}
+        context_keys: dict[str, set[str]] = {}
+
+        def add_context(space_id: str, context: dict[str, Any]) -> None:
+            space = spaces.get(space_id)
+            if space is None:
+                stored_space = self.get_entity("space", space_id)
+                if stored_space is None:
+                    return
+                space = {**stored_space, "contexts": []}
+                spaces[space_id] = space
+                context_keys[space_id] = set()
+            key = json.dumps(
+                {key: value for key, value in context.items() if key != "relationship_id"},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if key not in context_keys[space_id]:
+                context_keys[space_id].add(key)
+                space["contexts"].append(context)
+
+        if element.get("space_id"):
+            add_context(
+                element["space_id"],
+                {
+                    "instance_id": entity_id,
+                    "relation_type": "space_id",
+                    "relationship_id": None,
+                    "phase_source_unique_id": None,
+                    "provenance": element["provenance"],
+                    "confidence": element["confidence"],
+                    "evidence_id": None,
+                },
+            )
+        for row in rows:
+            add_context(
+                row["target_id"],
+                {
+                    "instance_id": entity_id,
+                    "relation_type": row["relation_type"],
+                    "relationship_id": row["id"],
+                    "phase_source_unique_id": row.get("phase_source_unique_id"),
+                    "provenance": row["provenance"],
+                    "confidence": row["confidence"],
+                    "evidence_id": row["evidence_id"],
+                },
+            )
+        return [spaces[space_id] for space_id in sorted(spaces)]
+
+    def get_change_impact(self, entity_id: str) -> dict[str, Any]:
+        """Resolve a type and return its stored instance, space, and drawing impact."""
+        subject = self.get_entity("element", entity_id)
+        subject_kind = "element"
+        if subject is None:
+            subject = self.get_entity("element_type", entity_id)
+            subject_kind = "element_type"
+        if subject is None:
+            return {
+                "status": "not_found",
+                "subject": None,
+                "element_type": None,
+                "affected_instances": [],
+                "related_spaces": [],
+                "drawing_occurrences": [],
+                "coverage": {
+                    "total_instances": 0,
+                    "instances_with_spatial_context": 0,
+                    "instances_with_drawing_occurrence": 0,
+                },
+                "warnings": ["entity_not_found"],
+            }
+
+        type_id = subject["type_id"] if subject_kind == "element" else subject["id"]
+        element_type = self.get_entity("element_type", type_id) if type_id else None
+        if element_type is None:
+            return {
+                "status": "insufficient_data",
+                "subject": {"kind": subject_kind, **subject},
+                "element_type": None,
+                "affected_instances": [],
+                "related_spaces": [],
+                "drawing_occurrences": [],
+                "coverage": {
+                    "total_instances": 0,
+                    "instances_with_spatial_context": 0,
+                    "instances_with_drawing_occurrence": 0,
+                },
+                "warnings": ["element_type_not_stored"],
+            }
+
+        instances = self.get_type_instances(element_type["id"])
+        spaces_by_id: dict[str, dict[str, Any]] = {}
+        space_context_keys: dict[str, set[str]] = {}
+        occurrences: list[dict[str, Any]] = []
+        occurrence_keys: set[str] = set()
+        spatial_instance_ids: set[str] = set()
+        drawing_instance_ids: set[str] = set()
+        for instance in instances:
+            spatial = self.get_related_spaces(instance["id"])
+            if spatial:
+                spatial_instance_ids.add(instance["id"])
+                for space in spatial:
+                    aggregate = spaces_by_id.setdefault(
+                        space["id"],
+                        {key: value for key, value in space.items() if key != "contexts"}
+                        | {"contexts": []},
+                    )
+                    seen = space_context_keys.setdefault(space["id"], set())
+                    for context in space["contexts"]:
+                        key = json.dumps(
+                            {
+                                name: value
+                                for name, value in context.items()
+                                if name != "relationship_id"
+                            },
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                        if key not in seen:
+                            seen.add(key)
+                            aggregate["contexts"].append(context)
+            instance_occurrences = self.get_occurrence_evidence(
+                "element", instance["id"]
+            )
+            if instance_occurrences:
+                drawing_instance_ids.add(instance["id"])
+            for occurrence in instance_occurrences:
+                occurrence = {"instance_id": instance["id"], **occurrence}
+                key = json.dumps(
+                    {
+                        name: value
+                        for name, value in occurrence.items()
+                        if name != "appearance_id"
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                if key in occurrence_keys:
+                    continue
+                occurrence_keys.add(key)
+                occurrences.append(occurrence)
+
+        total = len(instances)
+        warnings = []
+        if len(spatial_instance_ids) < total:
+            warnings.append("spatial_context_partial")
+        if len(drawing_instance_ids) < total:
+            warnings.append("drawing_occurrence_partial")
+        return {
+            "status": "ok",
+            "subject": {"kind": subject_kind, **subject},
+            "element_type": element_type,
+            "affected_instances": instances,
+            "related_spaces": [spaces_by_id[key] for key in sorted(spaces_by_id)],
+            "drawing_occurrences": occurrences,
+            "coverage": {
+                "total_instances": total,
+                "instances_with_spatial_context": len(spatial_instance_ids),
+                "instances_with_drawing_occurrence": len(drawing_instance_ids),
+            },
+            "warnings": warnings,
+        }
+
     def get_spatial_candidates(
         self, bounds: tuple[float, float, float, float, float, float]
     ) -> list[dict[str, Any]]:
