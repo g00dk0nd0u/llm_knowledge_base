@@ -754,6 +754,315 @@ class QueryCore:
             "SELECT * FROM elements WHERE type_id=? ORDER BY id", (type_id,)
         )
 
+    @staticmethod
+    def _containment_context_key(context: dict[str, Any]) -> str:
+        """Identify equivalent explicit containment without relying on row IDs."""
+        return json.dumps(
+            {key: value for key, value in context.items() if key != "relationship_id"},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def get_containing_spaces(self, element_id: str) -> list[dict[str, Any]]:
+        """Return spaces explicitly containing an element (not From/To rooms)."""
+        element = self.get_entity("element", element_id)
+        if element is None:
+            return []
+        rows = self._rows(
+            "SELECT r.* FROM relationships r JOIN spaces s ON s.id=r.target_id "
+            "WHERE r.source_kind='element' AND r.source_id=? "
+            "AND r.relation_type='contained_in' AND r.target_kind='space' "
+            "ORDER BY r.target_id,r.phase_source_unique_id,r.id",
+            (element_id,),
+        )
+        result: dict[str, dict[str, Any]] = {}
+        seen: dict[str, set[str]] = {}
+
+        def add(space_id: str, context: dict[str, Any]) -> None:
+            if space_id not in result:
+                space = self.get_entity("space", space_id)
+                if space is None:
+                    return
+                result[space_id] = {**space, "contexts": []}
+                seen[space_id] = set()
+            key = self._containment_context_key(context)
+            if key not in seen[space_id]:
+                seen[space_id].add(key)
+                result[space_id]["contexts"].append(context)
+
+        if element.get("space_id"):
+            add(
+                element["space_id"],
+                {
+                    "relation_type": "space_id",
+                    "relationship_id": None,
+                    "phase_source_unique_id": None,
+                    "provenance": element["provenance"],
+                    "confidence": element["confidence"],
+                    "evidence_id": None,
+                },
+            )
+        for row in rows:
+            add(
+                row["target_id"],
+                {
+                    "relation_type": "contained_in",
+                    "relationship_id": row["id"],
+                    "phase_source_unique_id": row["phase_source_unique_id"],
+                    "provenance": row["provenance"],
+                    "confidence": row["confidence"],
+                    "evidence_id": row["evidence_id"],
+                },
+            )
+        return [result[key] for key in sorted(result)]
+
+    def get_contained_elements(self, space_id: str) -> list[dict[str, Any]]:
+        """Return elements explicitly assigned to or contained in a space."""
+        if self.get_entity("space", space_id) is None:
+            return []
+        ids = {
+            row["id"]
+            for row in self._rows(
+                "SELECT id FROM elements WHERE space_id=? ORDER BY id", (space_id,)
+            )
+        }
+        ids.update(
+            row["source_id"]
+            for row in self._rows(
+                "SELECT r.source_id FROM relationships r JOIN elements e ON e.id=r.source_id "
+                "WHERE r.source_kind='element' AND r.target_kind='space' "
+                "AND r.target_id=? AND r.relation_type='contained_in' ORDER BY r.source_id",
+                (space_id,),
+            )
+        )
+        output = []
+        for element_id in sorted(ids):
+            element = self.get_entity("element", element_id)
+            contexts = next(
+                (
+                    space["contexts"]
+                    for space in self.get_containing_spaces(element_id)
+                    if space["id"] == space_id
+                ),
+                [],
+            )
+            if element is not None and contexts:
+                output.append({**element, "contexts": contexts})
+        return output
+
+    def get_same_type_elements(self, element_id: str) -> dict[str, Any]:
+        """Resolve stored type membership and deterministically return peer instances."""
+        element = self.get_entity("element", element_id)
+        if element is None:
+            return {
+                "status": "not_found",
+                "element": None,
+                "element_type": None,
+                "elements": [],
+            }
+        type_id = element.get("type_id")
+        element_type = self.get_entity("element_type", type_id) if type_id else None
+        if element_type is None:
+            return {
+                "status": "insufficient_data",
+                "element": element,
+                "element_type": None,
+                "elements": [],
+            }
+        return {
+            "status": "ok",
+            "element": element,
+            "element_type": element_type,
+            "elements": [
+                sibling
+                for sibling in self.get_type_instances(type_id)
+                if sibling["id"] != element_id
+            ],
+        }
+
+    def get_same_space_elements(self, element_id: str) -> dict[str, Any]:
+        """Return membership per explicit containment context, preserving ambiguity."""
+        element = self.get_entity("element", element_id)
+        if element is None:
+            return {"status": "not_found", "element": None, "spaces": []}
+        spaces = []
+        for space in self.get_containing_spaces(element_id):
+            spaces.append(
+                {
+                    "space": {
+                        key: value for key, value in space.items() if key != "contexts"
+                    },
+                    "contexts": space["contexts"],
+                    "elements": self.get_contained_elements(space["id"]),
+                }
+            )
+        return {
+            "status": "ok" if spaces else "insufficient_data",
+            "element": element,
+            "spaces": spaces,
+        }
+
+    def get_space_connections(self, space_id: str) -> list[dict[str, Any]]:
+        """Return phase-safe connections represented by stored From/To relationships."""
+        if self.get_entity("space", space_id) is None:
+            return []
+        rows = self._rows(
+            "SELECT r.* FROM relationships r JOIN elements e ON e.id=r.source_id "
+            "WHERE r.source_kind='element' AND r.target_kind='space' "
+            "AND r.relation_type IN ('from_space','to_space') "
+            "AND (r.target_id=? OR EXISTS (SELECT 1 FROM relationships peer "
+            "WHERE peer.source_kind='element' AND peer.source_id=r.source_id "
+            "AND peer.target_kind='space' AND peer.target_id=? "
+            "AND peer.relation_type IN ('from_space','to_space') "
+            "AND peer.phase_source_unique_id IS r.phase_source_unique_id)) "
+            "ORDER BY r.source_id,r.phase_source_unique_id,r.relation_type,r.id",
+            (space_id, space_id),
+        )
+        groups: dict[tuple[str, str | None], list[dict[str, Any]]] = {}
+        for row in rows:
+            groups.setdefault(
+                (row["source_id"], row["phase_source_unique_id"]), []
+            ).append(row)
+        output = []
+        for (connector_id, phase_id), relations in sorted(
+            groups.items(), key=lambda item: (item[0][0], item[0][1] or "")
+        ):
+            sides: dict[str, dict[str, Any] | None] = {
+                "from_space": None,
+                "to_space": None,
+            }
+            for side in sides:
+                candidates = sorted(
+                    {
+                        row["target_id"]
+                        for row in relations
+                        if row["relation_type"] == side
+                    }
+                )
+                if len(candidates) == 1:
+                    sides[side] = self.get_entity("space", candidates[0])
+            connector = self.get_entity("element", connector_id)
+            connector_type = (
+                self.get_entity("element_type", connector.get("type_id"))
+                if connector and connector.get("type_id")
+                else None
+            )
+            complete = all(sides.values()) and all(
+                len({r["target_id"] for r in relations if r["relation_type"] == side})
+                == 1
+                for side in sides
+            )
+            connected = None
+            if complete:
+                if sides["from_space"]["id"] == space_id:
+                    connected = sides["to_space"]
+                elif sides["to_space"]["id"] == space_id:
+                    connected = sides["from_space"]
+            output.append(
+                {
+                    "status": "complete" if complete else "partial",
+                    "connector_element": connector,
+                    "connector_type": connector_type,
+                    "from_space": sides["from_space"],
+                    "to_space": sides["to_space"],
+                    "connected_space": connected,
+                    "phase_source_unique_id": phase_id,
+                    "relationship_ids": sorted(row["id"] for row in relations),
+                    "relationships": [
+                        {
+                            "id": row["id"],
+                            "relation_type": row["relation_type"],
+                            "provenance": row["provenance"],
+                            "confidence": row["confidence"],
+                        }
+                        for row in relations
+                    ],
+                    "navigation": self.get_navigation_targets("element", connector_id),
+                }
+            )
+        return output
+
+    def get_level_difference(
+        self, kind_a: str, id_a: str, kind_b: str, id_b: str
+    ) -> dict[str, Any]:
+        """Subtract two explicitly stored level elevations (A minus B)."""
+        entity_a = self.get_entity(kind_a, id_a)
+        entity_b = self.get_entity(kind_b, id_b)
+        level_a = (
+            entity_a
+            if kind_a == "level"
+            else (
+                self.get_entity("level", entity_a.get("level_id"))
+                if entity_a and entity_a.get("level_id")
+                else None
+            )
+        )
+        level_b = (
+            entity_b
+            if kind_b == "level"
+            else (
+                self.get_entity("level", entity_b.get("level_id"))
+                if entity_b and entity_b.get("level_id")
+                else None
+            )
+        )
+        valid = (
+            level_a is not None
+            and level_b is not None
+            and level_a.get("elevation") is not None
+            and level_b.get("elevation") is not None
+            and level_a.get("unit") is not None
+            and level_a.get("unit") == level_b.get("unit")
+        )
+        if not valid:
+            return {
+                "status": "insufficient_data",
+                "level_a": level_a,
+                "level_b": level_b,
+                "signed_difference": None,
+                "absolute_difference": None,
+                "unit": None,
+            }
+        difference = level_a["elevation"] - level_b["elevation"]
+        return {
+            "status": "ok",
+            "level_a": level_a,
+            "level_b": level_b,
+            "signed_difference": difference,
+            "absolute_difference": abs(difference),
+            "unit": level_a["unit"],
+        }
+
+    def get_spatial_context(self, entity_kind: str, entity_id: str) -> dict[str, Any]:
+        """Compose the explicit application-facing context from focused APIs."""
+        entity = self.get_entity(entity_kind, entity_id)
+        if entity is None:
+            return {"status": "not_found", "entity": None}
+        level = (
+            self.get_entity("level", entity.get("level_id"))
+            if entity.get("level_id")
+            else None
+        )
+        if entity_kind == "element":
+            return {
+                "status": "ok",
+                "entity": entity,
+                "containment": self.get_containing_spaces(entity_id),
+                "type_siblings": self.get_same_type_elements(entity_id),
+                "level": level,
+            }
+        if entity_kind == "space":
+            return {
+                "status": "ok",
+                "entity": entity,
+                "contained_elements": self.get_contained_elements(entity_id),
+                "connections": self.get_space_connections(entity_id),
+                "level": level,
+            }
+        raise QueryCoreError(
+            f"spatial context is unsupported for entity kind: {entity_kind}"
+        )
+
     def get_related_spaces(self, entity_id: str) -> list[dict[str, Any]]:
         """Return unique spaces explicitly stored for an element, without inference."""
         element = self.get_entity("element", entity_id)

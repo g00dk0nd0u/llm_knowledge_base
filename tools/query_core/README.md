@@ -67,6 +67,17 @@ Public APIs include `search_text`, `find_entities`, `get_entity`,
 `get_evidence_navigation`. Change-impact APIs include `get_type_instances`,
 `get_related_spaces`, and `get_change_impact`.
 
+Explicit spatial APIs include `get_contained_elements`,
+`get_containing_spaces`, `get_space_connections`, `get_same_type_elements`,
+`get_same_space_elements`, `get_level_difference`, and `get_spatial_context`.
+Containment and same-space membership use only `elements.space_id` and
+`contained_in`; From/To room relationships are connector semantics, not containment.
+Connections group a connector's `from_space` and `to_space` rows by
+`phase_source_unique_id`, retain one-sided groups as `partial`, and expose the
+connector's existing navigation targets. Level difference is stored elevation A
+minus stored elevation B and succeeds only when both explicit units match. No API in
+this group derives relationships or elevations from geometry.
+
 `get_change_impact` accepts an element or element-type ID. An element first resolves
 its stored `type_id`; the result then deterministically aggregates every instance of
 that type, explicit `elements.space_id` and
