@@ -914,18 +914,28 @@ class QueryCore:
             "WHERE peer.source_kind='element' AND peer.source_id=r.source_id "
             "AND peer.target_kind='space' AND peer.target_id=? "
             "AND peer.relation_type IN ('from_space','to_space') "
-            "AND peer.phase_source_unique_id IS r.phase_source_unique_id)) "
+            "AND r.phase_source_unique_id IS NOT NULL "
+            "AND peer.phase_source_unique_id=r.phase_source_unique_id)) "
             "ORDER BY r.source_id,r.phase_source_unique_id,r.relation_type,r.id",
             (space_id, space_id),
         )
-        groups: dict[tuple[str, str | None], list[dict[str, Any]]] = {}
+        groups: dict[tuple[str, str | None, str], list[dict[str, Any]]] = {}
         for row in rows:
+            # An unknown phase is not evidence that two sides share a phase. Keep
+            # each such relationship as its own traceable partial connection.
+            unknown_phase_key = row["id"] if row["phase_source_unique_id"] is None else ""
             groups.setdefault(
-                (row["source_id"], row["phase_source_unique_id"]), []
+                (
+                    row["source_id"],
+                    row["phase_source_unique_id"],
+                    unknown_phase_key,
+                ),
+                [],
             ).append(row)
         output = []
-        for (connector_id, phase_id), relations in sorted(
-            groups.items(), key=lambda item: (item[0][0], item[0][1] or "")
+        for (connector_id, phase_id, unknown_phase_key), relations in sorted(
+            groups.items(),
+            key=lambda item: (item[0][0], item[0][1] or "", item[0][2]),
         ):
             sides: dict[str, dict[str, Any] | None] = {
                 "from_space": None,
@@ -947,7 +957,7 @@ class QueryCore:
                 if connector and connector.get("type_id")
                 else None
             )
-            complete = all(sides.values()) and all(
+            complete = phase_id is not None and all(sides.values()) and all(
                 len({r["target_id"] for r in relations if r["relation_type"] == side})
                 == 1
                 for side in sides
@@ -958,28 +968,29 @@ class QueryCore:
                     connected = sides["to_space"]
                 elif sides["to_space"]["id"] == space_id:
                     connected = sides["from_space"]
-            output.append(
-                {
-                    "status": "complete" if complete else "partial",
-                    "connector_element": connector,
-                    "connector_type": connector_type,
-                    "from_space": sides["from_space"],
-                    "to_space": sides["to_space"],
-                    "connected_space": connected,
-                    "phase_source_unique_id": phase_id,
-                    "relationship_ids": sorted(row["id"] for row in relations),
-                    "relationships": [
-                        {
-                            "id": row["id"],
-                            "relation_type": row["relation_type"],
-                            "provenance": row["provenance"],
-                            "confidence": row["confidence"],
-                        }
-                        for row in relations
-                    ],
-                    "navigation": self.get_navigation_targets("element", connector_id),
-                }
-            )
+            connection = {
+                "status": "complete" if complete else "partial",
+                "connector_element": connector,
+                "connector_type": connector_type,
+                "from_space": sides["from_space"],
+                "to_space": sides["to_space"],
+                "connected_space": connected,
+                "phase_source_unique_id": phase_id,
+                "relationship_ids": sorted(row["id"] for row in relations),
+                "relationships": [
+                    {
+                        "id": row["id"],
+                        "relation_type": row["relation_type"],
+                        "provenance": row["provenance"],
+                        "confidence": row["confidence"],
+                    }
+                    for row in relations
+                ],
+                "navigation": self.get_navigation_targets("element", connector_id),
+            }
+            if unknown_phase_key:
+                connection["warnings"] = ["phase_context_missing"]
+            output.append(connection)
         return output
 
     def get_level_difference(

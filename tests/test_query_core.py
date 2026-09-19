@@ -550,6 +550,37 @@ def test_explicit_spatial_queries_preserve_ambiguity_and_missing_data(
     assert no_level["signed_difference"] is None
 
 
+def test_space_connections_never_pair_relationships_with_unknown_phase(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, _database = fixture
+    records = synthetic_records(drawing)
+    unknown_phase_ids = {"rel-shutter-from", "rel-shutter-to"}
+    for relationship in records["relationships"]:
+        if relationship["id"] in unknown_phase_ids:
+            relationship["phase_source_unique_id"] = None
+    database = build_database(records, tmp_path / "unknown-phase.sqlite")
+
+    with QueryCore(database) as core:
+        hall_a = core.get_space_connections("space-hall-a")
+        hall_b = core.get_space_connections("space-hall-b")
+        assert hall_a == core.get_space_connections("space-hall-a")
+        assert hall_b == core.get_space_connections("space-hall-b")
+
+    assert len(hall_a) == len(hall_b) == 1
+    assert hall_a[0]["relationship_ids"] == ["rel-shutter-from"]
+    assert hall_b[0]["relationship_ids"] == ["rel-shutter-to"]
+    for connection in (hall_a[0], hall_b[0]):
+        assert connection["status"] == "partial"
+        assert connection["phase_source_unique_id"] is None
+        assert connection["connected_space"] is None
+        assert connection["warnings"] == ["phase_context_missing"]
+    assert hall_a[0]["from_space"]["id"] == "space-hall-a"
+    assert hall_a[0]["to_space"] is None
+    assert hall_b[0]["from_space"] is None
+    assert hall_b[0]["to_space"]["id"] == "space-hall-b"
+
+
 def test_change_impact_is_type_wide_deduplicated_and_evidence_safe(
     fixture: tuple[Path, Path], tmp_path: Path
 ) -> None:
