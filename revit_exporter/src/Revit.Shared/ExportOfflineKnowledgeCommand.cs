@@ -17,7 +17,7 @@ public sealed class ExportOfflineKnowledgeCommand : IExternalCommand
         {
             var document = data.Application.ActiveUIDocument?.Document
                 ?? throw new InvalidOperationException("Open a project before exporting.");
-            var completed = new RevitSnapshotExporter(document).Export();
+            var completed = OfflineExportService.Run(document, new OfflineExportOptions());
             TaskDialog.Show("Offline Knowledge Export", $"Export completed:\n{completed}");
             return Result.Succeeded;
         }
@@ -30,10 +30,27 @@ public sealed class ExportOfflineKnowledgeCommand : IExternalCommand
     }
 }
 
+public sealed class OfflineExportOptions
+{
+    public string? ExportRoot { get; set; }
+    public bool IncludeLinks { get; set; } = true;
+}
+
+/// <summary>UI-free, read-only entry point shared by the manual command and automation hosts.</summary>
+public static class OfflineExportService
+{
+    public static string Run(Document document, OfflineExportOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        return new RevitSnapshotExporter(document, options ?? new OfflineExportOptions()).Export();
+    }
+}
+
 internal sealed class RevitSnapshotExporter
 {
     private const string Provenance = "revit_api";
     private readonly Document _document;
+    private readonly OfflineExportOptions _options;
     private readonly List<ExportWarning> _warnings = [];
     private readonly Dictionary<ElementId, List<(ViewSheet Sheet, View View, Viewport Port, int Page)>> _placements = [];
     private readonly Dictionary<string, JsonObject> _elements = [];
@@ -45,12 +62,16 @@ internal sealed class RevitSnapshotExporter
     private string _hostModelId = "";
     private string _documentId = "";
 
-    public RevitSnapshotExporter(Document document) => _document = document;
+    public RevitSnapshotExporter(Document document, OfflineExportOptions options)
+    {
+        _document = document;
+        _options = options;
+    }
 
     public string Export()
     {
         var project = SafeName(string.IsNullOrWhiteSpace(_document.Title) ? "untitled" : _document.Title);
-        var root = Environment.GetEnvironmentVariable("LLM_KB_EXPORT_ROOT");
+        var root = _options.ExportRoot ?? Environment.GetEnvironmentVariable("LLM_KB_EXPORT_ROOT");
         var baseDirectory = string.IsNullOrWhiteSpace(root)
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "LlmKnowledgeBaseExports")
             : Path.GetFullPath(root);
@@ -72,7 +93,7 @@ internal sealed class RevitSnapshotExporter
             AddDocumentAndModels(identity, sha);
             AddSheetsViewsAndPlacements(sheets);
             AddLevels(_document, _hostModelId);
-            AddLinks();
+            if (_options.IncludeLinks) AddLinks();
             CollectHostElements();
             AddSpatialElements(_document, _hostModelId);
             AddSpatialBoundaries(_document, _hostModelId, null, Transform.Identity);
@@ -502,6 +523,14 @@ internal sealed class RevitSnapshotExporter
         {
             if (target.LinkedElementId != ElementId.InvalidElementId && _document.GetElement(target.HostElementId) is RevitLinkInstance link)
             {
+                if (!_options.IncludeLinks)
+                {
+                    Add("annotation_references", ReferenceObject(annotationId, index++, null, null, null,
+                        true, "unresolved", null));
+                    _warnings.Add(new("linked_annotation_reference_omitted",
+                        "Linked tag target was omitted because link export is disabled.", tag.UniqueId));
+                    continue;
+                }
                 var linkedDocument = link.GetLinkDocument(); var linkedElement = linkedDocument?.GetElement(target.LinkedElementId);
                 if (linkedDocument is not null && linkedElement is not null)
                 {
@@ -535,6 +564,14 @@ internal sealed class RevitSnapshotExporter
         {
             if (reference.LinkedElementId != ElementId.InvalidElementId && _document.GetElement(reference.ElementId) is RevitLinkInstance link)
             {
+                if (!_options.IncludeLinks)
+                {
+                    Add("annotation_references", ReferenceObject(annotationId, index, null, null, null,
+                        true, "unresolved", stable));
+                    _warnings.Add(new("linked_annotation_reference_omitted",
+                        "Linked dimension target was omitted because link export is disabled."));
+                    return;
+                }
                 var linkedDocument = link.GetLinkDocument(); var linkedElement = linkedDocument?.GetElement(reference.LinkedElementId);
                 if (linkedDocument is not null && linkedElement is not null)
                 {

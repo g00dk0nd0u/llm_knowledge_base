@@ -51,6 +51,60 @@ Finalization validates JSON Schema and verifies `drawing.pdf` SHA-256 before usi
 the existing SQLite builder and PDF packager. Files in the run remain diagnostic;
 `enhanced.pdf` is the portable handover artifact.
 
+## Clarity unattended daily export
+
+The manual path remains **Revit command → completed run → Query Core finalize**. Both
+that command and unattended automation call the UI-free, read-only API
+`OfflineExportService.Run(Document, OfflineExportOptions)`, which returns the completed
+run directory. The service does not display dialogs, select files, start transactions,
+save, or synchronize the model; only the manual command supplies its surrounding
+`TaskDialog`.
+
+The unattended path is **Clarity pyRevit script → shared exporter → Query Core
+finalize/publish → latest + archive**. Configure the Clarity task to run
+`clarity/export_unattended.py`, set `LLM_KB_UNATTENDED_CONFIG` to an absolute JSON
+configuration path, and start with [`clarity/config.example.json`](clarity/config.example.json).
+The wrapper contains no extraction implementation: it gets the active document, calls
+the shared .NET service, and launches:
+
+```bash
+python -m tools.unattended_export finalize-publish \
+  --config D:/LlmKnowledgeBase/config.json --run D:/LlmKnowledgeBase/exports/model/run-id
+```
+
+Configuration requires `project_key`, `export_root`, `publish_root`, an IANA
+`archive_timezone`, `python_executable`, and `repository_root`. Optional settings are
+`archive_retention_days` (use `null` to disable pruning) and `include_links`.
+Unattended runs always finalize through Query Core. Invalid configuration fails without publication.
+The first-party `tzdata` dependency supplies IANA timezone data on Windows machines
+that do not provide it through the operating system.
+
+`exporter_assembly` is an optional loading fallback. If the matching exporter host
+assembly is already present in Revit's `AppDomain`, the wrapper reuses it. Otherwise,
+this field must be an absolute path to the deployed host DLL for that worker's exact
+Revit/runtime profile (for example `LlmKnowledgeBase.Revit2026.dll`). The wrapper
+rejects a DLL that does not expose `LlmKnowledgeBase.Revit.OfflineExportService`.
+
+Publication validates the manifest hashes and names, SQLite database, enhanced PDF,
+and its embedded SQLite payload. It converts the manifest export timestamp—not the
+later publication time—to the configured timezone and copies a complete archive to
+`<publish_root>/<project_key>/archive/YYYY-MM-DD/<run-id>/`, and promotes a fully
+staged directory to `latest/`. A per-project filesystem lock serializes publishers.
+Promotion renames the prior `latest` to a backup and restores it if promotion fails;
+files are never replaced individually.
+
+### Required Clarity/Revit smoke test (not performed here)
+
+1. Build and deploy the correct Revit host assembly and pyRevit script on the Clarity worker.
+2. Create a machine-local config and set `LLM_KB_UNATTENDED_CONFIG` for the task.
+3. Open a disposable test RVT through Clarity and run the script once.
+4. Confirm the completed run, dated archive, and complete `latest/` each contain all five files.
+5. Query/inspect `enhanced.pdf`, compare the exported PDF pages visually, and review manifest warnings.
+6. Force a finalization failure and confirm the previously valid `latest/` remains byte-for-byte intact.
+
+Real Clarity/Revit execution requires licensed installed hosts and remains pending; it
+is not validated by repository CI.
+
 ## Extraction policy
 
 Sheets are all non-placeholder printable sheets ordered by sheet number and UniqueId.
@@ -92,9 +146,6 @@ For **each** installed version (2025, 2026, 2027):
 * No exact linked-element per-view visibility; linked collection is conservative.
 * PDF evidence is generally page-level, not an exact element bbox.
 * Curved spatial boundaries retain endpoints and emit an approximation warning.
-* Linked room/space boundaries are deferred because the current boundary contract
-  cannot identify and transform each distinct link-instance occurrence safely; the
-  exporter emits an explicit warning instead of ambiguous link-local coordinates.
 * Linked tag/reference resolution is conservative when the API cannot safely resolve it.
 * GitHub CI builds/tests only the Autodesk-independent Core. Autodesk-dependent hosts
   require local compilation against matching installed `RevitAPI.dll` and
