@@ -256,6 +256,104 @@ def test_occurrence_evidence_is_compact_page_safe_and_link_scoped(
     ]
 
 
+def test_view_only_appearance_resolves_document_and_reaches_practical_navigation(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, _database = fixture
+    records = synthetic_records(drawing)
+    view_only = dict(records["entity_appearances"][0])
+    view_only.update(
+        id="appearance-sd03-view-only",
+        sheet_id=None,
+        view_id="view-level2",
+        viewport_id=None,
+        pdf_page=4,
+    )
+    records["entity_appearances"].append(view_only)
+    database = build_database(records, tmp_path / "view-only.sqlite")
+
+    with QueryCore(database) as core:
+        occurrences = core.get_occurrence_evidence("element", "element-sd03")
+        targets = core.get_navigation_targets("element", "element-sd03")
+        opening = core.get_opening_width("element-sd03")
+
+    occurrence = next(
+        row for row in occurrences if row["appearance_id"] == view_only["id"]
+    )
+    target = next(row for row in targets if row["appearance_id"] == view_only["id"])
+    practical_target = next(
+        row
+        for row in opening["navigation"]
+        if row.get("appearance_id") == view_only["id"]
+    )
+    assert occurrence["document"]["id"] == "doc-drawings"
+    assert occurrence["sheet_id"] is None
+    assert occurrence["sheet_number"] is None
+    assert occurrence["sheet_name"] is None
+    assert occurrence["view_id"] == target["view_id"] == "view-level2"
+    assert occurrence["view_name"] == target["view_name"] == "Level 2 Data Hall Plan"
+    assert occurrence["pdf_page"] == target["pdf_page"] == 4
+    assert target["document"] == occurrence["document"]
+    assert target["sheet_id"] is target["sheet_number"] is target["sheet_name"] is None
+    assert target["bbox"] == occurrence["bbox"]
+    assert target["can_zoom"] is True
+    assert practical_target == target
+
+
+def test_navigation_targets_are_deterministic_zoom_safe_and_traceable(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, database = fixture
+    with QueryCore(database) as core:
+        targets = core.get_navigation_targets("element", "element-sd03")
+        assert targets == core.get_navigation_targets("element", "element-sd03")
+        assert core.get_navigation_targets("element", "missing") == []
+        explicit = core.get_evidence_navigation("ev-shutter")
+        linked = core.get_navigation_targets("element", "element-linked-collision")
+
+    bbox_target = next(target for target in targets if target["bbox"] is not None)
+    page_only = next(target for target in targets if target["bbox"] is None)
+    assert bbox_target["can_zoom"] is True
+    assert page_only["can_zoom"] is False
+    assert page_only["bbox_quality"] == "page_only"
+    assert bbox_target["source_kind"] == "entity_appearance"
+    assert bbox_target["source_id"] == bbox_target["appearance_id"]
+    assert (bbox_target["entity_kind"], bbox_target["entity_id"]) == (
+        "element",
+        "element-sd03",
+    )
+    assert explicit is not None
+    assert explicit["source_kind"] == "evidence"
+    assert explicit["source_id"] == explicit["evidence_id"] == "ev-shutter"
+    assert [target["link_instance_id"] for target in linked] == [
+        "link-instance-a",
+        "link-instance-b",
+    ]
+
+    records = synthetic_records(drawing)
+    duplicate = dict(records["entity_appearances"][0])
+    duplicate["id"] = "zz-duplicate-appearance"
+    records["entity_appearances"].append(duplicate)
+    duplicate_database = build_database(records, tmp_path / "navigation.sqlite")
+    with QueryCore(duplicate_database) as core:
+        deduplicated = core.get_navigation_targets("element", "element-sd03")
+    assert len(deduplicated) == len(targets)
+    assert all(target["source_id"] != "zz-duplicate-appearance" for target in deduplicated)
+
+
+def test_practical_results_expose_shared_navigation(fixture: tuple[Path, Path]) -> None:
+    with QueryCore(fixture[1]) as core:
+        opening = core.get_opening_width("element-dl03")
+        elevation = core.get_relative_elevation("element-roof")
+        impact = core.get_change_impact("element-sd03")
+
+    assert opening["navigation"]
+    assert elevation["navigation"]
+    assert impact["navigation"]
+    for result in (opening, elevation, impact):
+        assert all("can_zoom" in target for target in result["navigation"])
+
+
 def test_change_impact_is_type_wide_deduplicated_and_evidence_safe(
     fixture: tuple[Path, Path], tmp_path: Path
 ) -> None:

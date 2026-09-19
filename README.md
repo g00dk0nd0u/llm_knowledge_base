@@ -108,6 +108,11 @@ evidence. The payload can be embedded in an ordinary drawing PDF, extracted to a
 ignored content-addressed cache, and queried read-only through a structured Python
 API. The included fixture data is entirely synthetic.
 
+Query Core returns deterministic, viewer-neutral navigation descriptors rather than
+opening a PDF viewer or executing `open_sheet`, zoom, highlight, or OS commands.
+The UI opens the stored PDF page and may zoom to/highlight a bbox only when the
+descriptor reports `can_zoom=true`; Query Core never invents a missing bbox.
+
 The intended boundary is: **Revit = future export-time source; Enhanced PDF =
 portable handover artifact; SQLite = embedded v2 machine payload; Query Core =
 runtime; LLM = optional consumer.** A Revit 2025/2026/2027 Phase B1 offline exporter is available under
