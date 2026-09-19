@@ -1022,6 +1022,8 @@ class QueryCore:
             and level_b is not None
             and level_a.get("elevation") is not None
             and level_b.get("elevation") is not None
+            and level_a.get("source_model_id") is not None
+            and level_a.get("source_model_id") == level_b.get("source_model_id")
             and level_a.get("unit") is not None
             and level_a.get("unit") == level_b.get("unit")
         )

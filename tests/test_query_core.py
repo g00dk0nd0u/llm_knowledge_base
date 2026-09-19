@@ -581,6 +581,90 @@ def test_space_connections_never_pair_relationships_with_unknown_phase(
     assert hall_b[0]["to_space"]["id"] == "space-hall-b"
 
 
+def test_level_difference_requires_the_same_explicit_source_model(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, _database = fixture
+    records = synthetic_records(drawing)
+    records["source_models"].append(
+        {
+            "id": "model-link-b",
+            "role": "link",
+            "title": "Second Linked Model",
+            "revit_version": "2026",
+            "model_identity_kind": "explicit",
+            "model_identity": "synthetic-link-b",
+            "snapshot_version_guid": "snapshot-link-b-1",
+            "snapshot_save_number": 1,
+        }
+    )
+
+    def level(
+        level_id: str,
+        elevation: float,
+        unit: str,
+        source_model_id: str | None,
+    ) -> dict[str, object]:
+        return {
+            "id": level_id,
+            "name": level_id,
+            "elevation": elevation,
+            "unit": unit,
+            "source_model_id": source_model_id,
+            "source_unique_id": f"unique-{level_id}",
+            "provenance": "synthetic_fixture",
+            "confidence": None,
+        }
+
+    records["levels"].extend(
+        [
+            level("level-host-upper", 9750, "mm", "model-host"),
+            level("level-link-a-low", 1000, "mm", "model-link"),
+            level("level-link-a-high", 3500, "mm", "model-link"),
+            level("level-link-b", 3500, "mm", "model-link-b"),
+            level("level-model-missing", 3500, "mm", None),
+            level("level-unit-mismatch", 32, "ft", "model-host"),
+        ]
+    )
+    database = build_database(records, tmp_path / "level-source-models.sqlite")
+
+    with QueryCore(database) as core:
+        same_host = core.get_level_difference(
+            "level", "level-host-upper", "level", "level-2"
+        )
+        same_link = core.get_level_difference(
+            "level", "level-link-a-high", "level", "level-link-a-low"
+        )
+        invalid = [
+            core.get_level_difference(
+                "level", "level-host-upper", "level", "level-link-a-high"
+            ),
+            core.get_level_difference(
+                "level", "level-link-a-high", "level", "level-link-b"
+            ),
+            core.get_level_difference(
+                "level", "level-host-upper", "level", "level-model-missing"
+            ),
+            core.get_level_difference(
+                "level", "level-host-upper", "level", "level-unit-mismatch"
+            ),
+        ]
+
+    assert (same_host["status"], same_host["signed_difference"]) == ("ok", 3750)
+    assert same_host["absolute_difference"] == 3750
+    assert same_host["unit"] == "mm"
+    assert (same_link["status"], same_link["signed_difference"]) == ("ok", 2500)
+    assert same_link["absolute_difference"] == 2500
+    assert same_link["unit"] == "mm"
+    for result in invalid:
+        assert result["status"] == "insufficient_data"
+        assert result["level_a"] is not None
+        assert result["level_b"] is not None
+        assert result["signed_difference"] is None
+        assert result["absolute_difference"] is None
+        assert result["unit"] is None
+
+
 def test_change_impact_is_type_wide_deduplicated_and_evidence_safe(
     fixture: tuple[Path, Path], tmp_path: Path
 ) -> None:
