@@ -354,6 +354,317 @@ def test_practical_results_expose_shared_navigation(fixture: tuple[Path, Path]) 
         assert all("can_zoom" in target for target in result["navigation"])
 
 
+def test_explicit_spatial_relationship_queries_are_phase_safe_and_deterministic(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, _database = fixture
+    records = synthetic_records(drawing)
+    records["levels"].append(
+        {
+            "id": "level-3",
+            "name": "Level 3",
+            "elevation": 9750,
+            "unit": "mm",
+            "source_model_id": "model-host",
+            "source_unique_id": "synthetic-level-3",
+            "provenance": "synthetic_fixture",
+            "confidence": None,
+        }
+    )
+    shutter = next(row for row in records["elements"] if row["id"] == "element-sd03")
+    shutter["space_id"] = "space-hall-a"
+    sibling = dict(shutter)
+    sibling.update(
+        id="element-sd04",
+        name="Shutter SD-04",
+        source_unique_id="synthetic-sd04",
+        space_id="space-hall-b",
+        level_id="level-3",
+    )
+    records["elements"].append(sibling)
+    records["relationships"] = [
+        row
+        for row in records["relationships"]
+        if row["relation_type"] not in {"from_space", "to_space"}
+    ]
+    records["relationships"].extend(
+        [
+            {
+                "id": "rel-sd03-contained",
+                "source_kind": "element",
+                "source_id": "element-sd03",
+                "relation_type": "contained_in",
+                "target_kind": "space",
+                "target_id": "space-hall-a",
+                "phase_source_unique_id": None,
+                "provenance": "synthetic_fixture",
+                "confidence": None,
+                "evidence_id": None,
+            },
+            {
+                "id": "rel-sd03-contained-duplicate",
+                "source_kind": "element",
+                "source_id": "element-sd03",
+                "relation_type": "contained_in",
+                "target_kind": "space",
+                "target_id": "space-hall-a",
+                "phase_source_unique_id": None,
+                "provenance": "synthetic_fixture",
+                "confidence": None,
+                "evidence_id": None,
+            },
+            {
+                "id": "rel-door-from-existing",
+                "source_kind": "element",
+                "source_id": "element-sd03",
+                "relation_type": "from_space",
+                "target_kind": "space",
+                "target_id": "space-hall-a",
+                "phase_source_unique_id": "phase-existing",
+                "provenance": "synthetic_fixture",
+                "confidence": 1.0,
+                "evidence_id": None,
+            },
+            {
+                "id": "rel-door-to-existing",
+                "source_kind": "element",
+                "source_id": "element-sd03",
+                "relation_type": "to_space",
+                "target_kind": "space",
+                "target_id": "space-hall-b",
+                "phase_source_unique_id": "phase-existing",
+                "provenance": "synthetic_fixture",
+                "confidence": 1.0,
+                "evidence_id": None,
+            },
+            {
+                "id": "rel-door-from-new",
+                "source_kind": "element",
+                "source_id": "element-sd03",
+                "relation_type": "to_space",
+                "target_kind": "space",
+                "target_id": "space-hall-a",
+                "phase_source_unique_id": "phase-new",
+                "provenance": "synthetic_fixture",
+                "confidence": 1.0,
+                "evidence_id": None,
+            },
+        ]
+    )
+    database = build_database(records, tmp_path / "explicit-spatial.sqlite")
+
+    with QueryCore(database) as core:
+        containing = core.get_containing_spaces("element-sd03")
+        contained = core.get_contained_elements("space-hall-a")
+        same_space = core.get_same_space_elements("element-sd03")
+        siblings = core.get_same_type_elements("element-sd03")
+        connections = core.get_space_connections("space-hall-a")
+        difference = core.get_level_difference(
+            "element", "element-sd03", "element", "element-sd04"
+        )
+        context = core.get_spatial_context("space", "space-hall-a")
+        assert context == core.get_spatial_context("space", "space-hall-a")
+
+    assert [space["id"] for space in containing] == ["space-hall-a"]
+    assert [item["relation_type"] for item in containing[0]["contexts"]] == [
+        "space_id",
+        "contained_in",
+    ]
+    assert [element["id"] for element in contained] == ["element-sd03"]
+    assert [entry["space"]["id"] for entry in same_space["spaces"]] == ["space-hall-a"]
+    assert [element["id"] for element in same_space["spaces"][0]["elements"]] == [
+        "element-sd03"
+    ]
+    assert [element["id"] for element in siblings["elements"]] == [
+        "element-sd04",
+    ]
+    assert [
+        (item["phase_source_unique_id"], item["status"]) for item in connections
+    ] == [
+        ("phase-existing", "complete"),
+        ("phase-new", "partial"),
+    ]
+    complete, partial = connections
+    assert complete["connected_space"]["id"] == "space-hall-b"
+    assert complete["relationship_ids"] == [
+        "rel-door-from-existing",
+        "rel-door-to-existing",
+    ]
+    assert complete["navigation"]
+    assert partial["from_space"] is None
+    assert partial["to_space"]["id"] == "space-hall-a"
+    assert partial["connected_space"] is None
+    assert difference["status"] == "ok"
+    assert (
+        difference["signed_difference"],
+        difference["absolute_difference"],
+        difference["unit"],
+    ) == (
+        -3750,
+        3750,
+        "mm",
+    )
+    assert context["contained_elements"] == contained
+    assert context["connections"] == connections
+
+
+def test_explicit_spatial_queries_preserve_ambiguity_and_missing_data(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, _database = fixture
+    records = synthetic_records(drawing)
+    records["relationships"].append(
+        {
+            "id": "rel-wall-other-space",
+            "source_kind": "element",
+            "source_id": "wall-north",
+            "relation_type": "contained_in",
+            "target_kind": "space",
+            "target_id": "space-hall-b",
+            "phase_source_unique_id": None,
+            "provenance": "synthetic_fixture",
+            "confidence": None,
+            "evidence_id": None,
+        }
+    )
+    next(row for row in records["elements"] if row["id"] == "wall-north")[
+        "space_id"
+    ] = "space-hall-a"
+    database = build_database(records, tmp_path / "ambiguous-spatial.sqlite")
+
+    with QueryCore(database) as core:
+        same_space = core.get_same_space_elements("wall-north")
+        no_type = core.get_same_type_elements("wall-north")
+        no_level = core.get_level_difference(
+            "element", "element-roof", "space", "space-hall-a"
+        )
+
+    assert same_space["status"] == "ok"
+    assert [entry["space"]["id"] for entry in same_space["spaces"]] == [
+        "space-hall-a",
+        "space-hall-b",
+    ]
+    assert no_type["status"] == "insufficient_data"
+    assert no_type["elements"] == []
+    assert no_level["status"] == "insufficient_data"
+    assert no_level["signed_difference"] is None
+
+
+def test_space_connections_never_pair_relationships_with_unknown_phase(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, _database = fixture
+    records = synthetic_records(drawing)
+    unknown_phase_ids = {"rel-shutter-from", "rel-shutter-to"}
+    for relationship in records["relationships"]:
+        if relationship["id"] in unknown_phase_ids:
+            relationship["phase_source_unique_id"] = None
+    database = build_database(records, tmp_path / "unknown-phase.sqlite")
+
+    with QueryCore(database) as core:
+        hall_a = core.get_space_connections("space-hall-a")
+        hall_b = core.get_space_connections("space-hall-b")
+        assert hall_a == core.get_space_connections("space-hall-a")
+        assert hall_b == core.get_space_connections("space-hall-b")
+
+    assert len(hall_a) == len(hall_b) == 1
+    assert hall_a[0]["relationship_ids"] == ["rel-shutter-from"]
+    assert hall_b[0]["relationship_ids"] == ["rel-shutter-to"]
+    for connection in (hall_a[0], hall_b[0]):
+        assert connection["status"] == "partial"
+        assert connection["phase_source_unique_id"] is None
+        assert connection["connected_space"] is None
+        assert connection["warnings"] == ["phase_context_missing"]
+    assert hall_a[0]["from_space"]["id"] == "space-hall-a"
+    assert hall_a[0]["to_space"] is None
+    assert hall_b[0]["from_space"] is None
+    assert hall_b[0]["to_space"]["id"] == "space-hall-b"
+
+
+def test_level_difference_requires_the_same_explicit_source_model(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, _database = fixture
+    records = synthetic_records(drawing)
+    records["source_models"].append(
+        {
+            "id": "model-link-b",
+            "role": "link",
+            "title": "Second Linked Model",
+            "revit_version": "2026",
+            "model_identity_kind": "explicit",
+            "model_identity": "synthetic-link-b",
+            "snapshot_version_guid": "snapshot-link-b-1",
+            "snapshot_save_number": 1,
+        }
+    )
+
+    def level(
+        level_id: str,
+        elevation: float,
+        unit: str,
+        source_model_id: str | None,
+    ) -> dict[str, object]:
+        return {
+            "id": level_id,
+            "name": level_id,
+            "elevation": elevation,
+            "unit": unit,
+            "source_model_id": source_model_id,
+            "source_unique_id": f"unique-{level_id}",
+            "provenance": "synthetic_fixture",
+            "confidence": None,
+        }
+
+    records["levels"].extend(
+        [
+            level("level-host-upper", 9750, "mm", "model-host"),
+            level("level-link-a-low", 1000, "mm", "model-link"),
+            level("level-link-a-high", 3500, "mm", "model-link"),
+            level("level-link-b", 3500, "mm", "model-link-b"),
+            level("level-model-missing", 3500, "mm", None),
+            level("level-unit-mismatch", 32, "ft", "model-host"),
+        ]
+    )
+    database = build_database(records, tmp_path / "level-source-models.sqlite")
+
+    with QueryCore(database) as core:
+        same_host = core.get_level_difference(
+            "level", "level-host-upper", "level", "level-2"
+        )
+        same_link = core.get_level_difference(
+            "level", "level-link-a-high", "level", "level-link-a-low"
+        )
+        invalid = [
+            core.get_level_difference(
+                "level", "level-host-upper", "level", "level-link-a-high"
+            ),
+            core.get_level_difference(
+                "level", "level-link-a-high", "level", "level-link-b"
+            ),
+            core.get_level_difference(
+                "level", "level-host-upper", "level", "level-model-missing"
+            ),
+            core.get_level_difference(
+                "level", "level-host-upper", "level", "level-unit-mismatch"
+            ),
+        ]
+
+    assert (same_host["status"], same_host["signed_difference"]) == ("ok", 3750)
+    assert same_host["absolute_difference"] == 3750
+    assert same_host["unit"] == "mm"
+    assert (same_link["status"], same_link["signed_difference"]) == ("ok", 2500)
+    assert same_link["absolute_difference"] == 2500
+    assert same_link["unit"] == "mm"
+    for result in invalid:
+        assert result["status"] == "insufficient_data"
+        assert result["level_a"] is not None
+        assert result["level_b"] is not None
+        assert result["signed_difference"] is None
+        assert result["absolute_difference"] is None
+        assert result["unit"] is None
+
+
 def test_change_impact_is_type_wide_deduplicated_and_evidence_safe(
     fixture: tuple[Path, Path], tmp_path: Path
 ) -> None:
