@@ -92,11 +92,28 @@ def test_failed_promotion_rolls_back_latest(tmp_path: Path, monkeypatch: pytest.
     assert publish._digest(latest) == before
 
 
-def test_concurrency_lock(tmp_path: Path) -> None:
-    config = publish.load_config(config_file(tmp_path))
-    (config.publish_root / "project-a/.publish.lock").mkdir(parents=True)
-    with pytest.raises(RuntimeError, match="already in progress"):
-        publish.finalize_and_publish(config, completed_run(tmp_path))
+def test_simultaneous_second_publisher_is_rejected(tmp_path: Path) -> None:
+    project = tmp_path / "published/project-a"
+    with publish._project_lock(project):
+        with pytest.raises(RuntimeError, match="already in progress"):
+            with publish._project_lock(project):
+                pass
+
+
+def test_stale_lock_file_does_not_block_publisher(tmp_path: Path) -> None:
+    project = tmp_path / "published/project-a"
+    project.mkdir(parents=True)
+    (project / ".publish.lock").write_text("terminated process metadata")
+    with publish._project_lock(project):
+        assert json.loads((project / ".publish.lock").read_text())["pid"] == os.getpid()
+
+
+def test_normal_lock_release_allows_next_publication(tmp_path: Path) -> None:
+    project = tmp_path / "published/project-a"
+    with publish._project_lock(project):
+        pass
+    with publish._project_lock(project):
+        pass
 
 
 @pytest.mark.parametrize("corruption", ["manifest", "database", "enhanced"])

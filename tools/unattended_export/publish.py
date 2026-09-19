@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -11,6 +12,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 from tools.query_core.package import inspect_pdf, sha256
 from tools.query_core.query import validate_database
@@ -107,14 +113,35 @@ def _export_digest(directory: Path) -> dict[str, str]:
 def _project_lock(project: Path) -> Iterator[None]:
     lock = project / ".publish.lock"
     project.mkdir(parents=True, exist_ok=True)
-    try:
-        lock.mkdir()
-    except FileExistsError as error:
-        raise RuntimeError(f"publication already in progress for {project.name}") from error
-    try:
-        yield
-    finally:
-        lock.rmdir()
+    with lock.open("a+b") as stream:
+        if stream.seek(0, os.SEEK_END) == 0:
+            stream.write(b"\0")
+            stream.flush()
+        stream.seek(0)
+        try:
+            if os.name == "nt":
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            raise RuntimeError(f"publication already in progress for {project.name}") from error
+        try:
+            metadata = json.dumps({
+                "pid": os.getpid(),
+                "hostname": socket.gethostname(),
+                "acquired_at": datetime.now().astimezone().isoformat(),
+            }).encode("utf-8")
+            stream.seek(0)
+            stream.truncate()
+            stream.write(metadata)
+            stream.flush()
+            yield
+        finally:
+            stream.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
 def _recover_latest(project: Path) -> None:
