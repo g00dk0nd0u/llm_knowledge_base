@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import QueryCoreError
+from .navigation import deduplicate_navigation, navigation_target
 
 SCHEMA_VERSION = 2
 REQUIRED_METADATA = {
@@ -551,6 +552,67 @@ class QueryCore:
                 row.pop(key, None)
         return rows
 
+    def get_navigation_targets(
+        self, entity_kind: str, entity_id: str
+    ) -> list[dict[str, Any]]:
+        """Return deterministic PDF navigation descriptors for an entity."""
+        rows = self._rows(
+            "SELECT a.id AS appearance_id,a.*,d.id AS document_id,"
+            "d.identity AS document_identity,d.source_filename,"
+            "s.number AS sheet_number,s.name AS sheet_name,v.name AS view_name "
+            "FROM entity_appearances a JOIN sheets s ON s.id=a.sheet_id "
+            "JOIN documents d ON d.id=s.document_id "
+            "LEFT JOIN views v ON v.id=a.view_id "
+            "WHERE a.entity_kind=? AND a.entity_id=?",
+            (entity_kind, entity_id),
+        )
+        return deduplicate_navigation(
+            navigation_target(row, source_kind="entity_appearance") for row in rows
+        )
+
+    def _get_appearance_navigation(
+        self, appearance_id: str
+    ) -> dict[str, Any] | None:
+        rows = self._rows(
+            "SELECT a.id AS appearance_id,a.*,d.id AS document_id,"
+            "d.identity AS document_identity,d.source_filename,"
+            "s.number AS sheet_number,s.name AS sheet_name,v.name AS view_name "
+            "FROM entity_appearances a JOIN sheets s ON s.id=a.sheet_id "
+            "JOIN documents d ON d.id=s.document_id "
+            "LEFT JOIN views v ON v.id=a.view_id WHERE a.id=?",
+            (appearance_id,),
+        )
+        return (
+            navigation_target(rows[0], source_kind="entity_appearance")
+            if rows
+            else None
+        )
+
+    def get_evidence_navigation(
+        self, evidence_id: str
+    ) -> dict[str, Any] | None:
+        """Return a viewer-neutral descriptor for one explicit evidence record."""
+        row = self.get_pdf_evidence(evidence_id)
+        if row is None:
+            return None
+        row["evidence_id"] = row.pop("id")
+        return navigation_target(row, source_kind="evidence")
+
+    def _navigation_from_evidence(
+        self, items: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        targets = []
+        for item in items:
+            if item.get("source_kind") == "evidence":
+                target = self.get_evidence_navigation(item["evidence_id"])
+                if target is not None:
+                    targets.append(target)
+            elif item.get("source_kind") == "entity_appearance":
+                target = self._get_appearance_navigation(item["appearance_id"])
+                if target is not None:
+                    targets.append(target)
+        return deduplicate_navigation(targets)
+
     def get_annotation_segments(self, annotation_id: str) -> list[dict[str, Any]]:
         rows = self._rows(
             "SELECT * FROM annotation_segments WHERE annotation_id=? ORDER BY segment_index",
@@ -661,7 +723,9 @@ class QueryCore:
         """Return an explicit opening-width fact and its compact PDF evidence."""
         from .practical import get_opening_width
 
-        return get_opening_width(self, entity_id)
+        result = get_opening_width(self, entity_id)
+        result["navigation"] = self._navigation_from_evidence(result.get("evidence", []))
+        return result
 
     def get_relative_elevation(
         self, entity_id: str, reference: str | None = None
@@ -669,7 +733,9 @@ class QueryCore:
         """Return an explicit relative elevation and its compact PDF evidence."""
         from .practical import get_relative_elevation
 
-        return get_relative_elevation(self, entity_id, reference)
+        result = get_relative_elevation(self, entity_id, reference)
+        result["navigation"] = self._navigation_from_evidence(result.get("evidence", []))
+        return result
 
     def get_related_entities(
         self, entity_kind: str, entity_id: str
@@ -764,6 +830,7 @@ class QueryCore:
                 "affected_instances": [],
                 "related_spaces": [],
                 "drawing_occurrences": [],
+                "navigation": [],
                 "coverage": {
                     "total_instances": 0,
                     "instances_with_spatial_context": 0,
@@ -782,6 +849,7 @@ class QueryCore:
                 "affected_instances": [],
                 "related_spaces": [],
                 "drawing_occurrences": [],
+                "navigation": [],
                 "coverage": {
                     "total_instances": 0,
                     "instances_with_spatial_context": 0,
@@ -855,6 +923,15 @@ class QueryCore:
             "affected_instances": instances,
             "related_spaces": [spaces_by_id[key] for key in sorted(spaces_by_id)],
             "drawing_occurrences": occurrences,
+            "navigation": self._navigation_from_evidence(
+                [
+                    {
+                        "source_kind": "entity_appearance",
+                        "appearance_id": occurrence["appearance_id"],
+                    }
+                    for occurrence in occurrences
+                ]
+            ),
             "coverage": {
                 "total_instances": total,
                 "instances_with_spatial_context": len(spatial_instance_ids),

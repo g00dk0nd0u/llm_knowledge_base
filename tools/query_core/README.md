@@ -63,7 +63,8 @@ Public APIs include `search_text`, `find_entities`, `get_entity`,
 `get_spatial_candidates`, `get_related_entities`, `get_pdf_evidence`, plus v2
 `get_source_model`, `get_appearances`, `get_annotation_segments`,
 `get_annotation_references`, `get_occurrence_evidence`, and
-`get_spatial_boundaries`. Change-impact APIs include `get_type_instances`,
+`get_spatial_boundaries`. Navigation APIs include `get_navigation_targets` and
+`get_evidence_navigation`. Change-impact APIs include `get_type_instances`,
 `get_related_spaces`, and `get_change_impact`.
 
 `get_change_impact` accepts an element or element-type ID. An element first resolves
@@ -123,6 +124,16 @@ remain distinct from evidence IDs. Page-only occurrences retain their sheet, pag
 and view while returning `bbox=null`; Query Core never fabricates PDF coordinates.
 Results preserve provenance and confidence and order deduplicated evidence by
 document, PDF page, sheet, view, and stable ID.
+
+Query Core returns viewer-neutral navigation descriptors; it does not open a PDF
+viewer or execute operating-system commands. Each descriptor contains its source
+identity, document, sheet/view, one-based PDF page, and stored bbox metadata. A
+stored bbox sets `can_zoom=true`; page-only evidence has `bbox=null` and
+`can_zoom=false`. UI clients are responsible for opening the page and, when
+available, zooming to or highlighting the bbox. Query Core never generates a bbox.
+The practical query and change-impact results expose the same descriptors in their
+`navigation` field. Schedule navigation and geometry-derived regions are out of
+scope.
 
 Ordinary domain outcomes use `ok`, `not_found`, `insufficient_data`, `ambiguous`, or `conflict` status.
 Multiple plausible related openings are `ambiguous`; conflicting equally preferred

@@ -256,6 +256,60 @@ def test_occurrence_evidence_is_compact_page_safe_and_link_scoped(
     ]
 
 
+def test_navigation_targets_are_deterministic_zoom_safe_and_traceable(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, database = fixture
+    with QueryCore(database) as core:
+        targets = core.get_navigation_targets("element", "element-sd03")
+        assert targets == core.get_navigation_targets("element", "element-sd03")
+        assert core.get_navigation_targets("element", "missing") == []
+        explicit = core.get_evidence_navigation("ev-shutter")
+        linked = core.get_navigation_targets("element", "element-linked-collision")
+
+    bbox_target = next(target for target in targets if target["bbox"] is not None)
+    page_only = next(target for target in targets if target["bbox"] is None)
+    assert bbox_target["can_zoom"] is True
+    assert page_only["can_zoom"] is False
+    assert page_only["bbox_quality"] == "page_only"
+    assert bbox_target["source_kind"] == "entity_appearance"
+    assert bbox_target["source_id"] == bbox_target["appearance_id"]
+    assert (bbox_target["entity_kind"], bbox_target["entity_id"]) == (
+        "element",
+        "element-sd03",
+    )
+    assert explicit is not None
+    assert explicit["source_kind"] == "evidence"
+    assert explicit["source_id"] == explicit["evidence_id"] == "ev-shutter"
+    assert [target["link_instance_id"] for target in linked] == [
+        "link-instance-a",
+        "link-instance-b",
+    ]
+
+    records = synthetic_records(drawing)
+    duplicate = dict(records["entity_appearances"][0])
+    duplicate["id"] = "zz-duplicate-appearance"
+    records["entity_appearances"].append(duplicate)
+    duplicate_database = build_database(records, tmp_path / "navigation.sqlite")
+    with QueryCore(duplicate_database) as core:
+        deduplicated = core.get_navigation_targets("element", "element-sd03")
+    assert len(deduplicated) == len(targets)
+    assert all(target["source_id"] != "zz-duplicate-appearance" for target in deduplicated)
+
+
+def test_practical_results_expose_shared_navigation(fixture: tuple[Path, Path]) -> None:
+    with QueryCore(fixture[1]) as core:
+        opening = core.get_opening_width("element-dl03")
+        elevation = core.get_relative_elevation("element-roof")
+        impact = core.get_change_impact("element-sd03")
+
+    assert opening["navigation"]
+    assert elevation["navigation"]
+    assert impact["navigation"]
+    for result in (opening, elevation, impact):
+        assert all("can_zoom" in target for target in result["navigation"])
+
+
 def test_change_impact_is_type_wide_deduplicated_and_evidence_safe(
     fixture: tuple[Path, Path], tmp_path: Path
 ) -> None:
