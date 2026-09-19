@@ -63,7 +63,19 @@ Public APIs include `search_text`, `find_entities`, `get_entity`,
 `get_spatial_candidates`, `get_related_entities`, `get_pdf_evidence`, plus v2
 `get_source_model`, `get_appearances`, `get_annotation_segments`,
 `get_annotation_references`, `get_occurrence_evidence`, and
-`get_spatial_boundaries`.
+`get_spatial_boundaries`. Change-impact APIs include `get_type_instances`,
+`get_related_spaces`, and `get_change_impact`.
+
+`get_change_impact` accepts an element or element-type ID. An element first resolves
+its stored `type_id`; the result then deterministically aggregates every instance of
+that type, explicit `from_space`/`to_space`/`contained_in` relationships, and drawing
+occurrences. Coverage counts distinguish all instances from those with stored spatial
+context or drawing occurrences. Missing context remains explicit in warnings and is
+never inferred from geometry. Occurrences preserve page-only (`bbox=null`), link
+instance, provenance, and bbox-quality data.
+
+Related-schedule queries are deferred until a reliable structured schedule export
+contract exists; Query Core does not infer schedule membership from drawing content.
 
 ## Practical structured queries
 
