@@ -123,6 +123,41 @@ def _generic_pdf_records() -> dict:
     }
 
 
+def _embed_database(
+    database: Path,
+    output: Path,
+    *,
+    descriptor_binding_mode: str | None,
+) -> Path:
+    metadata = validate_database(database)
+    descriptor = {
+        "af_relationship": "Data",
+        "mime_type": "application/vnd.sqlite3",
+        "payload_sha256": hashlib.sha256(database.read_bytes()).hexdigest(),
+        "schema_version": int(metadata["schema_version"]),
+        "project_id": metadata["project_id"],
+        "generator_version": metadata["generator_version"],
+    }
+    if metadata["binding_mode"] == "single_document":
+        descriptor.update(
+            source_document_identity=metadata["source_document_identity"],
+            source_document_sha256=metadata["source_document_sha256"],
+        )
+    if descriptor_binding_mode is not None:
+        descriptor["binding_mode"] = descriptor_binding_mode
+    with fitz.open() as document:
+        document.new_page()
+        document.embfile_add(
+            "project.sqlite",
+            database.read_bytes(),
+            filename="project.sqlite",
+            ufilename="project.sqlite",
+            desc=json.dumps(descriptor, sort_keys=True, separators=(",", ":")),
+        )
+        document.save(output)
+    return output
+
+
 def test_generic_pdf_project_builds_without_fake_revit_host(tmp_path: Path) -> None:
     database = build_database(_generic_pdf_records(), tmp_path / "generic.sqlite")
     metadata = validate_database(database)
@@ -222,6 +257,39 @@ def test_single_document_requires_nonempty_top_level_identity(
         )
     with pytest.raises(QueryCoreError, match="source_document_identity"):
         validate_database(invalid)
+
+
+def test_project_bound_embedded_payload_is_safely_rejected(tmp_path: Path) -> None:
+    database = build_database(_generic_pdf_records(), tmp_path / "project.sqlite")
+    enhanced = _embed_database(
+        database, tmp_path / "external-project.pdf", descriptor_binding_mode="project"
+    )
+    with pytest.raises(QueryCoreError, match="project-bound payload"):
+        inspect_pdf(enhanced)
+    with pytest.raises(QueryCoreError, match="project-bound payload"):
+        extract_payload(enhanced, tmp_path / "extracted.sqlite")
+    with pytest.raises(QueryCoreError, match="project-bound payload"):
+        cached_payload(enhanced, tmp_path / "cache")
+
+
+def test_legacy_descriptor_and_current_binding_consistency(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, database = fixture
+    legacy = _embed_database(
+        database, tmp_path / "legacy-enhanced.pdf", descriptor_binding_mode=None
+    )
+    assert inspect_pdf(legacy)["source_document_sha256"] == hashlib.sha256(
+        drawing.read_bytes()
+    ).hexdigest()
+    extracted = extract_payload(legacy, tmp_path / "legacy-extracted.sqlite")
+    assert extracted.read_bytes() == database.read_bytes()
+
+    mismatched = _embed_database(
+        database, tmp_path / "mismatched.pdf", descriptor_binding_mode="project"
+    )
+    with pytest.raises(QueryCoreError, match="descriptor mismatch: binding_mode"):
+        inspect_pdf(mismatched)
 
 
 def test_loading_dock_and_evidence(fixture: tuple[Path, Path]) -> None:

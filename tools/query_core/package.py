@@ -156,6 +156,13 @@ def inspect_pdf(enhanced_pdf: Path) -> dict:
             metadata = validate_database(Path(temporary_name))
         finally:
             Path(temporary_name).unlink(missing_ok=True)
+        descriptor_mode = descriptor.get("binding_mode", "single_document")
+        if descriptor_mode != metadata["binding_mode"]:
+            raise QueryCoreError("embedded payload descriptor mismatch: binding_mode")
+        if metadata["binding_mode"] == "project":
+            raise QueryCoreError(
+                "project-bound payload is not supported in an Enhanced PDF"
+            )
         for key in (
             "schema_version",
             "project_id",
@@ -166,9 +173,6 @@ def inspect_pdf(enhanced_pdf: Path) -> dict:
             expected = int(metadata[key]) if key == "schema_version" else metadata[key]
             if descriptor.get(key) != expected:
                 raise QueryCoreError(f"embedded payload descriptor mismatch: {key}")
-        descriptor_mode = descriptor.get("binding_mode", "single_document")
-        if descriptor_mode != metadata["binding_mode"]:
-            raise QueryCoreError("embedded payload descriptor mismatch: binding_mode")
         return {
             "payload_name": name,
             "payload_size": len(payload),
