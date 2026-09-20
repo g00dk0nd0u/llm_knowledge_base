@@ -53,6 +53,37 @@ def _dot(a: Point3, b: Point3) -> float:
     return sum(a[index] * b[index] for index in range(3))
 
 
+def longitudinal_overlap(
+    first_start: Point3,
+    first_end: Point3,
+    second_start: Point3,
+    second_end: Point3,
+    *,
+    direction_epsilon: float = 1e-12,
+    overlap_epsilon: float = 1e-6,
+) -> float | None:
+    """Return projected overlap for parallel finite lines, without a proximity test."""
+    first = _sub(first_end, first_start)
+    second = _sub(second_end, second_start)
+    first_length = math.sqrt(_dot(first, first))
+    second_length = math.sqrt(_dot(second, second))
+    if first_length <= overlap_epsilon or second_length <= overlap_epsilon:
+        return None
+    first_unit = tuple(value / first_length for value in first)
+    second_unit = tuple(value / second_length for value in second)
+    alignment = abs(_dot(first_unit, second_unit))
+    if 1.0 - alignment > direction_epsilon:
+        return None
+    second_positions = (
+        _dot(_sub(second_start, first_start), first_unit),
+        _dot(_sub(second_end, first_start), first_unit),
+    )
+    overlap = min(first_length, max(second_positions)) - max(
+        0.0, min(second_positions)
+    )
+    return overlap if overlap > overlap_epsilon else None
+
+
 def point_distance(a: Point3, b: Point3) -> float:
     return math.sqrt(_dot(_sub(a, b), _sub(a, b)))
 

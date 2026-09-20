@@ -8,7 +8,11 @@ import pytest
 from tools.query_core.build import build_database
 from tools.query_core.errors import QueryCoreError
 from tools.query_core.fixtures import create_synthetic_pdf, synthetic_records
-from tools.query_core.geometry import point_segment_distance, segment_distance
+from tools.query_core.geometry import (
+    longitudinal_overlap,
+    point_segment_distance,
+    segment_distance,
+)
 from tools.query_core.query import QueryCore
 
 
@@ -18,6 +22,24 @@ def test_pure_finite_geometry_math() -> None:
     assert segment_distance((0, 0, 0), (10, 0, 0), (0, 3, 4), (10, 3, 4)) == pytest.approx(5)
     assert segment_distance((0, 0, 0), (0, 0, 0), (3, 0, 0), (3, 4, 0)) == pytest.approx(3)
     assert segment_distance((0, 0, 0), (10, 0, 0), (5, -5, 2), (5, 5, 2)) == pytest.approx(2)
+
+
+def test_longitudinal_overlap_is_parallel_finite_and_direction_independent() -> None:
+    assert longitudinal_overlap(
+        (0, 0, 0), (10, 0, 0), (8, 2, 0), (3, 2, 0)
+    ) == pytest.approx(5)
+    assert longitudinal_overlap(
+        (0, 0, 0), (10, 0, 0), (10, 4, 0), (15, 4, 0)
+    ) is None
+    assert longitudinal_overlap(
+        (0, 0, 0), (10, 0, 0), (11, 4, 0), (15, 4, 0)
+    ) is None
+    assert longitudinal_overlap(
+        (0, 0, 0), (10, 0, 0), (3, 2, 0), (3, 8, 0)
+    ) is None
+    assert longitudinal_overlap(
+        (0, 0, 0), (0, 0, 0), (0, 1, 0), (2, 1, 0)
+    ) is None
 
 
 def _geometry_records(tmp_path: Path) -> dict:
