@@ -7,7 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from .errors import QueryCoreError
-from .geometry import decode_location_primitive, primitive_bounds, primitive_distance
+from .geometry import (
+    decode_location_primitive,
+    longitudinal_overlap,
+    primitive_bounds,
+    primitive_distance,
+)
 from .navigation import deduplicate_navigation, navigation_target
 
 SCHEMA_VERSION = 2
@@ -655,6 +660,183 @@ class QueryCore:
             )
         return boundaries
 
+    def get_adjacent_spaces(
+        self, space_id: str, link_instance_id: str | None = None
+    ) -> dict[str, Any]:
+        """Prove adjacency for one spatial occurrence from stored outer linework."""
+        space = self.get_entity("space", space_id)
+        occurrence = {"space_id": space_id, "link_instance_id": link_instance_id}
+        empty_coverage = {
+            "total_subject_outer_boundary_segments": 0,
+            "usable_line_segments": 0,
+            "nonlinear_segments_skipped": 0,
+            "degenerate_line_segments_skipped": 0,
+            "unresolved_source_segments_skipped": 0,
+            "candidate_segment_pairs_evaluated": 0,
+        }
+
+        def result(status: str, warnings: list[str], **extra: Any) -> dict[str, Any]:
+            return {
+                "status": status,
+                "space": space,
+                "occurrence": occurrence,
+                "adjacent_spaces": [],
+                "coverage": dict(empty_coverage),
+                "warnings": warnings,
+                **extra,
+            }
+
+        if space is None:
+            return result("not_found", [])
+        occurrences = [
+            row["link_instance_id"]
+            for row in self._rows(
+                "SELECT DISTINCT link_instance_id FROM spatial_boundaries "
+                "WHERE space_id=? ORDER BY link_instance_id",
+                (space_id,),
+            )
+        ]
+        if not occurrences:
+            return result("insufficient_data", ["no_spatial_boundaries"])
+        if link_instance_id is None and len(occurrences) > 1:
+            return result(
+                "ambiguous_occurrence",
+                ["multiple_spatial_occurrences"],
+                available_occurrences=[
+                    {"space_id": space_id, "link_instance_id": value}
+                    for value in occurrences
+                ],
+                available_occurrence_ids=occurrences,
+            )
+        selected = link_instance_id if link_instance_id is not None else occurrences[0]
+        occurrence["link_instance_id"] = selected
+        if selected not in occurrences:
+            return result("insufficient_data", ["spatial_occurrence_not_found"])
+        if not self._has_columns(
+            "spatial_boundary_segments", "source_link_instance_id", "curve_kind"
+        ):
+            return result(
+                "insufficient_data", ["boundary_provenance_capability_unavailable"]
+            )
+        if space.get("level_id") is None:
+            return result("insufficient_data", ["subject_level_unavailable"])
+        if space.get("phase_source_unique_id") is None:
+            return result("insufficient_data", ["subject_phase_unavailable"])
+
+        subject_segments = self._rows(
+            "SELECT s.* FROM spatial_boundary_segments s "
+            "JOIN spatial_boundaries b ON b.id=s.boundary_id "
+            "WHERE b.space_id=? AND b.loop_kind='outer' "
+            "AND b.link_instance_id IS ? ORDER BY s.id",
+            (space_id, selected),
+        )
+        coverage = dict(empty_coverage)
+        coverage["total_subject_outer_boundary_segments"] = len(subject_segments)
+        usable = []
+        for segment in subject_segments:
+            if segment["curve_kind"] != "line":
+                coverage["nonlinear_segments_skipped"] += 1
+            elif not segment["source_model_id"] or not segment["source_unique_id"]:
+                coverage["unresolved_source_segments_skipped"] += 1
+            elif longitudinal_overlap(
+                (segment["start_x"], segment["start_y"], segment["start_z"]),
+                (segment["end_x"], segment["end_y"], segment["end_z"]),
+                (segment["start_x"], segment["start_y"], segment["start_z"]),
+                (segment["end_x"], segment["end_y"], segment["end_z"]),
+            ) is None:
+                coverage["degenerate_line_segments_skipped"] += 1
+            else:
+                usable.append(segment)
+        coverage["usable_line_segments"] = len(usable)
+        if not usable:
+            output = result("insufficient_data", ["no_usable_outer_line_segments"])
+            output["coverage"] = coverage
+            return output
+
+        discoveries: dict[tuple[str, str | None], list[dict[str, Any]]] = {}
+        seen_pairs: set[tuple[str, str]] = set()
+        for subject in usable:
+            candidates = self._rows(
+                "SELECT c.*,b.space_id,b.link_instance_id AS occurrence_link_instance_id "
+                "FROM spatial_boundary_segments c "
+                "JOIN spatial_boundaries b ON b.id=c.boundary_id "
+                "JOIN spaces p ON p.id=b.space_id "
+                "WHERE b.loop_kind='outer' AND c.curve_kind='line' "
+                "AND b.space_id<>? AND b.link_instance_id IS ? "
+                "AND p.source_model_id=? AND p.level_id=? "
+                "AND p.phase_source_unique_id=? "
+                "AND c.source_model_id=? AND c.source_unique_id=? "
+                "AND c.source_link_instance_id IS ? ORDER BY b.space_id,c.id",
+                (
+                    space_id,
+                    selected,
+                    space["source_model_id"],
+                    space["level_id"],
+                    space["phase_source_unique_id"],
+                    subject["source_model_id"],
+                    subject["source_unique_id"],
+                    subject["source_link_instance_id"],
+                ),
+            )
+            for candidate in candidates:
+                pair = (subject["id"], candidate["id"])
+                if pair in seen_pairs:
+                    continue
+                seen_pairs.add(pair)
+                coverage["candidate_segment_pairs_evaluated"] += 1
+                overlap = longitudinal_overlap(
+                    (subject["start_x"], subject["start_y"], subject["start_z"]),
+                    (subject["end_x"], subject["end_y"], subject["end_z"]),
+                    (candidate["start_x"], candidate["start_y"], candidate["start_z"]),
+                    (candidate["end_x"], candidate["end_y"], candidate["end_z"]),
+                )
+                if overlap is None:
+                    continue
+                key = (candidate["space_id"], candidate["occurrence_link_instance_id"])
+                discoveries.setdefault(key, []).append(
+                    {
+                        "source_model_id": subject["source_model_id"],
+                        "source_unique_id": subject["source_unique_id"],
+                        "source_link_instance_id": subject["source_link_instance_id"],
+                        "subject_segment_id": subject["id"],
+                        "adjacent_segment_id": candidate["id"],
+                        "overlap_length_mm": overlap,
+                    }
+                )
+        adjacent = []
+        for key in sorted(discoveries, key=lambda item: (item[0], item[1] or "")):
+            shared = sorted(
+                discoveries[key],
+                key=lambda row: (
+                    row["source_model_id"],
+                    row["source_unique_id"],
+                    row["source_link_instance_id"] or "",
+                    row["subject_segment_id"],
+                    row["adjacent_segment_id"],
+                ),
+            )
+            adjacent.append(
+                {
+                    "space": self.get_entity("space", key[0]),
+                    "occurrence": {"space_id": key[0], "link_instance_id": key[1]},
+                    "relation": "adjacent",
+                    "basis": "shared_boundary_source_longitudinal_overlap",
+                    "shared_boundaries": shared,
+                }
+            )
+        skipped = (
+            coverage["nonlinear_segments_skipped"]
+            + coverage["degenerate_line_segments_skipped"]
+            + coverage["unresolved_source_segments_skipped"]
+        )
+        output = result(
+            "partial" if skipped else "ok",
+            [] if not skipped else ["incomplete_boundary_coverage"],
+        )
+        output["coverage"] = coverage
+        output["adjacent_spaces"] = adjacent
+        return output
+
     def find_entities(self, text: str, kind: str | None = None) -> list[dict[str, Any]]:
         kinds = [kind] if kind else list(ENTITY_TABLES)
         output = []
@@ -1082,6 +1264,7 @@ class QueryCore:
                 "entity": entity,
                 "contained_elements": self.get_contained_elements(entity_id),
                 "connections": self.get_space_connections(entity_id),
+                "adjacency": self.get_adjacent_spaces(entity_id),
                 "level": level,
             }
         raise QueryCoreError(

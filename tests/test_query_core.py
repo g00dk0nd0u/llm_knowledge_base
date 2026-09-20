@@ -1308,6 +1308,75 @@ def test_pre_boundary_provenance_v2_database_remains_usable(
         assert core.get_entity("space", "space-corridor")["id"] == "space-corridor"
 
 
+def test_pre_boundary_provenance_database_cannot_prove_adjacency(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    legacy = tmp_path / "legacy.sqlite"
+    shutil.copyfile(fixture[1], legacy)
+    with sqlite3.connect(legacy) as connection:
+        connection.execute("ALTER TABLE spatial_boundary_segments DROP COLUMN source_link_instance_id")
+        connection.execute("ALTER TABLE spatial_boundary_segments DROP COLUMN curve_kind")
+    with QueryCore(legacy) as core:
+        result = core.get_adjacent_spaces("space-corridor")
+    assert result["status"] == "insufficient_data"
+    assert result["warnings"] == ["boundary_provenance_capability_unavailable"]
+
+
+def test_boundary_adjacency_proof_and_spatial_context(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    database = tmp_path / "adjacency.sqlite"
+    shutil.copyfile(fixture[1], database)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO spaces SELECT 'space-neighbor',kind,'Neighbor','102',level_id,"
+            "source_model_id,'space-neighbor-source',phase_source_unique_id,provenance,confidence "
+            "FROM spaces WHERE id='space-corridor'"
+        )
+        connection.execute(
+            "INSERT INTO spatial_boundaries VALUES "
+            "('boundary-neighbor','space-neighbor',NULL,0,'outer',"
+            "'host_revit_internal_origin','mm','synthetic:test')"
+        )
+        connection.execute(
+            "INSERT INTO spatial_boundary_segments VALUES "
+            "('neighbor-shared','boundary-neighbor',NULL,0,8000,200,0,2000,200,0,"
+            "'model-host','boundary-wall-0',NULL,'line')"
+        )
+        # Same source identity but only endpoint contact cannot add another proof.
+        connection.execute(
+            "INSERT INTO spatial_boundary_segments VALUES "
+            "('neighbor-touch','boundary-neighbor',NULL,1,10000,300,0,12000,300,0,"
+            "'model-host','boundary-wall-0',NULL,'line')"
+        )
+    with QueryCore(database) as core:
+        first = core.get_adjacent_spaces("space-corridor")
+        assert first == core.get_adjacent_spaces("space-corridor")
+        assert core.get_spatial_context("space", "space-corridor")["adjacency"] == first
+    assert first["status"] == "ok"
+    assert [item["occurrence"]["space_id"] for item in first["adjacent_spaces"]] == ["space-neighbor"]
+    shared = first["adjacent_spaces"][0]["shared_boundaries"]
+    assert [(item["subject_segment_id"], item["adjacent_segment_id"]) for item in shared] == [
+        ("boundary-segment-0", "neighbor-shared")
+    ]
+    assert shared[0]["overlap_length_mm"] == pytest.approx(6000)
+
+
+def test_adjacency_occurrence_ambiguity_and_incomplete_coverage(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    with QueryCore(fixture[1]) as core:
+        ambiguous = core.get_adjacent_spaces("space-linked-room")
+        selected = core.get_adjacent_spaces("space-linked-room", "link-instance-a")
+        missing = core.get_adjacent_spaces("missing")
+    assert ambiguous["status"] == "ambiguous_occurrence"
+    assert [row["link_instance_id"] for row in ambiguous["available_occurrences"]] == [
+        "link-instance-a", "link-instance-b"
+    ]
+    assert selected["occurrence"]["link_instance_id"] == "link-instance-a"
+    assert missing["status"] == "not_found"
+
+
 def test_query_connection_is_read_only(fixture: tuple[Path, Path]) -> None:
     with (
         QueryCore(fixture[1]) as core,

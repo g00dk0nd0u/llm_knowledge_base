@@ -85,8 +85,23 @@ conservative bounding-volume guarantee: separated ranges are definitely above or
 below, while touching or overlapping ranges are `indeterminate`. It is not a semantic
 floor relation, physical surface clearance, or center-point relation.
 
-Room/Space adjacency and boundary-segment overlap matching remain deferred to Phase
-4B2. Corridor clear-width also remains deferred.
+Phase 4B2 Room/Space adjacency is a conservative, positive deterministic proof.
+`get_adjacent_spaces` requires straight outer boundary segments with the exact same
+boundary source occurrence (including its top-level link instance) **and** positive
+finite longitudinal overlap. Shared Wall/source identity alone is insufficient.
+Because Revit Finish boundaries can be offset across a Wall thickness, matching lines
+need not be collinear; their directions must be parallel or anti-parallel, and their
+projected finite intervals must overlap beyond a tiny floating-point epsilon. No
+perpendicular-distance or other arbitrary “near enough” tolerance is used. Curved and
+inner-loop segments are not positive evidence.
+
+Spatial occurrences retain `link_instance_id`, so repeated placements are never
+merged. Omitting it when a space has multiple boundary occurrences returns
+`ambiguous_occurrence` and the available occurrence IDs. Coverage reports skipped
+nonlinear and unresolved-source segments; incomplete coverage never proves
+non-adjacency. Pre-PR18 v2 databases remain readable, but without both additive
+boundary provenance columns this API safely returns `insufficient_data` rather than
+mutating or rejecting the database. Corridor clear-width remains deferred.
 
 Both new boundary-segment columns are additive v2 capabilities. Databases created before
 their introduction remain valid and read-only; callers that need them must detect the
@@ -105,7 +120,7 @@ Public APIs include `search_text`, `find_entities`, `get_entity`,
 `get_spatial_candidates`, `get_related_entities`, `get_pdf_evidence`, plus v2
 `get_source_model`, `get_appearances`, `get_annotation_segments`,
 `get_annotation_references`, `get_occurrence_evidence`, and
-`get_spatial_boundaries`. Navigation APIs include `get_navigation_targets` and
+`get_spatial_boundaries`, and `get_adjacent_spaces`. Navigation APIs include `get_navigation_targets` and
 `get_evidence_navigation`. Change-impact APIs include `get_type_instances`,
 `get_related_spaces`, and `get_change_impact`.
 
