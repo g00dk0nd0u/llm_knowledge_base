@@ -21,8 +21,6 @@ REQUIRED_METADATA = {
     "generator_version",
     "project_id",
     "created_from",
-    "source_document_identity",
-    "source_document_sha256",
 }
 REQUIRED_VIRTUAL_TABLES = {"geometry_rtree", "search_fts"}
 REQUIRED_COLUMNS = {
@@ -408,6 +406,26 @@ def validate_database(path: Path) -> dict[str, str]:
                     f"incompatible Query Core v2 schema; {table} missing columns: "
                     + ", ".join(missing_columns)
                 )
+        if "pdf_pages" in objects:
+            required_pdf_page_columns = {
+                "id",
+                "document_id",
+                "page_number",
+                "width_points",
+                "height_points",
+                "rotation",
+                "provenance",
+            }
+            actual = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(pdf_pages)")
+            }
+            missing_columns = sorted(required_pdf_page_columns - actual)
+            if missing_columns:
+                raise QueryCoreError(
+                    "incompatible Query Core v2 schema; pdf_pages missing columns: "
+                    + ", ".join(missing_columns)
+                )
         metadata = dict(connection.execute("SELECT key,value FROM metadata"))
         user_version = connection.execute("PRAGMA user_version").fetchone()[0]
         missing_metadata = sorted(REQUIRED_METADATA - metadata.keys())
@@ -415,6 +433,24 @@ def validate_database(path: Path) -> dict[str, str]:
             raise QueryCoreError(
                 f"payload missing required metadata: {', '.join(missing_metadata)}"
             )
+        binding_mode = metadata.get("binding_mode", "single_document")
+        if binding_mode not in {"single_document", "project"}:
+            raise QueryCoreError(
+                "payload binding_mode must be single_document or project"
+            )
+        if binding_mode == "single_document":
+            missing_binding = sorted(
+                {"source_document_identity", "source_document_sha256"} - metadata.keys()
+            )
+            if missing_binding:
+                raise QueryCoreError(
+                    "payload missing required metadata: " + ", ".join(missing_binding)
+                )
+        project_documents = (
+            list(connection.execute("SELECT identity,source_sha256 FROM documents"))
+            if binding_mode == "project"
+            else []
+        )
     except sqlite3.Error as error:
         raise QueryCoreError(f"invalid SQLite payload: {error}") from error
     finally:
@@ -428,16 +464,30 @@ def validate_database(path: Path) -> dict[str, str]:
         raise QueryCoreError(
             f"unsupported schema version: metadata={version}, user_version={user_version}"
         )
+    metadata["binding_mode"] = binding_mode
     for key in REQUIRED_METADATA - {"schema_version"}:
         if not isinstance(metadata[key], str) or not metadata[key].strip():
             raise QueryCoreError(f"payload metadata {key} must be a non-empty string")
-    source_hash = metadata["source_document_sha256"]
-    if len(source_hash) != 64 or any(
-        character not in "0123456789abcdef" for character in source_hash
-    ):
-        raise QueryCoreError(
-            "payload source_document_sha256 must be a lowercase SHA-256"
-        )
+    if binding_mode == "single_document":
+        identity = metadata["source_document_identity"]
+        if not isinstance(identity, str) or not identity.strip():
+            raise QueryCoreError(
+                "payload metadata source_document_identity must be a non-empty string"
+            )
+        hashes = [("source_document_sha256", metadata["source_document_sha256"])]
+    else:
+        hashes = []
+        for identity, source_hash in project_documents:
+            if not isinstance(identity, str) or not identity.strip():
+                raise QueryCoreError(
+                    "payload document identity must be a non-empty string"
+                )
+            hashes.append(("document source_sha256", source_hash))
+    for label, source_hash in hashes:
+        if not isinstance(source_hash, str) or len(source_hash) != 64 or any(
+            character not in "0123456789abcdef" for character in source_hash
+        ):
+            raise QueryCoreError(f"payload {label} must be a lowercase SHA-256")
     return metadata
 
 

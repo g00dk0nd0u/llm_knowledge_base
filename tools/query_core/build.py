@@ -15,6 +15,7 @@ SCHEMA_VERSION = 2
 GENERATOR_VERSION = "query-core/2.0"
 TABLES = (
     "documents",
+    "pdf_pages",
     "source_models",
     "link_instances",
     "sheets",
@@ -39,27 +40,44 @@ TABLES = (
 
 
 def _validate(records: dict[str, Any]) -> None:
-    required = {
-        "project_id",
-        "created_from",
-        "source_document_identity",
-        "source_document_sha256",
-    }
+    binding_mode = records.get("binding_mode", "single_document")
+    if binding_mode not in {"single_document", "project"}:
+        raise QueryCoreError("binding_mode must be single_document or project")
+    required = {"project_id", "created_from"}
+    if binding_mode == "single_document":
+        required.update({"source_document_identity", "source_document_sha256"})
     missing = sorted(required - records.keys())
     if missing:
         raise QueryCoreError(f"missing metadata: {', '.join(missing)}")
-    sha = records["source_document_sha256"]
-    if (
-        not isinstance(sha, str)
-        or len(sha) != 64
-        or any(c not in "0123456789abcdef" for c in sha)
-    ):
-        raise QueryCoreError("source_document_sha256 must be a lowercase SHA-256")
+    if binding_mode == "single_document":
+        _validate_sha256(records["source_document_sha256"], "source_document_sha256")
+    else:
+        for document in records.get("documents", []):
+            identity = document.get("identity")
+            if not isinstance(identity, str) or not identity.strip():
+                raise QueryCoreError("document identity must be a non-empty string")
+            _validate_sha256(document.get("source_sha256"), "document source_sha256")
+    for page in records.get("pdf_pages", []):
+        for key in ("width_points", "height_points"):
+            value = page.get(key)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value <= 0
+            ):
+                raise QueryCoreError(f"pdf page {key} must be finite and positive")
     model_rows = records.get("source_models", [])
     source_models = {row.get("id"): row for row in model_rows}
     spaces = {row.get("id"): row for row in records.get("spaces", [])}
+    revit_tables = set(TABLES) - {
+        "documents", "pdf_pages", "evidence", "search_content"
+    }
+    uses_revit = bool(model_rows) or any(
+        records.get(table, []) for table in revit_tables
+    )
     hosts = [row for row in model_rows if row.get("role") == "host"]
-    if len(hosts) != 1:
+    if uses_revit and len(hosts) != 1:
         raise QueryCoreError("snapshot must contain exactly one host source model")
     for table in (
         "levels",
@@ -351,6 +369,15 @@ def _validate_order(
             raise QueryCoreError(f"{table} ordering error for {parent}")
 
 
+def _validate_sha256(value: Any, label: str) -> None:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise QueryCoreError(f"{label} must be a lowercase SHA-256")
+
+
 def _validate_transform(transform: Any, model_id: Any) -> None:
     keys = ("basis_x", "basis_y", "basis_z", "origin")
     if (
@@ -384,9 +411,13 @@ def build_database(records: dict[str, Any], output: Path) -> Path:
             "generator_version": GENERATOR_VERSION,
             "project_id": records["project_id"],
             "created_from": records["created_from"],
-            "source_document_identity": records["source_document_identity"],
-            "source_document_sha256": records["source_document_sha256"],
+            "binding_mode": records.get("binding_mode", "single_document"),
         }
+        if metadata["binding_mode"] == "single_document":
+            metadata.update(
+                source_document_identity=records["source_document_identity"],
+                source_document_sha256=records["source_document_sha256"],
+            )
         connection.executemany(
             "INSERT INTO metadata VALUES (?,?)", sorted(metadata.items())
         )
