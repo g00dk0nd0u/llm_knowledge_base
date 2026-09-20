@@ -718,6 +718,8 @@ class QueryCore:
             return result(
                 "insufficient_data", ["boundary_provenance_capability_unavailable"]
             )
+        if space.get("source_model_id") is None:
+            return result("insufficient_data", ["subject_source_model_unavailable"])
         if space.get("level_id") is None:
             return result("insufficient_data", ["subject_level_unavailable"])
         if space.get("phase_source_unique_id") is None:

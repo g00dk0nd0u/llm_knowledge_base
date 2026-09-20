@@ -1286,6 +1286,7 @@ def test_pre_boundary_provenance_v2_database_remains_usable(
     legacy_database = tmp_path / "pre-pr18-v2.sqlite"
     shutil.copyfile(current_database, legacy_database)
     connection = sqlite3.connect(legacy_database)
+    connection.execute("DROP INDEX spatial_boundary_segment_source_idx")
     connection.execute(
         "ALTER TABLE spatial_boundary_segments DROP COLUMN source_link_instance_id"
     )
@@ -1314,6 +1315,7 @@ def test_pre_boundary_provenance_database_cannot_prove_adjacency(
     legacy = tmp_path / "legacy.sqlite"
     shutil.copyfile(fixture[1], legacy)
     with sqlite3.connect(legacy) as connection:
+        connection.execute("DROP INDEX spatial_boundary_segment_source_idx")
         connection.execute("ALTER TABLE spatial_boundary_segments DROP COLUMN source_link_instance_id")
         connection.execute("ALTER TABLE spatial_boundary_segments DROP COLUMN curve_kind")
     with QueryCore(legacy) as core:

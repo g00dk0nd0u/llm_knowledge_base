@@ -106,7 +106,9 @@ mutating or rejecting the database. Corridor clear-width remains deferred.
 Both new boundary-segment columns are additive v2 capabilities. Databases created before
 their introduction remain valid and read-only; callers that need them must detect the
 physical columns and report reduced capability rather than rejecting or rewriting an
-older payload.
+older payload. Newly built databases include an optional boundary-source occurrence
+index for candidate lookup; validation does not require that index from existing v2
+databases.
 
 ## Evidence, search, and packaging
 
