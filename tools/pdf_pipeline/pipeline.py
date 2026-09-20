@@ -93,6 +93,85 @@ def _metadata(document: fitz.Document) -> dict[str, str]:
     }
 
 
+def _bbox(rect: Any) -> list[float]:
+    """Return a PyMuPDF rectangle using the pipeline's JSON coordinate shape."""
+    return [float(value) for value in rect]
+
+
+def _structured_page(
+    page: fitz.Page,
+    *,
+    number: int,
+    document_id: str,
+    source_file: str,
+    source_sha256: str,
+    extraction_status: str,
+    image_count: int,
+    drawing_count: int,
+) -> dict[str, Any]:
+    """Preserve embedded text primitives without adding semantic interpretation."""
+    extracted = page.get_text("dict", sort=True)
+    blocks: list[dict[str, Any]] = []
+    for source_block in extracted.get("blocks", []):
+        if source_block.get("type") != 0:
+            continue
+        lines: list[dict[str, Any]] = []
+        for line_index, source_line in enumerate(source_block.get("lines", [])):
+            spans: list[dict[str, Any]] = []
+            for span_index, source_span in enumerate(source_line.get("spans", [])):
+                span = {
+                    "order_index": span_index,
+                    "text": source_span.get("text", ""),
+                    "bbox": _bbox(source_span["bbox"]),
+                    "provenance": "embedded_pdf_text",
+                }
+                # These properties are copied only when PyMuPDF supplies them.
+                if "font" in source_span:
+                    span["font_name"] = source_span["font"]
+                if "size" in source_span:
+                    span["font_size"] = float(source_span["size"])
+                if "flags" in source_span:
+                    span["font_flags"] = source_span["flags"]
+                spans.append(span)
+            lines.append(
+                {
+                    "order_index": line_index,
+                    "text": "".join(span["text"] for span in spans),
+                    "bbox": _bbox(source_line["bbox"]),
+                    "provenance": "embedded_pdf_text",
+                    "spans": spans,
+                }
+            )
+        blocks.append(
+            {
+                "order_index": len(blocks),
+                "text": "\n".join(line["text"] for line in lines),
+                "bbox": _bbox(source_block["bbox"]),
+                "provenance": "embedded_pdf_text",
+                "lines": lines,
+            }
+        )
+
+    # get_text("dict") dimensions and text bboxes share PyMuPDF's unrotated,
+    # top-left page coordinate system. Rotation is retained separately.
+    return {
+        "document_id": document_id,
+        "source_file": source_file,
+        "source_sha256": source_sha256,
+        "page": number,
+        "width_points": float(extracted["width"]),
+        "height_points": float(extracted["height"]),
+        "rotation": page.rotation,
+        "media_box": _bbox(page.mediabox),
+        "crop_box": _bbox(page.cropbox),
+        "coordinate_space": "pdf_points_top_left",
+        "extraction_status": extraction_status,
+        "image_count": image_count,
+        "drawing_count": drawing_count,
+        "text_blocks": blocks,
+    }
+
+
 def _build_document(root: Path, project: Path, pdf: Path, destination: Path) -> dict[str, Any]:
     source_file = _relative_source(root, pdf)
     source_hash = _sha256(pdf)
@@ -125,8 +204,25 @@ def _build_document(root: Path, project: Path, pdf: Path, destination: Path) -> 
                 or image_count > 0
                 or drawing_count >= MANY_DRAWINGS_THRESHOLD
             )
+            structured = _structured_page(
+                page,
+                number=number,
+                document_id=doc_id,
+                source_file=source_file,
+                source_sha256=source_hash,
+                extraction_status=status,
+                image_count=image_count,
+                drawing_count=drawing_count,
+            )
             page_data = {
                 "page": number,
+                "width_points": structured["width_points"],
+                "height_points": structured["height_points"],
+                "rotation": structured["rotation"],
+                "media_box": structured["media_box"],
+                "crop_box": structured["crop_box"],
+                "coordinate_space": structured["coordinate_space"],
+                "structured_page": f"pages/p{number:04d}.json",
                 "extraction_status": status,
                 "text_char_count": char_count,
                 "image_count": image_count,
@@ -134,6 +230,10 @@ def _build_document(root: Path, project: Path, pdf: Path, destination: Path) -> 
                 "vision_recommended": vision,
             }
             pages.append(page_data)
+            (page_dir / f"p{number:04d}.json").write_text(
+                json.dumps(structured, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
             frontmatter = {
                 "document_id": doc_id,
                 "source_file": source_file,
@@ -251,9 +351,31 @@ def _generated_tree_is_valid(
         != list(range(1, page_count + 1))
     ):
         return False
-    required = [output / "index.md"] + [
-        output / "pages" / f"p{number:04d}.md" for number in range(1, page_count + 1)
-    ]
+    required = [output / "index.md"]
+    for number, page in enumerate(pages, start=1):
+        expected_sidecar = f"pages/p{number:04d}.json"
+        if page.get("structured_page") != expected_sidecar:
+            return False
+        try:
+            structured = json.loads((output / expected_sidecar).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return False
+        if (
+            not isinstance(structured, dict)
+            or structured.get("document_id") != document_id
+            or structured.get("source_file") != source_file
+            or structured.get("source_sha256") != source_sha256
+            or structured.get("page") != number
+            or structured.get("coordinate_space") != "pdf_points_top_left"
+            or not isinstance(structured.get("text_blocks"), list)
+        ):
+            return False
+        required.extend(
+            [
+                output / "pages" / f"p{number:04d}.md",
+                output / expected_sidecar,
+            ]
+        )
     try:
         return all(path.is_file() and path.stat().st_size > 0 for path in required)
     except OSError:

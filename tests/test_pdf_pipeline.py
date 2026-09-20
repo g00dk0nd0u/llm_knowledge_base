@@ -30,7 +30,7 @@ def repository(tmp_path: Path) -> Path:
     (tmp_path / "projects" / "example" / "source").mkdir(parents=True)
     (tmp_path / "schema").mkdir()
     source_schema = Path(__file__).parents[1] / "schema"
-    for name in ("document.schema.json", "manifest.schema.json"):
+    for name in ("document.schema.json", "manifest.schema.json", "pdf_page.schema.json"):
         (tmp_path / "schema" / name).write_bytes((source_schema / name).read_bytes())
     return tmp_path
 
@@ -60,6 +60,8 @@ def test_process_extracts_pages_identity_hash_and_valid_schema(repository: Path)
     assert "page: 1" in (knowledge / "pages/p0001.md").read_text()
     assert "Second page source text" in (knowledge / "pages/p0002.md").read_text()
     jsonschema.validate(document, json.loads((repository / "schema/document.schema.json").read_text()))
+    page = json.loads((knowledge / "pages/p0001.json").read_text())
+    jsonschema.validate(page, json.loads((repository / "schema/pdf_page.schema.json").read_text()))
     jsonschema.validate(manifest, json.loads((repository / "schema/manifest.schema.json").read_text()))
 
 
@@ -89,7 +91,7 @@ def test_idempotency_update_and_stale_cleanup(repository: Path) -> None:
     assert json.loads((repository / "projects/example/manifest.json").read_text())["documents"] == []
 
 
-@pytest.mark.parametrize("damaged", ["index", "page", "document"])
+@pytest.mark.parametrize("damaged", ["index", "page", "sidecar", "corrupt_sidecar", "document"])
 def test_incomplete_generated_tree_is_rebuilt(repository: Path, damaged: str) -> None:
     pdf = repository / "projects/example/source/sample.pdf"
     make_pdf(pdf, ["First page source text.", "Second page source text."])
@@ -100,6 +102,10 @@ def test_incomplete_generated_tree_is_rebuilt(repository: Path, damaged: str) ->
         (knowledge / "index.md").unlink()
     elif damaged == "page":
         (knowledge / "pages/p0002.md").unlink()
+    elif damaged == "sidecar":
+        (knowledge / "pages/p0002.json").unlink()
+    elif damaged == "corrupt_sidecar":
+        (knowledge / "pages/p0002.json").write_text("{corrupt", encoding="utf-8")
     else:
         (knowledge / "document.json").write_text("{corrupt", encoding="utf-8")
 
@@ -107,6 +113,8 @@ def test_incomplete_generated_tree_is_rebuilt(repository: Path, damaged: str) ->
     assert (knowledge / "index.md").stat().st_size > 0
     assert (knowledge / "pages/p0001.md").stat().st_size > 0
     assert (knowledge / "pages/p0002.md").stat().st_size > 0
+    assert (knowledge / "pages/p0001.json").stat().st_size > 0
+    assert (knowledge / "pages/p0002.json").stat().st_size > 0
     json.loads((knowledge / "document.json").read_text(encoding="utf-8"))
     assert process_all(repository).unchanged == 1
 
@@ -119,6 +127,78 @@ def test_textless_page_is_not_reported_as_success(repository: Path) -> None:
     assert page["extraction_status"] == "no_text"
     assert page["vision_recommended"] is True
     assert "No embedded text" in (knowledge / "pages/p0001.md").read_text()
+    structured = json.loads((knowledge / "pages/p0001.json").read_text())
+    assert structured["extraction_status"] == "no_text"
+    assert structured["text_blocks"] == []
+
+
+def test_structured_pages_preserve_sizes_rotation_coordinates_and_japanese(
+    repository: Path,
+) -> None:
+    pdf = repository / "projects/example/source/mixed.pdf"
+    document = fitz.open()
+    a4 = document.new_page(width=595, height=842)
+    a4.insert_text((72, 72), "A4 portrait embedded text")
+    landscape = document.new_page(width=1684, height=1191)
+    landscape.insert_text((100, 120), "Large format landscape")
+    rotated = document.new_page(width=300, height=500)
+    rotated.insert_text((50, 80), "Rotated page text")
+    rotated.set_rotation(90)
+    japanese = document.new_page(width=612, height=792)
+    japanese.insert_text((72, 72), "日本語の埋め込みテキスト", fontname="japan")
+    document.save(pdf)
+    document.close()
+
+    process_all(repository)
+    _manifest, summary, knowledge = load_outputs(repository)
+    pages = [
+        json.loads((knowledge / f"pages/p{number:04d}.json").read_text())
+        for number in range(1, 5)
+    ]
+
+    assert [(page["width_points"], page["height_points"]) for page in pages] == [
+        (595.0, 842.0),
+        (1684.0, 1191.0),
+        (300.0, 500.0),
+        (612.0, 792.0),
+    ]
+    assert pages[2]["rotation"] == 90
+    assert pages[2]["media_box"] == [0.0, 0.0, 300.0, 500.0]
+    assert all(page["coordinate_space"] == "pdf_points_top_left" for page in pages)
+    assert summary["pages"][2]["structured_page"] == "pages/p0003.json"
+    assert "日本語の埋め込みテキスト" in pages[3]["text_blocks"][0]["text"]
+    assert pages[2]["text_blocks"][0]["bbox"] == pytest.approx(
+        [50.0, 68.175, 136.834, 83.289], abs=0.01
+    )
+    page_schema = json.loads((repository / "schema/pdf_page.schema.json").read_text())
+    for page in pages:
+        jsonschema.validate(page, page_schema)
+
+
+def test_structured_text_preserves_block_line_span_hierarchy(repository: Path) -> None:
+    pdf = repository / "projects/example/source/structure.pdf"
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text((72, 72), "First line\nSecond line")
+    page.insert_text((300, 300), "Separate block")
+    page.insert_text((72, 400), "Small", fontsize=9)
+    page.insert_text((100, 400), " Large", fontsize=15)
+    document.save(pdf)
+    document.close()
+
+    process_all(repository)
+    _manifest, _summary, knowledge = load_outputs(repository)
+    structured = json.loads((knowledge / "pages/p0001.json").read_text())
+    blocks = structured["text_blocks"]
+    assert len(blocks) >= 3
+    assert len(blocks[0]["lines"]) == 2
+    assert sum(len(line["spans"]) for block in blocks for line in block["lines"]) >= 4
+    assert [block["order_index"] for block in blocks] == list(range(len(blocks)))
+    first_span = blocks[0]["lines"][0]["spans"][0]
+    assert first_span["provenance"] == "embedded_pdf_text"
+    assert first_span["font_name"] == "Helvetica"
+    assert first_span["font_size"] == 11.0
+    assert isinstance(first_span["font_flags"], int)
 
 
 def test_corrupt_pdf_fails_without_replacing_valid_knowledge(repository: Path) -> None:
