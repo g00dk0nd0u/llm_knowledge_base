@@ -119,7 +119,8 @@ source identity regardless of how many times their model is placed.
 
 The exporter collects elements in placed host views plus a bounded model-context
 category set, types, useful instance/type parameters, levels, rooms/spaces, finish-face
-spatial boundaries, compact bbox/point/line geometry, schedules, dimensions and
+spatial boundaries (including distinct Room/Space and boundary-source link
+occurrences), compact bbox/point/line geometry, schedules, dimensions and
 segments/references, spots, text notes, tags, and grids. Failures scoped to individual
 records become manifest warnings; PDF, identity, and package failures fail the run.
 
@@ -145,10 +146,15 @@ For **each** installed version (2025, 2026, 2027):
 
 * No exact linked-element per-view visibility; linked collection is conservative.
 * PDF evidence is generally page-level, not an exact element bbox.
-* Curved spatial boundaries retain endpoints and emit an approximation warning.
+* Curved spatial boundaries retain `curve_kind` plus endpoints and emit an
+  approximation warning; only `curve_kind=line` makes those endpoints an exact
+  straight segment.
+* Nested linked boundary-source provenance is not fabricated; it remains unresolved
+  and emits `nested_link_boundary_source_unsupported`.
 * Linked tag/reference resolution is conservative when the API cannot safely resolve it.
 * GitHub CI builds/tests only the Autodesk-independent Core. Autodesk-dependent hosts
   require local compilation against matching installed `RevitAPI.dll` and
   `RevitAPIUI.dll`, and cannot be run in CI without licensed local installations.
-* Phase B1 exports source data only; it contains no Issue #5 corridor/compliance,
-  security, egress, change-impact, LLM, OCR, or inference logic.
+* Phase B1 exports source data only; it contains no geometry-derived adjacency,
+  near/nearest, distance, Issue #5 corridor/compliance, security, egress,
+  change-impact, LLM, OCR, or inference logic.

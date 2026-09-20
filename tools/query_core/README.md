@@ -47,9 +47,26 @@ and coordinate annotations retain numeric and display values. Relationships pres
 `contained_in`, `from_space`, `to_space`, `hosted_by`, and `belongs_to_level`, with
 phase identity where applicable.
 
-Spatial boundaries are ordered outer/inner finish-face loops of directed segments,
-optionally identifying their boundary element. Compact obstruction footprints and
-bounds belong in `geometries`; full meshes are intentionally out of scope.
+Spatial boundaries are ordered outer/inner finish-face loops of directed segments.
+`spatial_boundaries.link_instance_id` (and the segment's matching
+`link_instance_id`) identifies the occurrence of the Room/Space itself.
+`spatial_boundary_segments.source_link_instance_id` independently identifies the
+top-level link occurrence containing the boundary-producing element. Thus a host
+Room bounded by a linked Wall has a null boundary `link_instance_id`, but the Wall's
+linked `source_model_id`, actual `source_unique_id`, and non-null
+`source_link_instance_id`. A linked Room bounded locally uses its own top-level link
+occurrence for both occurrence columns. Unresolved and unsupported nested-link
+sources remain null rather than becoming dangling identities.
+
+`curve_kind` distinguishes `line`, `arc`, `ellipse`, `spline`, and `other`. Stored
+endpoints are exact segment geometry only for `line`; nonlinear endpoints are an
+explicit approximation and the exporter emits a warning. Geometry-derived adjacency,
+near/nearest, and distance queries are not implemented.
+
+Both new boundary-segment columns are additive v2 capabilities. Databases created before
+their introduction remain valid and read-only; callers that need them must detect the
+physical columns and report reduced capability rather than rejecting or rewriting an
+older payload.
 
 ## Evidence, search, and packaging
 

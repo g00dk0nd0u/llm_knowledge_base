@@ -56,6 +56,8 @@ internal sealed class RevitSnapshotExporter
     private readonly Dictionary<string, JsonObject> _elements = [];
     private readonly Dictionary<string, JsonObject> _types = [];
     private readonly Dictionary<string, HashSet<string>> _recordIds = [];
+    private readonly Dictionary<Document, string> _sourceModelIds = [];
+    private readonly Dictionary<ElementId, string> _linkInstanceIds = [];
     private readonly HashSet<string> _searchIds = [];
     private JsonObject _snapshot = null!;
     private JsonObject Records => _snapshot["records"]!.AsObject();
@@ -88,6 +90,7 @@ internal sealed class RevitSnapshotExporter
             var sha = ExportFiles.Sha256(pdf);
             var identity = DocumentIdentityResolver.Resolve(_document);
             _hostModelId = StableIds.Hash("model", identity.Kind, identity.Value);
+            _sourceModelIds[_document] = _hostModelId;
             _documentId = StableIds.Document(identity.Kind, identity.Value);
             _snapshot = SnapshotContract.Create(project, $"Revit {_document.Application.VersionNumber}", identity.Value, sha);
             AddDocumentAndModels(identity, sha);
@@ -183,7 +186,6 @@ internal sealed class RevitSnapshotExporter
 
     private void AddLinks()
     {
-        var models = new Dictionary<Document, string>();
         var linkPlacements = BuildLinkPlacementMap();
         foreach (var link in new FilteredElementCollector(_document).OfClass(typeof(RevitLinkInstance)).Cast<RevitLinkInstance>().OrderBy(x => x.UniqueId))
         {
@@ -192,10 +194,10 @@ internal sealed class RevitSnapshotExporter
                 var linked = link.GetLinkDocument();
                 if (linked is null) { _warnings.Add(new("unloaded_revit_link", $"Link '{link.Name}' is unloaded.", link.UniqueId)); continue; }
                 var transform = link.GetTotalTransform();
-                if (!models.TryGetValue(linked, out var modelId))
+                if (!_sourceModelIds.TryGetValue(linked, out var modelId))
                 {
                     var identity = DocumentIdentityResolver.Resolve(linked);
-                    modelId = StableIds.Hash("model", identity.Kind, identity.Value); models[linked] = modelId;
+                    modelId = StableIds.Hash("model", identity.Kind, identity.Value); _sourceModelIds[linked] = modelId;
                     Add("source_models", SourceModel(linked, modelId, "link", identity));
                     AddLevels(linked, modelId);
                     AddSpatialElements(linked, modelId);
@@ -203,6 +205,7 @@ internal sealed class RevitSnapshotExporter
                 var linkId = Id("link", _hostModelId, link.UniqueId);
                 Add("link_instances", Obj(("id", linkId), ("host_source_model_id", _hostModelId), ("linked_source_model_id", modelId),
                     ("source_unique_id", link.UniqueId), ("name", link.Name), ("transform_to_host", TransformJson(transform)), ("provenance", Provenance)));
+                _linkInstanceIds[link.Id] = linkId;
                 AddSpatialBoundaries(linked, modelId, linkId, transform);
                 // Deliberately avoid the Revit 2025-unsafe three-argument linked-view collector.
                 var placements = linkPlacements.TryGetValue(link.Id, out var candidates) ? candidates : [];
@@ -395,12 +398,14 @@ internal sealed class RevitSnapshotExporter
                     {
                         var segment = loops[loopIndex][segmentIndex]; var curve = segment.GetCurve();
                         var a = Units.Point(curve.GetEndPoint(0), transform); var b = Units.Point(curve.GetEndPoint(1), transform);
-                        var source = document.GetElement(segment.ElementId);
+                        ResolveBoundarySource(document, modelId, linkId, segment,
+                            out var sourceModelId, out var sourceUniqueId, out var sourceLinkInstanceId);
                         Add("spatial_boundary_segments", Obj(("id", StableIds.Hash("boundary-segment", boundaryId, segmentIndex.ToString())),
                             ("boundary_id", boundaryId), ("link_instance_id", linkId), ("segment_index", segmentIndex),
                             ("start_x", a.X), ("start_y", a.Y), ("start_z", a.Z),
-                            ("end_x", b.X), ("end_y", b.Y), ("end_z", b.Z), ("source_model_id", source is null ? null : modelId),
-                            ("source_unique_id", source?.UniqueId)));
+                            ("end_x", b.X), ("end_y", b.Y), ("end_z", b.Z), ("source_model_id", sourceModelId),
+                            ("source_unique_id", sourceUniqueId), ("source_link_instance_id", sourceLinkInstanceId),
+                            ("curve_kind", BoundaryCurveKind(curve))));
                         if (curve is not Line) _warnings.Add(new("non_linear_boundary_approximated",
                             "Curved finish boundary is represented by endpoints only.", spatial.UniqueId));
                     }
@@ -409,6 +414,49 @@ internal sealed class RevitSnapshotExporter
             catch (Exception error) { _warnings.Add(new("space_extraction_failed", error.Message, spatial.UniqueId)); }
         }
     }
+
+    private void ResolveBoundarySource(Document document, string modelId, string? boundaryLinkId,
+        BoundarySegment segment, out string? sourceModelId, out string? sourceUniqueId,
+        out string? sourceLinkInstanceId)
+    {
+        sourceModelId = null; sourceUniqueId = null; sourceLinkInstanceId = null;
+        if (segment.LinkElementId == ElementId.InvalidElementId)
+        {
+            var source = document.GetElement(segment.ElementId);
+            if (source is null) return;
+            sourceModelId = modelId; sourceUniqueId = source.UniqueId;
+            sourceLinkInstanceId = boundaryLinkId;
+            return;
+        }
+        if (!ReferenceEquals(document, _document))
+        {
+            _warnings.Add(new("nested_link_boundary_source_unsupported",
+                "A boundary in a top-level linked model points into a nested Revit link.", segment.ElementId.ToString()));
+            return;
+        }
+        if (!_options.IncludeLinks || document.GetElement(segment.ElementId) is not RevitLinkInstance sourceLink
+            || !_linkInstanceIds.TryGetValue(sourceLink.Id, out var sourceLinkId))
+        {
+            _warnings.Add(new("linked_boundary_source_unresolved",
+                "The linked boundary source is unavailable or was not included.", segment.ElementId.ToString()));
+            return;
+        }
+        var linkedDocument = sourceLink.GetLinkDocument();
+        if (linkedDocument is null || !_sourceModelIds.TryGetValue(linkedDocument, out var linkedModelId)
+            || linkedDocument.GetElement(segment.LinkElementId) is not Element source)
+        {
+            _warnings.Add(new("linked_boundary_source_unresolved",
+                "The linked document or boundary-producing element could not be resolved.", sourceLink.UniqueId));
+            return;
+        }
+        sourceModelId = linkedModelId; sourceUniqueId = source.UniqueId; sourceLinkInstanceId = sourceLinkId;
+    }
+
+    private static string BoundaryCurveKind(Curve curve) => curve.GetType().Name switch
+    {
+        "Line" => "line", "Arc" => "arc", "Ellipse" => "ellipse",
+        "NurbSpline" or "HermiteSpline" => "spline", _ => "other"
+    };
 
     private void AddAnnotations()
     {

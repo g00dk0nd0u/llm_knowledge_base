@@ -1270,6 +1270,44 @@ def test_schema_validation_rejects_incomplete_v2_payloads(
         validate_database(missing_column)
 
 
+def test_pre_boundary_provenance_v2_database_remains_usable(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, current_database = fixture
+    with sqlite3.connect(current_database) as connection:
+        current_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(spatial_boundary_segments)"
+            )
+        }
+    assert {"source_link_instance_id", "curve_kind"} <= current_columns
+
+    legacy_database = tmp_path / "pre-pr18-v2.sqlite"
+    shutil.copyfile(current_database, legacy_database)
+    connection = sqlite3.connect(legacy_database)
+    connection.execute(
+        "ALTER TABLE spatial_boundary_segments DROP COLUMN source_link_instance_id"
+    )
+    connection.execute("ALTER TABLE spatial_boundary_segments DROP COLUMN curve_kind")
+    connection.commit()
+    connection.close()
+
+    assert validate_database(legacy_database)["schema_version"] == "2"
+    with QueryCore(legacy_database) as core:
+        assert not core._has_columns(
+            "spatial_boundary_segments", "source_link_instance_id", "curve_kind"
+        )
+        assert core.search_text("Shutter")[0]["record_id"] == "element-sd03"
+        assert core.get_entity("element", "element-sd03")["name"] == "Shutter SD-03"
+        assert len(core.get_spatial_boundaries("space-corridor")) == 1
+
+    enhanced = package_pdf(drawing, legacy_database, tmp_path / "legacy-enhanced.pdf")
+    extracted = extract_payload(enhanced, tmp_path / "legacy-extracted.sqlite")
+    with QueryCore(extracted) as core:
+        assert core.get_entity("space", "space-corridor")["id"] == "space-corridor"
+
+
 def test_query_connection_is_read_only(fixture: tuple[Path, Path]) -> None:
     with (
         QueryCore(fixture[1]) as core,
@@ -1524,9 +1562,96 @@ def test_repeated_link_model_placements(fixture: tuple[Path, Path]) -> None:
             == {row["link_instance_id"]}
             for row in boundaries
         )
+        assert {
+            segment["source_link_instance_id"]
+            for boundary in boundaries
+            for segment in boundary["segments"]
+        } == {"link-instance-a", "link-instance-b"}
+        assert all(
+            segment["curve_kind"] == "line"
+            for boundary in boundaries
+            for segment in boundary["segments"]
+        )
         assert boundaries[0]["segments"][0]["start_x"] != boundaries[1][
             "segments"
         ][0]["start_x"]
+
+
+def test_boundary_source_provenance_validation(tmp_path: Path) -> None:
+    from tools.query_core.fixtures import create_synthetic_pdf
+
+    drawing = create_synthetic_pdf(tmp_path / "drawing.pdf")
+    records = synthetic_records(drawing)
+    host_segment = records["spatial_boundary_segments"][0]
+    assert host_segment["source_model_id"] == "model-host"
+    assert host_segment["source_link_instance_id"] is None
+
+    # A host room may be bounded by the actual wall in a linked model.  Its source
+    # occurrence is independent from the containing boundary's occurrence.
+    host_segment.update(
+        source_model_id="model-link",
+        source_unique_id="actual-linked-wall-uid",
+        source_link_instance_id="link-instance-a",
+        curve_kind="arc",
+    )
+    output = build_database(records, tmp_path / "host-linked-wall.sqlite")
+    stored = sqlite3.connect(output).execute(
+        "SELECT link_instance_id, source_model_id, source_unique_id, "
+        "source_link_instance_id, curve_kind FROM spatial_boundary_segments WHERE id=?",
+        (host_segment["id"],),
+    ).fetchone()
+    assert stored == (
+        None,
+        "model-link",
+        "actual-linked-wall-uid",
+        "link-instance-a",
+        "arc",
+    )
+
+    unresolved = json.loads(json.dumps(records))
+    unresolved_segment = unresolved["spatial_boundary_segments"][0]
+    unresolved_segment.update(
+        source_model_id=None,
+        source_unique_id=None,
+        source_link_instance_id=None,
+    )
+    build_database(unresolved, tmp_path / "unresolved.sqlite")
+
+    bad = json.loads(json.dumps(records))
+    bad["spatial_boundary_segments"][0]["source_link_instance_id"] = "missing"
+    with pytest.raises(QueryCoreError, match="nonexistent source link instance"):
+        build_database(bad, tmp_path / "dangling.sqlite")
+
+    bad = json.loads(json.dumps(records))
+    bad["spatial_boundary_segments"][0]["source_link_instance_id"] = (
+        "link-instance-b"
+    )
+    bad["spatial_boundary_segments"][0]["source_model_id"] = "model-host"
+    with pytest.raises(QueryCoreError, match="source link model mismatch"):
+        build_database(bad, tmp_path / "mismatch.sqlite")
+
+
+def test_old_v1_boundary_segments_without_additive_fields_import(tmp_path: Path) -> None:
+    from tools.query_core.fixtures import (
+        create_synthetic_pdf,
+        write_synthetic_revit_snapshot,
+    )
+    from tools.query_core.revit_snapshot import import_snapshot, load_snapshot
+
+    drawing = create_synthetic_pdf(tmp_path / "drawing.pdf")
+    snapshot = write_synthetic_revit_snapshot(drawing, tmp_path / "snapshot.json")
+    payload = json.loads(snapshot.read_text())
+    for segment in payload["records"]["spatial_boundary_segments"]:
+        segment.pop("source_link_instance_id")
+        segment.pop("curve_kind")
+    snapshot.write_text(json.dumps(payload))
+
+    assert load_snapshot(snapshot)["snapshot_version"] == 1
+    database = import_snapshot(snapshot, tmp_path / "old-v1.sqlite")
+    assert sqlite3.connect(database).execute(
+        "SELECT count(*) FROM spatial_boundary_segments "
+        "WHERE source_link_instance_id IS NULL AND curve_kind IS NULL"
+    ).fetchone()[0] == len(payload["records"]["spatial_boundary_segments"])
 
 
 def test_snapshot_json_schema_is_enforced_before_build(tmp_path: Path) -> None:
