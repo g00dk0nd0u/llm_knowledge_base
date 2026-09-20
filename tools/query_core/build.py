@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import tempfile
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import QueryCoreError
+from .geometry import decode_location_primitive, primitive_bounds
 
 SCHEMA_VERSION = 2
 GENERATOR_VERSION = "query-core/2.0"
@@ -139,6 +141,35 @@ def _validate(records: dict[str, Any]) -> None:
             raise QueryCoreError(
                 "indexed geometry must use host_revit_internal_origin/mm"
             )
+        if row.get("geometry_type") in {"point", "line"}:
+            primitive = decode_location_primitive(
+                row["geometry_type"], row.get("geometry")
+            )
+            if primitive is None:
+                raise QueryCoreError(
+                    f"malformed location geometry: {row.get('id')}"
+                )
+            keys = ("min_x", "max_x", "min_y", "max_y", "min_z", "max_z")
+            bounds = tuple(row.get(key) for key in keys)
+            if any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                for value in bounds
+            ):
+                raise QueryCoreError(
+                    f"malformed indexed geometry bounds: {row.get('id')}"
+                )
+            exact_bounds = primitive_bounds(primitive)
+            if any(
+                bounds[index] > bounds[index + 1]
+                or bounds[index] > exact_bounds[index]
+                or bounds[index + 1] < exact_bounds[index + 1]
+                for index in (0, 2, 4)
+            ):
+                raise QueryCoreError(
+                    f"indexed bounds do not enclose location geometry: {row.get('id')}"
+                )
         instance_id = row.get("link_instance_id")
         if instance_id is not None:
             instance = link_instances.get(instance_id)

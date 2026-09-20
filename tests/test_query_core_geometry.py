@@ -20,7 +20,7 @@ def test_pure_finite_geometry_math() -> None:
     assert segment_distance((0, 0, 0), (10, 0, 0), (5, -5, 2), (5, 5, 2)) == pytest.approx(2)
 
 
-def _database(tmp_path: Path) -> Path:
+def _geometry_records(tmp_path: Path) -> dict:
     drawing = create_synthetic_pdf(tmp_path / "drawing.pdf")
     records = synthetic_records(drawing)
     template = next(row for row in records["elements"] if row["id"] == "wall-north")
@@ -59,7 +59,39 @@ def _database(tmp_path: Path) -> Path:
         geometry("linked-b", "element-linked-collision", "point", {"point": [10010, 0, 0]}, (10010, 10010, 0, 0, 0, 0), "link-instance-b"),
         geometry("linked-bbox-b", "element-linked-collision", "bbox3d", {"min": [10010, 0, -20], "max": [10011, 1, -10]}, (10010, 10011, 0, 1, -20, -10), "link-instance-b"),
     ])
-    return build_database(records, tmp_path / "geometry.sqlite")
+    return records
+
+
+def _database(tmp_path: Path) -> Path:
+    return build_database(_geometry_records(tmp_path), tmp_path / "geometry.sqlite")
+
+
+@pytest.mark.parametrize(
+    ("geometry_id", "bound", "value"),
+    (("point-a", "max_x", -1), ("line-b", "min_y", 1)),
+)
+def test_build_rejects_location_bounds_that_exclude_exact_primitive(
+    tmp_path: Path, geometry_id: str, bound: str, value: float
+) -> None:
+    records = _geometry_records(tmp_path)
+    row = next(item for item in records["geometries"] if item["id"] == geometry_id)
+    row[bound] = value
+
+    with pytest.raises(QueryCoreError, match=geometry_id):
+        build_database(records, tmp_path / "invalid-bounds.sqlite")
+
+
+def test_build_accepts_exact_and_conservative_location_bounds(tmp_path: Path) -> None:
+    records = _geometry_records(tmp_path)
+    point = next(item for item in records["geometries"] if item["id"] == "point-a")
+    line = next(item for item in records["geometries"] if item["id"] == "line-b")
+    # point-a keeps exact scalar bounds; line-b uses a deliberately wider index box.
+    line.update(min_x=-100, max_x=100, min_y=-100, max_y=100, min_z=-100, max_z=100)
+
+    database = build_database(records, tmp_path / "valid-bounds.sqlite")
+
+    assert database.exists()
+    assert point["min_x"] == point["max_x"] == 0
 
 
 def test_location_distance_occurrences_and_bbox_exclusion(tmp_path: Path) -> None:
