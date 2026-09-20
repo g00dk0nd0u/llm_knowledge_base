@@ -1270,6 +1270,44 @@ def test_schema_validation_rejects_incomplete_v2_payloads(
         validate_database(missing_column)
 
 
+def test_pre_boundary_provenance_v2_database_remains_usable(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    drawing, current_database = fixture
+    with sqlite3.connect(current_database) as connection:
+        current_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(spatial_boundary_segments)"
+            )
+        }
+    assert {"source_link_instance_id", "curve_kind"} <= current_columns
+
+    legacy_database = tmp_path / "pre-pr18-v2.sqlite"
+    shutil.copyfile(current_database, legacy_database)
+    connection = sqlite3.connect(legacy_database)
+    connection.execute(
+        "ALTER TABLE spatial_boundary_segments DROP COLUMN source_link_instance_id"
+    )
+    connection.execute("ALTER TABLE spatial_boundary_segments DROP COLUMN curve_kind")
+    connection.commit()
+    connection.close()
+
+    assert validate_database(legacy_database)["schema_version"] == "2"
+    with QueryCore(legacy_database) as core:
+        assert not core._has_columns(
+            "spatial_boundary_segments", "source_link_instance_id", "curve_kind"
+        )
+        assert core.search_text("Shutter")[0]["record_id"] == "element-sd03"
+        assert core.get_entity("element", "element-sd03")["name"] == "Shutter SD-03"
+        assert len(core.get_spatial_boundaries("space-corridor")) == 1
+
+    enhanced = package_pdf(drawing, legacy_database, tmp_path / "legacy-enhanced.pdf")
+    extracted = extract_payload(enhanced, tmp_path / "legacy-extracted.sqlite")
+    with QueryCore(extracted) as core:
+        assert core.get_entity("space", "space-corridor")["id"] == "space-corridor"
+
+
 def test_query_connection_is_read_only(fixture: tuple[Path, Path]) -> None:
     with (
         QueryCore(fixture[1]) as core,

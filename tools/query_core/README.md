@@ -63,6 +63,11 @@ endpoints are exact segment geometry only for `line`; nonlinear endpoints are an
 explicit approximation and the exporter emits a warning. Geometry-derived adjacency,
 near/nearest, and distance queries are not implemented.
 
+Both new boundary-segment columns are additive v2 capabilities. Databases created before
+their introduction remain valid and read-only; callers that need them must detect the
+physical columns and report reduced capability rather than rejecting or rewriting an
+older payload.
+
 ## Evidence, search, and packaging
 
 PDF evidence remains one-based and uses inclusive ordered `pdf_points_top_left`

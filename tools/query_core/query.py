@@ -232,8 +232,6 @@ REQUIRED_COLUMNS.update(
             "end_z",
             "source_model_id",
             "source_unique_id",
-            "source_link_instance_id",
-            "curve_kind",
         },
     }
 )
@@ -447,6 +445,16 @@ class QueryCore:
         )
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA query_only=ON")
+
+    def _has_columns(self, table: str, *columns: str) -> bool:
+        """Report optional additive capabilities without modifying the payload."""
+        actual = {
+            row["name"]
+            for row in self.connection.execute(
+                f"PRAGMA table_info({json.dumps(table)})"
+            )
+        }
+        return set(columns) <= actual
 
     def close(self) -> None:
         self.connection.close()
