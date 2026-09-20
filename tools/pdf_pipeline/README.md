@@ -13,9 +13,10 @@ python -m tools.pdf_pipeline process --all
 ```
 
 The command scans `projects/<project-id>/source/**/*.pdf`. For each PDF it computes a
-SHA-256, reads available embedded metadata, and records per-page text, image count,
-drawing count, extraction status, and a vision-review hint. It does not infer missing
-metadata. It does not call OCR, an LLM, or any external service.
+SHA-256, reads available embedded metadata, and records per-page dimensions, rotation,
+media/crop boxes, embedded text primitives, image count, drawing count, extraction
+status, and a vision-review hint. It does not infer missing metadata, classify documents,
+or add semantic interpretation. It does not call OCR, an LLM, or any external service.
 
 `document_id` is the truncated SHA-256 of the normalized repository-relative source path,
 prefixed with `doc-`. It therefore remains stable when content at that path changes.
@@ -28,11 +29,20 @@ projects/<project-id>/knowledge/<source-stem>--<stable-id>/
 ├── index.md
 └── pages/
     ├── p0001.md
+    ├── p0001.json
     └── ...
 ```
 
 Page Markdown contains machine-readable YAML-compatible front matter and source-faithful
-embedded text. `no_text` and `minimal_text` are not extraction success. A page is marked
+embedded text. Each page JSON sidecar preserves ordered text blocks, lines, and spans,
+including their text, bounding boxes, and embedded-PDF-text provenance. Span font name,
+size, and flags are copied only when PyMuPDF provides them. Dimensions and bounding boxes
+use `pdf_points_top_left`: PyMuPDF's unrotated, top-left page coordinates in PDF points,
+with x increasing right and y increasing down. The raw PDF `/MediaBox` is converted with
+PyMuPDF's page transformation matrix, and `crop_box` records the page-local crop extent
+used by text bboxes. The page rotation is recorded separately. These coordinates are not
+Revit, model, or world coordinates. `no_text` and `minimal_text` are not extraction
+success. A page is marked
 `vision_recommended` when it has under 40 extracted characters, contains a raster image,
 or has at least 200 vector drawing objects. This is a processing hint only, not a legal,
 technical, or semantic conclusion.
@@ -62,5 +72,6 @@ substantial memory at high DPI; v1 intentionally does not implement tiling.
 python -m pytest
 ```
 
-`schema/document.schema.json` validates generated `document.json`, and
+`schema/document.schema.json` validates generated `document.json`,
+`schema/pdf_page.schema.json` validates structured page sidecars, and
 `schema/manifest.schema.json` validates project manifests.
