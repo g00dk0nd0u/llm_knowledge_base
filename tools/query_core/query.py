@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 from .errors import QueryCoreError
+from .geometry import decode_location_primitive, primitive_bounds, primitive_distance
 from .navigation import deduplicate_navigation, navigation_target
 
 SCHEMA_VERSION = 2
@@ -1286,3 +1288,121 @@ class QueryCore:
         for row in rows:
             row["geometry"] = json.loads(row.pop("geometry_json"))
         return self._with_evidence(rows)
+
+    def get_entity_geometries(
+        self, entity_kind: str, entity_id: str, link_instance_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Return stored geometry verbatim (apart from decoding its JSON value)."""
+        sql = "SELECT * FROM geometries WHERE entity_kind=? AND entity_id=?"
+        values: tuple[Any, ...] = (entity_kind, entity_id)
+        if link_instance_id is not None:
+            sql += " AND link_instance_id=?"
+            values += (link_instance_id,)
+        rows = self._rows(sql + " ORDER BY link_instance_id,geometry_type,id", values)
+        for row in rows:
+            row["geometry"] = json.loads(row.pop("geometry_json"))
+        return self._with_evidence(rows)
+
+    @staticmethod
+    def _occurrence(kind: str, entity_id: str, link_instance_id: str | None) -> dict[str, Any]:
+        return {"entity_kind": kind, "entity_id": entity_id, "link_instance_id": link_instance_id}
+
+    def _resolve_geometry_occurrence(
+        self, kind: str, entity_id: str, link_instance_id: str | None, geometry_type: str,
+        occurrence_is_selected: bool = False,
+    ) -> dict[str, Any]:
+        entity = self.get_entity(kind, entity_id)
+        if entity is None:
+            return {"status": "not_found", "entity": {"kind": kind, "id": entity_id}}
+        all_rows = self.get_entity_geometries(kind, entity_id)
+        occurrence_ids = sorted({row["link_instance_id"] for row in all_rows}, key=lambda value: (value is not None, value or ""))
+        if link_instance_id is None and not occurrence_is_selected and len(occurrence_ids) > 1:
+            return {"status": "ambiguous_occurrence", "available_occurrence_ids": occurrence_ids}
+        selected_id = link_instance_id if link_instance_id is not None else (occurrence_ids[0] if occurrence_ids else None)
+        rows = [row for row in all_rows if row["link_instance_id"] == selected_id]
+        occurrence = self._occurrence(kind, entity_id, selected_id)
+        if geometry_type == "location":
+            usable = [(row, decode_location_primitive(row["geometry_type"], row["geometry"])) for row in rows]
+            usable = [(row, primitive) for row, primitive in usable if primitive is not None]
+            if len(usable) > 1:
+                return {"status": "ambiguous_geometry", "occurrence": occurrence, "geometry_ids": [row["id"] for row, _ in usable]}
+        else:
+            usable = [(row, row["geometry"]) for row in rows if row["geometry_type"] == "bbox3d" and isinstance(row["geometry"], dict)]
+            if len(usable) > 1:
+                return {"status": "ambiguous_geometry", "occurrence": occurrence, "geometry_ids": [row["id"] for row, _ in usable]}
+        if not usable:
+            return {"status": "insufficient_data", "occurrence": occurrence}
+        row, primitive = usable[0]
+        return {"status": "ok", "occurrence": occurrence, "row": row, "primitive": primitive}
+
+    def get_location_distance(self, kind_a: str, id_a: str, kind_b: str, id_b: str,
+                              link_instance_id_a: str | None = None,
+                              link_instance_id_b: str | None = None) -> dict[str, Any]:
+        a = self._resolve_geometry_occurrence(kind_a, id_a, link_instance_id_a, "location")
+        b = self._resolve_geometry_occurrence(kind_b, id_b, link_instance_id_b, "location")
+        base = {"entity_a": {"kind": kind_a, "id": id_a}, "entity_b": {"kind": kind_b, "id": id_b}}
+        for label, resolved in (("a", a), ("b", b)):
+            if resolved["status"] != "ok":
+                return {"status": resolved["status"], **base, f"occurrence_{label}": resolved.get("occurrence"), **{key: value for key, value in resolved.items() if key not in {"status", "occurrence"}}}
+        if a["row"]["coordinate_system"] != b["row"]["coordinate_system"] or a["row"]["unit"] != b["row"]["unit"]:
+            return {"status": "insufficient_data", **base, "occurrence_a": a["occurrence"], "occurrence_b": b["occurrence"], "reason": "incompatible_coordinate_system_or_unit"}
+        return {"status": "ok", **base, "occurrence_a": a["occurrence"], "occurrence_b": b["occurrence"],
+                "distance": primitive_distance(a["primitive"], b["primitive"]), "unit": a["row"]["unit"],
+                "geometry_basis": f'{a["row"]["geometry_type"]}_to_{b["row"]["geometry_type"]}',
+                "geometry_ids": [a["row"]["id"], b["row"]["id"]],
+                "provenance": [a["row"]["provenance"], b["row"]["provenance"]]}
+
+    def find_nearby_by_location(self, entity_kind: str, entity_id: str, radius_mm: float,
+                                link_instance_id: str | None = None,
+                                target_kind: str | None = None) -> dict[str, Any]:
+        if isinstance(radius_mm, bool) or not isinstance(radius_mm, (int, float)) or not math.isfinite(radius_mm) or radius_mm < 0:
+            raise QueryCoreError("radius_mm must be finite and >= 0")
+        subject = self._resolve_geometry_occurrence(entity_kind, entity_id, link_instance_id, "location")
+        if subject["status"] != "ok":
+            return {key: value for key, value in subject.items() if key not in {"row", "primitive"}}
+        bounds = primitive_bounds(subject["primitive"])
+        expanded = tuple(value + (-radius_mm if index % 2 == 0 else radius_mm) for index, value in enumerate(bounds))
+        candidates = self.get_spatial_candidates(expanded)
+        identities = sorted({(row["entity_kind"], row["entity_id"], row["link_instance_id"]) for row in candidates
+                             if (target_kind is None or row["entity_kind"] == target_kind)
+                             and (row["entity_kind"], row["entity_id"], row["link_instance_id"]) != (entity_kind, entity_id, subject["occurrence"]["link_instance_id"])},
+                            key=lambda value: (value[0], value[1], value[2] or ""))
+        results, skipped = [], []
+        for kind, candidate_id, instance_id in identities:
+            candidate = self._resolve_geometry_occurrence(kind, candidate_id, instance_id, "location", True)
+            if candidate["status"] != "ok" or candidate["row"]["coordinate_system"] != subject["row"]["coordinate_system"] or candidate["row"]["unit"] != subject["row"]["unit"]:
+                skipped.append({"occurrence": self._occurrence(kind, candidate_id, instance_id), "reason": candidate["status"] if candidate["status"] != "ok" else "incompatible_coordinate_system_or_unit"})
+                continue
+            distance = primitive_distance(subject["primitive"], candidate["primitive"])
+            if distance <= radius_mm:
+                results.append({"entity": {"kind": kind, "id": candidate_id}, "occurrence": candidate["occurrence"], "distance": distance,
+                                "unit": subject["row"]["unit"], "geometry_ids": [subject["row"]["id"], candidate["row"]["id"]],
+                                "geometry_basis": f'{subject["row"]["geometry_type"]}_to_{candidate["row"]["geometry_type"]}',
+                                "provenance": [subject["row"]["provenance"], candidate["row"]["provenance"]]})
+        results.sort(key=lambda item: (item["distance"], item["entity"]["kind"], item["entity"]["id"], item["occurrence"]["link_instance_id"] or ""))
+        return {"status": "ok", "subject": subject["occurrence"], "radius_mm": radius_mm, "results": results,
+                "coverage": {"indexed_occurrences": len(identities), "exact_results": len(results), "skipped": skipped}}
+
+    def get_nearest_by_location(self, entity_kind: str, entity_id: str, max_radius_mm: float,
+                                link_instance_id: str | None = None, target_kind: str | None = None) -> dict[str, Any]:
+        nearby = self.find_nearby_by_location(entity_kind, entity_id, max_radius_mm, link_instance_id, target_kind)
+        if nearby["status"] != "ok":
+            return nearby
+        if nearby["results"]:
+            return {"status": "ok", "subject": nearby["subject"], "nearest": nearby["results"][0], "max_radius_mm": max_radius_mm, "coverage": nearby["coverage"]}
+        return {"status": "insufficient_data" if nearby["coverage"]["skipped"] else "no_match", "subject": nearby["subject"], "nearest": None, "max_radius_mm": max_radius_mm, "coverage": nearby["coverage"]}
+
+    def get_vertical_relation(self, kind_a: str, id_a: str, kind_b: str, id_b: str,
+                              link_instance_id_a: str | None = None,
+                              link_instance_id_b: str | None = None) -> dict[str, Any]:
+        a = self._resolve_geometry_occurrence(kind_a, id_a, link_instance_id_a, "bbox3d")
+        b = self._resolve_geometry_occurrence(kind_b, id_b, link_instance_id_b, "bbox3d")
+        base = {"occurrence_a": a.get("occurrence"), "occurrence_b": b.get("occurrence"), "geometry_basis": "bbox3d_separation"}
+        for resolved in (a, b):
+            if resolved["status"] != "ok":
+                return {"status": resolved["status"], **base, **{key: value for key, value in resolved.items() if key not in {"status", "occurrence"}}}
+        if a["row"]["coordinate_system"] != b["row"]["coordinate_system"] or a["row"]["unit"] != b["row"]["unit"]:
+            return {"status": "insufficient_data", **base, "reason": "incompatible_coordinate_system_or_unit"}
+        amin, amax, bmin, bmax = a["row"]["min_z"], a["row"]["max_z"], b["row"]["min_z"], b["row"]["max_z"]
+        relation, separation = ("above", amin - bmax) if amin > bmax else (("below", bmin - amax) if amax < bmin else ("indeterminate", None))
+        return {"status": "ok", **base, "relation": relation, "z_separation": separation, "unit": a["row"]["unit"], "geometry_ids": [a["row"]["id"], b["row"]["id"]]}

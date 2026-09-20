@@ -60,8 +60,33 @@ sources remain null rather than becoming dangling identities.
 
 `curve_kind` distinguishes `line`, `arc`, `ellipse`, `spline`, and `other`. Stored
 endpoints are exact segment geometry only for `line`; nonlinear endpoints are an
-explicit approximation and the exporter emits a warning. Geometry-derived adjacency,
-near/nearest, and distance queries are not implemented.
+explicit approximation and the exporter emits a warning.
+
+## Phase 4A relationships and Phase 4B1 geometry queries
+
+Phase 4A APIs report explicit stored relationships. They do not infer relationships
+from geometry. Phase 4B1 adds `get_entity_geometries`, `get_location_distance`,
+`find_nearby_by_location`, `get_nearest_by_location`, and `get_vertical_relation`.
+Location distance is the deterministic 3-D distance between one stored Revit
+`LocationPoint` or finite straight `LocationCurve(Line)` primitive per occurrence.
+It is **not** physical-solid, finish-face, code-compliance, or clear distance.
+Unsupported, malformed, conflicting, or bbox-only location geometry returns
+`insufficient_data` (or `ambiguous_geometry` for conflicting primitives); coordinate
+systems and units are never converted at query time.
+
+The `geometry_rtree` is only a broad-phase candidate index. Nearby and bounded-nearest
+queries expand the subject primitive bounds, retrieve indexed candidates, then use
+the exact stored point/line primitives for filtering and ranking. R-Tree bounds are
+never reported as exact element distance. Nearest search is deliberately bounded by
+the required `max_radius_mm` argument.
+
+Vertical relation uses only strict separation of stored `bbox3d` Z ranges. It is a
+conservative bounding-volume guarantee: separated ranges are definitely above or
+below, while touching or overlapping ranges are `indeterminate`. It is not a semantic
+floor relation, physical surface clearance, or center-point relation.
+
+Room/Space adjacency and boundary-segment overlap matching remain deferred to Phase
+4B2. Corridor clear-width also remains deferred.
 
 Both new boundary-segment columns are additive v2 capabilities. Databases created before
 their introduction remain valid and read-only; callers that need them must detect the
