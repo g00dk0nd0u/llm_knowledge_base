@@ -66,6 +66,10 @@ def package_pdf(drawing_pdf: Path, database: Path, output: Path) -> Path:
     """Copy drawing pages unchanged and attach the v2 database as an embedded file."""
     drawing_pdf, database, output = map(Path, (drawing_pdf, database, output))
     metadata = validate_database(database)
+    if metadata["binding_mode"] != "single_document":
+        raise QueryCoreError(
+            "project-bound payload cannot be packaged into a single PDF"
+        )
     if drawing_pdf.resolve() == output.resolve():
         raise QueryCoreError("enhanced PDF must not overwrite its source drawing")
     if sha256(drawing_pdf) != metadata["source_document_sha256"]:
@@ -77,6 +81,7 @@ def package_pdf(drawing_pdf: Path, database: Path, output: Path) -> Path:
             "payload_sha256": sha256(database),
             "schema_version": int(metadata["schema_version"]),
             "project_id": metadata["project_id"],
+            "binding_mode": "single_document",
             "source_document_identity": metadata["source_document_identity"],
             "source_document_sha256": metadata["source_document_sha256"],
             "generator_version": metadata["generator_version"],
@@ -161,6 +166,9 @@ def inspect_pdf(enhanced_pdf: Path) -> dict:
             expected = int(metadata[key]) if key == "schema_version" else metadata[key]
             if descriptor.get(key) != expected:
                 raise QueryCoreError(f"embedded payload descriptor mismatch: {key}")
+        descriptor_mode = descriptor.get("binding_mode", "single_document")
+        if descriptor_mode != metadata["binding_mode"]:
+            raise QueryCoreError("embedded payload descriptor mismatch: binding_mode")
         return {
             "payload_name": name,
             "payload_size": len(payload),

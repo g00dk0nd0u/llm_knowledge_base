@@ -117,6 +117,20 @@ bounds. FTS5 uses `unicode61`, with deterministic Unicode substring fallback for
 Japanese. Enhanced PDFs retain `/AFRelationship /Data`, SQLite MIME metadata,
 drawing/payload SHA binding, validated read-only cache, and SQLite integrity checks.
 
+New v2 databases also expose the additive `pdf_pages` capability. Each row identifies
+a one-based page in `documents` and preserves its finite positive width/height in PDF
+points, rotation, and provenance. Page sizes may vary within a document; these values
+describe PDF evidence space, not Revit/model geometry. Existing v2 databases without
+this table remain valid and readable.
+
+Payload metadata distinguishes `single_document` from `project` binding. Missing
+binding metadata in an older v2 payload means `single_document`, which continues to
+require and verify the top-level source identity and SHA-256. A `project` payload may
+contain multiple documents and instead treats each `documents.identity` and lowercase
+`documents.source_sha256` as authoritative. `package_pdf()` remains exclusively for
+single-document Enhanced PDFs and rejects project-bound payloads; project bundle
+generation is not part of this contract.
+
 Public APIs include `search_text`, `find_entities`, `get_entity`,
 `get_numeric_facts`, `get_dimensions`, `get_spot_elevations`,
 `get_spatial_candidates`, `get_related_entities`, `get_pdf_evidence`, plus v2

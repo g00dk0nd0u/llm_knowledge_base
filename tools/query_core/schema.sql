@@ -2,6 +2,16 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE documents (id TEXT PRIMARY KEY, identity TEXT NOT NULL UNIQUE, title TEXT NOT NULL, source_filename TEXT NOT NULL, source_sha256 TEXT NOT NULL CHECK(length(source_sha256)=64)) WITHOUT ROWID;
+CREATE TABLE pdf_pages (
+  id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  page_number INTEGER NOT NULL CHECK(page_number >= 1),
+  width_points REAL NOT NULL CHECK(width_points > 0 AND width_points < 1.7976931348623157e308),
+  height_points REAL NOT NULL CHECK(height_points > 0 AND height_points < 1.7976931348623157e308),
+  rotation INTEGER NOT NULL CHECK(rotation IN (0,90,180,270)),
+  provenance TEXT NOT NULL,
+  UNIQUE(document_id, page_number)
+) WITHOUT ROWID;
 CREATE TABLE source_models (
   id TEXT PRIMARY KEY, role TEXT NOT NULL CHECK(role IN ('host','link')), title TEXT NOT NULL,
   revit_version TEXT, model_identity_kind TEXT NOT NULL, model_identity TEXT NOT NULL,
