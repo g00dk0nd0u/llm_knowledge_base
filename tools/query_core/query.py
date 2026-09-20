@@ -446,9 +446,11 @@ def validate_database(path: Path) -> dict[str, str]:
                 raise QueryCoreError(
                     "payload missing required metadata: " + ", ".join(missing_binding)
                 )
-        document_hashes = [
-            row[0] for row in connection.execute("SELECT source_sha256 FROM documents")
-        ]
+        project_documents = (
+            list(connection.execute("SELECT identity,source_sha256 FROM documents"))
+            if binding_mode == "project"
+            else []
+        )
     except sqlite3.Error as error:
         raise QueryCoreError(f"invalid SQLite payload: {error}") from error
     finally:
@@ -466,9 +468,21 @@ def validate_database(path: Path) -> dict[str, str]:
     for key in REQUIRED_METADATA - {"schema_version"}:
         if not isinstance(metadata[key], str) or not metadata[key].strip():
             raise QueryCoreError(f"payload metadata {key} must be a non-empty string")
-    hashes = [("document source_sha256", value) for value in document_hashes]
     if binding_mode == "single_document":
-        hashes.append(("source_document_sha256", metadata["source_document_sha256"]))
+        identity = metadata["source_document_identity"]
+        if not isinstance(identity, str) or not identity.strip():
+            raise QueryCoreError(
+                "payload metadata source_document_identity must be a non-empty string"
+            )
+        hashes = [("source_document_sha256", metadata["source_document_sha256"])]
+    else:
+        hashes = []
+        for identity, source_hash in project_documents:
+            if not isinstance(identity, str) or not identity.strip():
+                raise QueryCoreError(
+                    "payload document identity must be a non-empty string"
+                )
+            hashes.append(("document source_sha256", source_hash))
     for label, source_hash in hashes:
         if not isinstance(source_hash, str) or len(source_hash) != 64 or any(
             character not in "0123456789abcdef" for character in source_hash

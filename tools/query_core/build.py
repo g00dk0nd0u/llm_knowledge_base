@@ -51,8 +51,12 @@ def _validate(records: dict[str, Any]) -> None:
         raise QueryCoreError(f"missing metadata: {', '.join(missing)}")
     if binding_mode == "single_document":
         _validate_sha256(records["source_document_sha256"], "source_document_sha256")
-    for document in records.get("documents", []):
-        _validate_sha256(document.get("source_sha256"), "document source_sha256")
+    else:
+        for document in records.get("documents", []):
+            identity = document.get("identity")
+            if not isinstance(identity, str) or not identity.strip():
+                raise QueryCoreError("document identity must be a non-empty string")
+            _validate_sha256(document.get("source_sha256"), "document source_sha256")
     for page in records.get("pdf_pages", []):
         for key in ("width_points", "height_points"):
             value = page.get(key)

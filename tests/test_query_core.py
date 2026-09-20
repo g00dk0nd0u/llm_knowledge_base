@@ -175,6 +175,19 @@ def test_project_document_sha_validation_and_packaging_rejection(tmp_path: Path)
     with pytest.raises(QueryCoreError, match="document source_sha256"):
         validate_database(database)
 
+    records = _generic_pdf_records()
+    records["documents"][1]["identity"] = ""
+    with pytest.raises(QueryCoreError, match="document identity"):
+        build_database(records, tmp_path / "invalid-identity.sqlite")
+
+    records = _generic_pdf_records()
+    database = build_database(records, tmp_path / "project-empty-identity.sqlite")
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE documents SET identity='' WHERE id='doc-b'")
+    with pytest.raises(QueryCoreError, match="document identity"):
+        validate_database(database)
+
+    records = _generic_pdf_records()
     database = build_database(records, tmp_path / "valid-project.sqlite")
     drawing = tmp_path / "drawing.pdf"
     drawing.write_bytes(b"not used for a project binding")
@@ -190,9 +203,25 @@ def test_legacy_v2_without_pdf_pages_or_binding_mode_remains_valid(
     with sqlite3.connect(legacy) as connection:
         connection.execute("DROP TABLE pdf_pages")
         connection.execute("DELETE FROM metadata WHERE key='binding_mode'")
+        connection.execute(
+            "UPDATE documents SET source_sha256=?", ("ABCDEF" * 10 + "ABCD",)
+        )
     metadata = validate_database(legacy)
     assert metadata["binding_mode"] == "single_document"
     assert package_pdf(fixture[0], legacy, tmp_path / "legacy.pdf").exists()
+
+
+def test_single_document_requires_nonempty_top_level_identity(
+    fixture: tuple[Path, Path], tmp_path: Path
+) -> None:
+    invalid = tmp_path / "empty-source-identity.sqlite"
+    shutil.copyfile(fixture[1], invalid)
+    with sqlite3.connect(invalid) as connection:
+        connection.execute(
+            "UPDATE metadata SET value='' WHERE key='source_document_identity'"
+        )
+    with pytest.raises(QueryCoreError, match="source_document_identity"):
+        validate_database(invalid)
 
 
 def test_loading_dock_and_evidence(fixture: tuple[Path, Path]) -> None:
