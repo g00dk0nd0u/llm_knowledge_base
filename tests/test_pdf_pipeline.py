@@ -201,6 +201,42 @@ def test_structured_text_preserves_block_line_span_hierarchy(repository: Path) -
     assert isinstance(first_span["font_flags"], int)
 
 
+@pytest.mark.parametrize("rotation", [0, 90])
+def test_media_box_is_normalized_to_unrotated_text_coordinates(
+    repository: Path, rotation: int
+) -> None:
+    pdf = repository / f"projects/example/source/offset-{rotation}.pdf"
+    document = fitz.open()
+    page = document.new_page(width=400, height=600)
+    page.insert_text((50, 80), "Offset box text")
+    document.xref_set_key(page.xref, "MediaBox", "[10 20 410 620]")
+    document.xref_set_key(page.xref, "CropBox", "[40 100 340 550]")
+    document.xref_set_key(page.xref, "Rotate", str(rotation))
+    document.save(pdf)
+    document.close()
+
+    with fitz.open(pdf) as source:
+        source_page = source[0]
+        raw_media_box = list(source_page.mediabox)
+        source_page.set_rotation(0)
+        expected_media_box = list(source_page.mediabox * source_page.transformation_matrix)
+        expected_crop_box = list(source_page.rect)
+
+    process_all(repository)
+    _manifest, _summary, knowledge = load_outputs(repository)
+    structured = json.loads((knowledge / "pages/p0001.json").read_text())
+
+    assert raw_media_box == [10.0, 20.0, 410.0, 620.0]
+    assert structured["media_box"] == expected_media_box == [-30.0, -70.0, 370.0, 530.0]
+    assert structured["media_box"] != raw_media_box
+    assert structured["crop_box"] == expected_crop_box == [0.0, 0.0, 300.0, 450.0]
+    assert structured["text_blocks"][0]["bbox"] == pytest.approx(
+        [10.0, 18.175, 80.928, 33.289], abs=0.01
+    )
+    assert structured["rotation"] == rotation
+    assert structured["coordinate_space"] == "pdf_points_top_left"
+
+
 def test_corrupt_pdf_fails_without_replacing_valid_knowledge(repository: Path) -> None:
     good = repository / "projects/example/source/good.pdf"
     make_pdf(good, ["Known-good content with sufficient text for extraction status."])

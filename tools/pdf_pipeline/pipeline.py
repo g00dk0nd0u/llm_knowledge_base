@@ -98,6 +98,27 @@ def _bbox(rect: Any) -> list[float]:
     return [float(value) for value in rect]
 
 
+def _page_boxes_in_unrotated_page_space(
+    page: fitz.Page,
+) -> tuple[list[float], list[float]]:
+    """Return MediaBox and crop extent in unrotated text-bbox coordinates."""
+    rotation = page.rotation
+    try:
+        # In PyMuPDF the page transformation matrix reflects the current page
+        # rotation. Temporarily removing it yields the same unrotated space used
+        # by text bboxes; restoring it leaves the source page unchanged.
+        if rotation:
+            page.set_rotation(0)
+        media_box = _bbox(page.mediabox * page.transformation_matrix)
+        # Page.cropbox already uses MuPDF's top-left convention, while page.rect
+        # expresses that crop as the page-local extent used by text bboxes.
+        crop_box = _bbox(page.rect)
+        return media_box, crop_box
+    finally:
+        if rotation:
+            page.set_rotation(rotation)
+
+
 def _structured_page(
     page: fitz.Page,
     *,
@@ -111,6 +132,7 @@ def _structured_page(
 ) -> dict[str, Any]:
     """Preserve embedded text primitives without adding semantic interpretation."""
     extracted = page.get_text("dict", sort=True)
+    media_box, crop_box = _page_boxes_in_unrotated_page_space(page)
     blocks: list[dict[str, Any]] = []
     for source_block in extracted.get("blocks", []):
         if source_block.get("type") != 0:
@@ -162,8 +184,8 @@ def _structured_page(
         "width_points": float(extracted["width"]),
         "height_points": float(extracted["height"]),
         "rotation": page.rotation,
-        "media_box": _bbox(page.mediabox),
-        "crop_box": _bbox(page.cropbox),
+        "media_box": media_box,
+        "crop_box": crop_box,
         "coordinate_space": "pdf_points_top_left",
         "extraction_status": extraction_status,
         "image_count": image_count,

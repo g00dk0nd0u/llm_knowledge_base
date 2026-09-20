@@ -37,9 +37,12 @@ Page Markdown contains machine-readable YAML-compatible front matter and source-
 embedded text. Each page JSON sidecar preserves ordered text blocks, lines, and spans,
 including their text, bounding boxes, and embedded-PDF-text provenance. Span font name,
 size, and flags are copied only when PyMuPDF provides them. Dimensions and bounding boxes
-use `pdf_points_top_left`: PyMuPDF's unrotated, top-left page coordinates in PDF points;
-the page rotation is recorded separately. These coordinates are not Revit, model, or
-world coordinates. `no_text` and `minimal_text` are not extraction success. A page is marked
+use `pdf_points_top_left`: PyMuPDF's unrotated, top-left page coordinates in PDF points,
+with x increasing right and y increasing down. The raw PDF `/MediaBox` is converted with
+PyMuPDF's page transformation matrix, and `crop_box` records the page-local crop extent
+used by text bboxes. The page rotation is recorded separately. These coordinates are not
+Revit, model, or world coordinates. `no_text` and `minimal_text` are not extraction
+success. A page is marked
 `vision_recommended` when it has under 40 extracted characters, contains a raster image,
 or has at least 200 vector drawing objects. This is a processing hint only, not a legal,
 technical, or semantic conclusion.
