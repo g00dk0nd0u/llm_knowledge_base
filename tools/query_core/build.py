@@ -266,11 +266,29 @@ def _validate(records: dict[str, Any]) -> None:
         model = row.get("source_model_id")
         if model is not None and model not in source_models:
             raise QueryCoreError(f"reference to nonexistent source model: {model}")
+        if (model is None) != (row.get("source_unique_id") is None):
+            raise QueryCoreError(
+                f"boundary segment source identity must be complete: {row.get('id')}"
+            )
         space = spaces[boundary["space_id"]]
-        if model is not None and model != space.get("source_model_id"):
+        source_instance_id = row.get("source_link_instance_id")
+        if source_instance_id is None and model is not None and model != space.get(
+            "source_model_id"
+        ):
             raise QueryCoreError(
                 f"boundary segment source model mismatch: {row.get('id')}"
             )
+        if source_instance_id is not None:
+            source_instance = link_instances.get(source_instance_id)
+            if source_instance is None:
+                raise QueryCoreError(
+                    "boundary segment references nonexistent source link instance: "
+                    f"{source_instance_id}"
+                )
+            if model != source_instance["linked_source_model_id"]:
+                raise QueryCoreError(
+                    f"boundary segment source link model mismatch: {row.get('id')}"
+                )
     for boundary in records.get("spatial_boundaries", []):
         segments = sorted(
             boundary_segments.get(boundary["id"], []), key=lambda r: r["segment_index"]

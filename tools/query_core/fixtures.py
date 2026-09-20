@@ -756,6 +756,8 @@ def synthetic_records(source_pdf: Path) -> dict:
             "end_z": b[2],
             "source_model_id": "model-host",
             "source_unique_id": f"boundary-wall-{i}",
+            "source_link_instance_id": None,
+            "curve_kind": "line",
         }
         for i, (a, b) in enumerate(zip(points, points[1:] + points[:1]))
     ]
@@ -796,6 +798,8 @@ def synthetic_records(source_pdf: Path) -> dict:
                 "end_z": b[2],
                 "source_model_id": "model-link",
                 "source_unique_id": f"linked-boundary-wall-{i}",
+                "source_link_instance_id": instance_id,
+                "curve_kind": "line",
             }
             for i, (a, b) in enumerate(
                 zip(linked_points, linked_points[1:] + linked_points[:1])

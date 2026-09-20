@@ -1544,6 +1544,22 @@
                   "string",
                   "null"
                 ]
+              },
+              "source_link_instance_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "curve_kind": {
+                "enum": [
+                  "line",
+                  "arc",
+                  "ellipse",
+                  "spline",
+                  "other",
+                  null
+                ]
               }
             }
           }

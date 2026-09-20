@@ -232,6 +232,8 @@ REQUIRED_COLUMNS.update(
             "end_z",
             "source_model_id",
             "source_unique_id",
+            "source_link_instance_id",
+            "curve_kind",
         },
     }
 )
