@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from .fixtures import build_synthetic_fixture
+from .pdf_adapter import build_pdf_database
 from .package import cached_payload, extract_payload, inspect_pdf, package_pdf
 from .query import QueryCore
 from .revit_snapshot import finalize_revit_export
@@ -27,6 +28,12 @@ def parser() -> argparse.ArgumentParser:
     search = commands.add_parser("search")
     search.add_argument("source", type=Path)
     search.add_argument("query")
+    build_pdf = commands.add_parser(
+        "build-pdf", help="build Query Core from one PDF Pipeline v1 document"
+    )
+    build_pdf.add_argument("--repo-root", type=Path, default=Path("."))
+    build_pdf.add_argument("knowledge_directory", type=Path)
+    build_pdf.add_argument("output", type=Path)
     finalize = commands.add_parser(
         "finalize-revit-export",
         help="validate a Revit export and create its Enhanced PDF",
@@ -63,6 +70,8 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 json.dumps(core.search_text(args.query), ensure_ascii=False, indent=2)
             )
+    elif args.command == "build-pdf":
+        print(build_pdf_database(args.repo_root, args.knowledge_directory, args.output))
     elif args.command == "finalize-revit-export":
         print(finalize_revit_export(args.directory, args.output))
     return 0

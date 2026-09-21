@@ -233,6 +233,26 @@ analysis. Such analysis and real-Revit smoke testing are intentionally deferred.
 
 See [`REVIT_2026_MAPPING.md`](REVIT_2026_MAPPING.md) for the Phase B extraction map.
 
+## Build one PDF Pipeline document
+
+`build-pdf` consumes one pipeline-owned knowledge directory (`document.json`, its
+declared `pages/pNNNN.json` sidecars, and `.pdf-pipeline-v1`) and writes one
+single-document Query Core database. It does not scan sibling documents or extract
+the PDF again. The adapter verifies the logical document/page identities, page
+metadata, text hierarchy, and the current source PDF byte hash before building.
+
+```bash
+python -m tools.query_core build-pdf --repo-root . \
+  projects/example/knowledge/example--0123456789ab artifacts/example.sqlite
+```
+
+The additive `pdf_text_blocks`, `pdf_text_lines`, and `pdf_text_spans` tables retain
+pipeline order, text, bboxes, provenance, and `pdf_points_top_left` coordinates.
+Block text is indexed as `pdf_text_block`; `QueryCore.search_pdf_text()` returns the
+source document identity and SHA, one-based PDF page, bbox, and the standard
+viewer-neutral evidence navigation descriptor. Databases created before these
+optional PDF-native tables remain readable.
+
 ```bash
 python -m tools.query_core build-fixture artifacts/query-demo
 python -m tools.query_core package artifacts/query-demo/drawing.pdf artifacts/query-demo/project.sqlite artifacts/query-demo/enhanced.pdf

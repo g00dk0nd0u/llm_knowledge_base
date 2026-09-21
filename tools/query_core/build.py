@@ -26,6 +26,9 @@ TABLES = (
     "element_types",
     "elements",
     "evidence",
+    "pdf_text_blocks",
+    "pdf_text_lines",
+    "pdf_text_spans",
     "parameters",
     "relationships",
     "annotations",
@@ -71,7 +74,8 @@ def _validate(records: dict[str, Any]) -> None:
     source_models = {row.get("id"): row for row in model_rows}
     spaces = {row.get("id"): row for row in records.get("spaces", [])}
     revit_tables = set(TABLES) - {
-        "documents", "pdf_pages", "evidence", "search_content"
+        "documents", "pdf_pages", "pdf_text_blocks", "pdf_text_lines",
+        "pdf_text_spans", "evidence", "search_content"
     }
     uses_revit = bool(model_rows) or any(
         records.get(table, []) for table in revit_tables
@@ -147,6 +151,9 @@ def _validate(records: dict[str, Any]) -> None:
             or coords[1] > coords[3]
         ):
             raise QueryCoreError(f"malformed evidence bbox: {row.get('id')}")
+    _validate_order(records, "pdf_text_blocks", "page_id", "order_index")
+    _validate_order(records, "pdf_text_lines", "block_id", "order_index")
+    _validate_order(records, "pdf_text_spans", "line_id", "order_index")
     for table in ("parameters", "annotations", "annotation_segments"):
         for row in records.get(table, []):
             if row.get("numeric_value") is not None and not row.get("unit"):

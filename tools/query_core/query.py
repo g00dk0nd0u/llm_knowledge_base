@@ -544,6 +544,67 @@ class QueryCore:
             (query, limit),
         )
 
+    def search_pdf_text(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Search source PDF blocks and return their exact stored navigation."""
+        tables = {
+            row["name"]
+            for row in self.connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        if "pdf_text_blocks" not in tables or not query.strip():
+            return []
+        try:
+            hits = self._rows(
+                "SELECT s.record_id FROM search_fts f JOIN search_content s "
+                "ON s.rowid=f.rowid WHERE search_fts MATCH ? "
+                "AND s.record_kind='pdf_text_block' ORDER BY rank,s.record_id LIMIT ?",
+                (query, limit),
+            )
+        except sqlite3.OperationalError:
+            hits = []
+        if not hits:
+            hits = self._rows(
+                "SELECT record_id FROM search_content "
+                "WHERE record_kind='pdf_text_block' "
+                "AND instr(lower(content),lower(?))>0 ORDER BY record_id LIMIT ?",
+                (query, limit),
+            )
+        results = []
+        for hit in hits:
+            rows = self._rows(
+                "SELECT b.*,p.page_number,d.id AS document_id,d.identity AS document_identity,"
+                "d.source_filename,d.source_sha256,e.id AS evidence_id,e.pdf_page "
+                "FROM pdf_text_blocks b JOIN pdf_pages p ON p.id=b.page_id "
+                "JOIN documents d ON d.id=p.document_id JOIN evidence e ON e.id=b.evidence_id "
+                "WHERE b.id=?",
+                (hit["record_id"],),
+            )
+            if not rows:
+                continue
+            row = rows[0]
+            navigation_row = dict(row)
+            navigation_row.update(sheet_id=None, view_id=None)
+            navigation = navigation_target(navigation_row, source_kind="evidence")
+            results.append(
+                {
+                    "block_id": row["id"],
+                    "text": row["text"],
+                    "provenance": row["provenance"],
+                    "document": {
+                        "id": row["document_id"],
+                        "identity": row["document_identity"],
+                        "source_filename": row["source_filename"],
+                        "source_sha256": row["source_sha256"],
+                    },
+                    "pdf_page": row["pdf_page"],
+                    "bbox": [row[k] for k in ("x_min", "y_min", "x_max", "y_max")],
+                    "coordinate_space": row["coordinate_space"],
+                    "navigation": navigation,
+                }
+            )
+        return results
+
     def get_entity(self, kind: str, entity_id: str) -> dict[str, Any] | None:
         table = ENTITY_TABLES.get(kind)
         if not table:
