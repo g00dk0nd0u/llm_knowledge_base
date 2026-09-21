@@ -132,6 +132,22 @@ PDF Pipeline sidecars are independently validated. This command remains the
 correctness-reference full rebuild: it creates a fresh atomic database and inserts
 one document at a time for bounded memory use.
 
+To inspect the current project against an existing compatible project database without
+modifying either side, use:
+
+```bash
+python -m tools.query_core compare-pdf-project --repo-root . \
+  projects/example artifacts/example-project.sqlite
+```
+
+The comparison reports deterministic added, changed, removed, and unchanged logical
+documents. Changed documents include the exact previous and current SHA-256 revisions.
+It also reports groups of current logical source paths that contain identical PDF bytes;
+those paths remain distinct documents and are never deduplicated. A logical path rename
+is reported as an explicit removal plus addition, even when the bytes are identical.
+The comparison stores no revision history and does not mutate the database, manifest,
+source PDFs, or generated knowledge.
+
 After rerunning PDF Pipeline, an existing compatible project database can instead be
 updated explicitly:
 
@@ -151,6 +167,6 @@ the output. Unchanged page sidecars are intentionally not reparsed; the previous
 validated Query Core is the cached canonical representation for an unchanged source
 SHA.
 
-Neither project command runs PDF Pipeline automatically. Equal PDF bytes at different
-logical source paths remain distinct documents. Duplicate diagnostics, revision-history
-storage, and project bundle packaging are not yet implemented.
+None of the project commands runs PDF Pipeline automatically. Equal PDF bytes at different
+logical source paths remain distinct documents. Revision-history storage and project
+bundle packaging are not yet implemented.
