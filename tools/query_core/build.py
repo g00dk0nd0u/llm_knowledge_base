@@ -400,9 +400,82 @@ def _validate_transform(transform: Any, model_id: Any) -> None:
         raise QueryCoreError(f"invalid link transform: {model_id}")
 
 
+def _initialize_database(
+    connection: sqlite3.Connection, metadata: dict[str, str]
+) -> None:
+    connection.executescript(
+        (Path(__file__).with_name("schema.sql")).read_text(encoding="utf-8")
+    )
+    connection.executemany(
+        "INSERT INTO metadata VALUES (?,?)", sorted(metadata.items())
+    )
+    connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+
+
+def _insert_records(connection: sqlite3.Connection, records: dict[str, Any]) -> None:
+    """Validate and insert one canonical bundle into an initialized database."""
+    _validate(records)
+    for table in TABLES:
+        rows = sorted(
+            records.get(table, []),
+            key=lambda row: (str(row.get("id", "")), str(row.get("record_id", ""))),
+        )
+        for row in rows:
+            values = dict(row)
+            if table == "geometries":
+                values["geometry_json"] = json.dumps(
+                    values["geometry"],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                del values["geometry"]
+            elif table == "link_instances" and "transform_to_host" in values:
+                transform = values.pop("transform_to_host")
+                values["transform_to_host_json"] = (
+                    json.dumps(transform, sort_keys=True, separators=(",", ":"))
+                    if transform is not None
+                    else None
+                )
+            elif table == "viewports" and "sheet_to_pdf_transform" in values:
+                transform = values.pop("sheet_to_pdf_transform")
+                values["sheet_to_pdf_transform_json"] = (
+                    json.dumps(transform, sort_keys=True, separators=(",", ":"))
+                    if transform is not None
+                    else None
+                )
+            elif table == "annotation_segments":
+                for key in ("origin", "text_position"):
+                    if key in values:
+                        values[f"{key}_json"] = json.dumps(
+                            values.pop(key), separators=(",", ":")
+                        )
+            columns = ",".join(values)
+            placeholders = ",".join("?" for _ in values)
+            connection.execute(
+                f"INSERT INTO {table} ({columns}) VALUES ({placeholders})",
+                tuple(values.values()),
+            )
+
+
+def _metadata(records: dict[str, Any]) -> dict[str, str]:
+    metadata = {
+        "schema_version": str(SCHEMA_VERSION),
+        "generator_version": GENERATOR_VERSION,
+        "project_id": records["project_id"],
+        "created_from": records["created_from"],
+        "binding_mode": records.get("binding_mode", "single_document"),
+    }
+    if metadata["binding_mode"] == "single_document":
+        metadata.update(
+            source_document_identity=records["source_document_identity"],
+            source_document_sha256=records["source_document_sha256"],
+        )
+    return metadata
+
+
 def build_database(records: dict[str, Any], output: Path) -> Path:
     """Atomically build schema v2 from validated canonical records."""
-    _validate(records)
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(prefix=f".{output.name}.", dir=output.parent)
@@ -410,66 +483,8 @@ def build_database(records: dict[str, Any], output: Path) -> Path:
     temporary = Path(temporary_name)
     try:
         connection = sqlite3.connect(temporary)
-        connection.executescript(
-            (Path(__file__).with_name("schema.sql")).read_text(encoding="utf-8")
-        )
-        metadata = {
-            "schema_version": str(SCHEMA_VERSION),
-            "generator_version": GENERATOR_VERSION,
-            "project_id": records["project_id"],
-            "created_from": records["created_from"],
-            "binding_mode": records.get("binding_mode", "single_document"),
-        }
-        if metadata["binding_mode"] == "single_document":
-            metadata.update(
-                source_document_identity=records["source_document_identity"],
-                source_document_sha256=records["source_document_sha256"],
-            )
-        connection.executemany(
-            "INSERT INTO metadata VALUES (?,?)", sorted(metadata.items())
-        )
-        connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-        for table in TABLES:
-            rows = sorted(
-                records.get(table, []),
-                key=lambda row: (str(row.get("id", "")), str(row.get("record_id", ""))),
-            )
-            for row in rows:
-                values = dict(row)
-                if table == "geometries":
-                    values["geometry_json"] = json.dumps(
-                        values["geometry"],
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    )
-                    del values["geometry"]
-                elif table == "link_instances" and "transform_to_host" in values:
-                    transform = values.pop("transform_to_host")
-                    values["transform_to_host_json"] = (
-                        json.dumps(transform, sort_keys=True, separators=(",", ":"))
-                        if transform is not None
-                        else None
-                    )
-                elif table == "viewports" and "sheet_to_pdf_transform" in values:
-                    transform = values.pop("sheet_to_pdf_transform")
-                    values["sheet_to_pdf_transform_json"] = (
-                        json.dumps(transform, sort_keys=True, separators=(",", ":"))
-                        if transform is not None
-                        else None
-                    )
-                elif table == "annotation_segments":
-                    for key in ("origin", "text_position"):
-                        if key in values:
-                            values[f"{key}_json"] = json.dumps(
-                                values.pop(key), separators=(",", ":")
-                            )
-                columns = ",".join(values)
-                placeholders = ",".join("?" for _ in values)
-                connection.execute(
-                    f"INSERT INTO {table} ({columns}) VALUES ({placeholders})",
-                    tuple(values.values()),
-                )
+        _initialize_database(connection, _metadata(records))
+        _insert_records(connection, records)
         connection.commit()
         result = connection.execute("PRAGMA integrity_check").fetchone()[0]
         connection.close()

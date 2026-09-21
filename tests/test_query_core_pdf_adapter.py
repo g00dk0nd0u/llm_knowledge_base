@@ -114,6 +114,26 @@ def test_single_pdf_build_search_navigation_determinism_and_package(
     )
 
 
+def test_single_pdf_build_protects_source_and_knowledge_outputs(
+    processed_pdf: tuple[Path, Path, Path], tmp_path: Path
+) -> None:
+    root, source, knowledge = processed_pdf
+    source_bytes = source.read_bytes()
+    document = knowledge / "document.json"
+    document_bytes = document.read_bytes()
+
+    with pytest.raises(QueryCoreError, match="protected PDF Pipeline project inputs"):
+        build_pdf_database(root, knowledge, source)
+    assert source.read_bytes() == source_bytes
+
+    with pytest.raises(QueryCoreError, match="protected PDF Pipeline project inputs"):
+        build_pdf_database(root, knowledge, document)
+    assert document.read_bytes() == document_bytes
+
+    safe = build_pdf_database(root, knowledge, tmp_path / "safe.sqlite")
+    assert validate_database(safe)["binding_mode"] == "single_document"
+
+
 @pytest.mark.parametrize("damage", ["sidecar_sha", "sidecar_identity", "source_sha"])
 def test_adapter_rejects_stale_or_tampered_inputs(
     processed_pdf: tuple[Path, Path, Path], tmp_path: Path, damage: str
