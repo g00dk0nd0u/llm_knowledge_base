@@ -143,10 +143,13 @@ python -m tools.query_core update-pdf-project --repo-root . \
 Incremental update never mutates the live database in place. It validates the existing
 project payload, classifies logical document identities as added/changed/removed/
 unchanged, rechecks authoritative source SHA-256 and document metadata for unchanged
-sources, snapshots the old SQLite through the SQLite backup API, applies only document
-deltas to the temporary database, validates the result, and atomically replaces the
-output. Unchanged page sidecars are intentionally not reparsed; the previous validated
-Query Core is the cached canonical representation for an unchanged source SHA.
+sources, and rejects noncanonical cached PDF search/evidence rows. It then snapshots
+the old SQLite through the SQLite backup API, applies only document deltas to the
+temporary database, checks foreign keys plus the FTS5 external-content index against
+`search_content`, validates the resulting Query Core snapshot, and atomically replaces
+the output. Unchanged page sidecars are intentionally not reparsed; the previous
+validated Query Core is the cached canonical representation for an unchanged source
+SHA.
 
 Neither project command runs PDF Pipeline automatically. Equal PDF bytes at different
 logical source paths remain distinct documents. Duplicate diagnostics, revision-history
