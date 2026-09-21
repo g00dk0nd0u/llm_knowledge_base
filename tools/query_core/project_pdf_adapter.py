@@ -27,7 +27,9 @@ def _logical_path(value: Any, prefix: tuple[str, ...], label: str) -> str:
         raise QueryCoreError(f"{label} must be a canonical repository-relative path")
     path = PurePosixPath(value)
     if (
-        path.is_absolute() or path.as_posix() != value or len(path.parts) <= len(prefix)
+        path.is_absolute()
+        or path.as_posix() != value
+        or len(path.parts) <= len(prefix)
         or path.parts[: len(prefix)] != prefix
         or any(part in {".", ".."} for part in path.parts)
     ):
@@ -44,7 +46,9 @@ def _inside(path: Path, parent: Path, label: str) -> Path:
     return resolved
 
 
-def _manifest(repo_root: Path, project_directory: Path) -> tuple[str, list[dict[str, Any]]]:
+def _manifest(
+    repo_root: Path, project_directory: Path
+) -> tuple[str, list[dict[str, Any]]]:
     root = Path(repo_root).resolve()
     project = Path(project_directory)
     if not project.is_absolute():
@@ -77,8 +81,12 @@ def _manifest(repo_root: Path, project_directory: Path) -> tuple[str, list[dict[
         raise QueryCoreError("manifest documents must be a list")
     seen = {key: set() for key in ("document_id", "source_file", "knowledge_path")}
     required = {
-        "document_id": str, "source_file": str, "source_sha256": str,
-        "knowledge_path": str, "page_count": int, "pipeline_version": str,
+        "document_id": str,
+        "source_file": str,
+        "source_sha256": str,
+        "knowledge_path": str,
+        "page_count": int,
+        "pipeline_version": str,
     }
     checked: list[dict[str, Any]] = []
     for index, entry in enumerate(entries):
@@ -90,22 +98,66 @@ def _manifest(repo_root: Path, project_directory: Path) -> tuple[str, list[dict[
                 raise QueryCoreError(f"manifest document {index} has invalid {key}")
         if entry["pipeline_version"] != PIPELINE_VERSION:
             raise QueryCoreError(f"manifest document {index} pipeline_version must be 1")
-        _logical_path(entry["source_file"], ("projects", project_id, "source"), "source_file")
-        _logical_path(entry["knowledge_path"], ("projects", project_id, "knowledge"), "knowledge_path")
-        source = _inside(root / entry["source_file"], project / "source", "source_file")
-        knowledge = _inside(root / entry["knowledge_path"], project / "knowledge", "knowledge_path")
+        _logical_path(
+            entry["source_file"],
+            ("projects", project_id, "source"),
+            "source_file",
+        )
+        _logical_path(
+            entry["knowledge_path"],
+            ("projects", project_id, "knowledge"),
+            "knowledge_path",
+        )
+        source = _inside(
+            root / entry["source_file"], project / "source", "source_file"
+        )
+        knowledge = _inside(
+            root / entry["knowledge_path"],
+            project / "knowledge",
+            "knowledge_path",
+        )
         if not source.is_file():
             raise QueryCoreError(f"source PDF does not exist: {entry['source_file']}")
         if not knowledge.is_dir():
-            raise QueryCoreError(f"knowledge directory does not exist: {entry['knowledge_path']}")
+            raise QueryCoreError(
+                f"knowledge directory does not exist: {entry['knowledge_path']}"
+            )
         if not (knowledge / ".pdf-pipeline-v1").is_file():
-            raise QueryCoreError(f"knowledge directory is unowned: {entry['knowledge_path']}")
+            raise QueryCoreError(
+                f"knowledge directory is unowned: {entry['knowledge_path']}"
+            )
         for key in seen:
             if entry[key] in seen[key]:
                 raise QueryCoreError(f"duplicate manifest {key}: {entry[key]}")
             seen[key].add(entry[key])
         checked.append(entry)
     return project_id, sorted(checked, key=lambda item: item["source_file"])
+
+
+def _records_for_manifest_entry(
+    repo_root: Path, entry: dict[str, Any]
+) -> dict[str, Any]:
+    """Load one strict Phase 1B bundle and cross-check its manifest entry."""
+    root = Path(repo_root).resolve()
+    records = records_from_pdf_pipeline(root, root / entry["knowledge_path"])
+    documents = records.get("documents", [])
+    if len(documents) != 1:
+        raise QueryCoreError(
+            f"PDF Pipeline bundle must contain exactly one document: {entry['source_file']}"
+        )
+    document = documents[0]
+    checks = {
+        "document_id": document["id"],
+        "source_file": document["identity"],
+        "source_sha256": document["source_sha256"],
+        "page_count": len(records["pdf_pages"]),
+    }
+    for key, actual in checks.items():
+        if entry[key] != actual:
+            raise QueryCoreError(
+                f"manifest/document {key} mismatch for {entry['source_file']}"
+            )
+    return records
 
 
 def build_pdf_project_database(
@@ -127,27 +179,18 @@ def build_pdf_project_database(
     connection: sqlite3.Connection | None = None
     try:
         connection = sqlite3.connect(temporary)
-        _initialize_database(connection, {
-            "schema_version": str(SCHEMA_VERSION),
-            "generator_version": GENERATOR_VERSION,
-            "project_id": project_id,
-            "created_from": "pdf-pipeline/1",
-            "binding_mode": "project",
-        })
+        _initialize_database(
+            connection,
+            {
+                "schema_version": str(SCHEMA_VERSION),
+                "generator_version": GENERATOR_VERSION,
+                "project_id": project_id,
+                "created_from": "pdf-pipeline/1",
+                "binding_mode": "project",
+            },
+        )
         for entry in entries:
-            records = records_from_pdf_pipeline(root, root / entry["knowledge_path"])
-            document = records["documents"][0]
-            checks = {
-                "document_id": document["id"], "source_file": document["identity"],
-                "source_sha256": document["source_sha256"],
-                "page_count": len(records["pdf_pages"]),
-            }
-            for key, actual in checks.items():
-                if entry[key] != actual:
-                    raise QueryCoreError(
-                        f"manifest/document {key} mismatch for {entry['source_file']}"
-                    )
-            _insert_records(connection, records)
+            _insert_records(connection, _records_for_manifest_entry(root, entry))
         connection.commit()
         result = connection.execute("PRAGMA integrity_check").fetchone()[0]
         connection.close()
