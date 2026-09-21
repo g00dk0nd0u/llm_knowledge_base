@@ -120,7 +120,7 @@ runtime; LLM = optional consumer.** A Revit 2025/2026/2027 Phase B1 offline expo
 or change-impact analysis.
 
 For one already-processed PDF, `python -m tools.query_core build-pdf` creates a
-`binding_mode=single_document` database. For a project snapshot, use:
+`binding_mode=single_document` database. For a fresh project snapshot, use:
 
 ```bash
 python -m tools.query_core build-pdf-project --repo-root . \
@@ -128,7 +128,29 @@ python -m tools.query_core build-pdf-project --repo-root . \
 ```
 
 The project manifest determines current membership, while every source PDF and all
-PDF Pipeline sidecars are independently validated. This command performs a fresh,
-atomic full rebuild and inserts one document at a time for bounded memory use. It
-does not run PDF Pipeline, incrementally update an old database, deduplicate equal
-PDF bytes, or package a project bundle; those capabilities are not yet implemented.
+PDF Pipeline sidecars are independently validated. This command remains the
+correctness-reference full rebuild: it creates a fresh atomic database and inserts
+one document at a time for bounded memory use.
+
+After rerunning PDF Pipeline, an existing compatible project database can instead be
+updated explicitly:
+
+```bash
+python -m tools.query_core update-pdf-project --repo-root . \
+  projects/example artifacts/example-project.sqlite
+```
+
+Incremental update never mutates the live database in place. It validates the existing
+project payload, classifies logical document identities as added/changed/removed/
+unchanged, rechecks authoritative source SHA-256 and document metadata for unchanged
+sources, and rejects noncanonical cached PDF search/evidence rows. It then snapshots
+the old SQLite through the SQLite backup API, applies only document deltas to the
+temporary database, checks foreign keys plus the FTS5 external-content index against
+`search_content`, validates the resulting Query Core snapshot, and atomically replaces
+the output. Unchanged page sidecars are intentionally not reparsed; the previous
+validated Query Core is the cached canonical representation for an unchanged source
+SHA.
+
+Neither project command runs PDF Pipeline automatically. Equal PDF bytes at different
+logical source paths remain distinct documents. Duplicate diagnostics, revision-history
+storage, and project bundle packaging are not yet implemented.

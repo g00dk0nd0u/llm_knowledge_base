@@ -5,9 +5,10 @@ import json
 from pathlib import Path
 
 from .fixtures import build_synthetic_fixture
+from .package import cached_payload, extract_payload, inspect_pdf, package_pdf
 from .pdf_adapter import build_pdf_database
 from .project_pdf_adapter import build_pdf_project_database
-from .package import cached_payload, extract_payload, inspect_pdf, package_pdf
+from .project_pdf_update import update_pdf_project_database
 from .query import QueryCore
 from .revit_snapshot import finalize_revit_export
 
@@ -41,6 +42,13 @@ def parser() -> argparse.ArgumentParser:
     build_project.add_argument("--repo-root", type=Path, default=Path("."))
     build_project.add_argument("project_directory", type=Path)
     build_project.add_argument("output", type=Path)
+    update_project = commands.add_parser(
+        "update-pdf-project",
+        help="incrementally update an existing PDF project Query Core",
+    )
+    update_project.add_argument("--repo-root", type=Path, default=Path("."))
+    update_project.add_argument("project_directory", type=Path)
+    update_project.add_argument("database", type=Path)
     finalize = commands.add_parser(
         "finalize-revit-export",
         help="validate a Revit export and create its Enhanced PDF",
@@ -85,6 +93,11 @@ def main(argv: list[str] | None = None) -> int:
                 args.repo_root, args.project_directory, args.output
             )
         )
+    elif args.command == "update-pdf-project":
+        result = update_pdf_project_database(
+            args.repo_root, args.project_directory, args.database
+        )
+        print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2))
     elif args.command == "finalize-revit-export":
         print(finalize_revit_export(args.directory, args.output))
     return 0
