@@ -1,4 +1,4 @@
-"""Incremental, atomic updates for PDF Pipeline project Query Core databases."""
+"""Incremental updates and read-only diagnostics for PDF project Query Core databases."""
 
 from __future__ import annotations
 
@@ -60,6 +60,63 @@ class ProjectUpdateResult:
             "changed": list(self.changed),
             "removed": list(self.removed),
             "unchanged": list(self.unchanged),
+        }
+
+
+@dataclass(frozen=True)
+class ProjectDocumentChange:
+    identity: str
+    previous_sha256: str | None
+    current_sha256: str | None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "identity": self.identity,
+            "previous_sha256": self.previous_sha256,
+            "current_sha256": self.current_sha256,
+        }
+
+
+@dataclass(frozen=True)
+class DuplicateByteGroup:
+    source_sha256: str
+    identities: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "source_sha256": self.source_sha256,
+            "identities": list(self.identities),
+        }
+
+
+@dataclass(frozen=True)
+class ProjectComparisonReport:
+    database: Path
+    project_id: str
+    added: tuple[ProjectDocumentChange, ...]
+    changed: tuple[ProjectDocumentChange, ...]
+    removed: tuple[ProjectDocumentChange, ...]
+    unchanged: tuple[ProjectDocumentChange, ...]
+    duplicate_byte_groups: tuple[DuplicateByteGroup, ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "database": str(self.database),
+            "project_id": self.project_id,
+            "counts": {
+                "added": len(self.added),
+                "changed": len(self.changed),
+                "removed": len(self.removed),
+                "unchanged": len(self.unchanged),
+                "duplicate_byte_groups": len(self.duplicate_byte_groups),
+            },
+            "added": [item.as_dict() for item in self.added],
+            "changed": [item.as_dict() for item in self.changed],
+            "removed": [item.as_dict() for item in self.removed],
+            "unchanged": [item.as_dict() for item in self.unchanged],
+            "duplicate_byte_groups": [
+                group.as_dict() for group in self.duplicate_byte_groups
+            ],
         }
 
 
@@ -219,21 +276,14 @@ def _previous_documents(
             connection.close()
 
 
-def _validate_unchanged_entry(
-    root: Path,
-    project_id: str,
-    entry: dict[str, Any],
-    previous: _PreviousDocument,
+def _validate_current_entry(
+    root: Path, project_id: str, entry: dict[str, Any]
 ) -> None:
     identity = entry["source_file"]
     expected_document_id = _expected_document_id(identity)
     if entry["document_id"] != expected_document_id:
         raise QueryCoreError(
             f"manifest document_id does not match logical identity: {identity}"
-        )
-    if previous.document_id != expected_document_id:
-        raise QueryCoreError(
-            f"incremental base document_id mismatch for unchanged document: {identity}"
         )
     source_hash = entry["source_sha256"]
     if (
@@ -258,9 +308,7 @@ def _validate_unchanged_entry(
     }
     for key, value in expected.items():
         if document.get(key) != value:
-            raise QueryCoreError(
-                f"unchanged document metadata {key} mismatch for {identity}"
-            )
+            raise QueryCoreError(f"document metadata {key} mismatch for {identity}")
     pages = document.get("pages")
     page_count = entry["page_count"]
     if (
@@ -270,7 +318,7 @@ def _validate_unchanged_entry(
         or not isinstance(pages, list)
         or len(pages) != page_count
     ):
-        raise QueryCoreError(f"unchanged document page count mismatch for {identity}")
+        raise QueryCoreError(f"document page count mismatch for {identity}")
     for number, summary in enumerate(pages, 1):
         if (
             not isinstance(summary, dict)
@@ -278,12 +326,127 @@ def _validate_unchanged_entry(
             or summary.get("structured_page") != f"pages/p{number:04d}.json"
         ):
             raise QueryCoreError(
-                f"unchanged document page summary mismatch for {identity} page {number}"
+                f"document page summary mismatch for {identity} page {number}"
             )
-    if previous.page_count != page_count:
+
+
+def _validate_unchanged_entry(
+    root: Path,
+    project_id: str,
+    entry: dict[str, Any],
+    previous: _PreviousDocument,
+) -> None:
+    _validate_current_entry(root, project_id, entry)
+    identity = entry["source_file"]
+    if previous.document_id != entry["document_id"]:
+        raise QueryCoreError(
+            f"incremental base document_id mismatch for unchanged document: {identity}"
+        )
+    if previous.page_count != entry["page_count"]:
         raise QueryCoreError(
             f"incremental base page count mismatch for unchanged document: {identity}"
         )
+
+
+def _duplicate_groups(current: dict[str, dict[str, Any]]) -> tuple[DuplicateByteGroup, ...]:
+    grouped: dict[str, list[str]] = {}
+    for identity, entry in current.items():
+        grouped.setdefault(entry["source_sha256"], []).append(identity)
+    return tuple(
+        DuplicateByteGroup(source_sha256=source_sha256, identities=tuple(sorted(identities)))
+        for source_sha256, identities in sorted(grouped.items())
+        if len(identities) > 1
+    )
+
+
+def _compare_with_entries(
+    root: Path,
+    project_id: str,
+    entries: list[dict[str, Any]],
+    database: Path,
+) -> tuple[
+    ProjectComparisonReport,
+    dict[str, dict[str, Any]],
+    dict[str, _PreviousDocument],
+]:
+    database = Path(database)
+    if not database.is_file():
+        raise QueryCoreError(
+            "incremental base database does not exist; run build-pdf-project first"
+        )
+    previous = _previous_documents(database, project_id)
+    current = {entry["source_file"]: entry for entry in entries}
+
+    previous_identities = set(previous)
+    current_identities = set(current)
+    added_identities = sorted(current_identities - previous_identities)
+    removed_identities = sorted(previous_identities - current_identities)
+    shared = current_identities & previous_identities
+    changed_identities = sorted(
+        identity
+        for identity in shared
+        if current[identity]["source_sha256"] != previous[identity].source_sha256
+    )
+    changed_set = set(changed_identities)
+    unchanged_identities = sorted(shared - changed_set)
+
+    for identity in unchanged_identities:
+        _validate_unchanged_entry(
+            root, project_id, current[identity], previous[identity]
+        )
+
+    report = ProjectComparisonReport(
+        database=database,
+        project_id=project_id,
+        added=tuple(
+            ProjectDocumentChange(
+                identity=identity,
+                previous_sha256=None,
+                current_sha256=current[identity]["source_sha256"],
+            )
+            for identity in added_identities
+        ),
+        changed=tuple(
+            ProjectDocumentChange(
+                identity=identity,
+                previous_sha256=previous[identity].source_sha256,
+                current_sha256=current[identity]["source_sha256"],
+            )
+            for identity in changed_identities
+        ),
+        removed=tuple(
+            ProjectDocumentChange(
+                identity=identity,
+                previous_sha256=previous[identity].source_sha256,
+                current_sha256=None,
+            )
+            for identity in removed_identities
+        ),
+        unchanged=tuple(
+            ProjectDocumentChange(
+                identity=identity,
+                previous_sha256=previous[identity].source_sha256,
+                current_sha256=current[identity]["source_sha256"],
+            )
+            for identity in unchanged_identities
+        ),
+        duplicate_byte_groups=_duplicate_groups(current),
+    )
+    return report, current, previous
+
+
+def compare_pdf_project_database(
+    repo_root: Path, project_directory: Path, database: Path
+) -> ProjectComparisonReport:
+    """Compare current project inputs with a prior project Query Core without mutation."""
+    root = Path(repo_root).resolve()
+    project_id, entries = _manifest(root, project_directory)
+    report, current, _previous = _compare_with_entries(
+        root, project_id, entries, Path(database)
+    )
+    for item in (*report.added, *report.changed):
+        _validate_current_entry(root, project_id, current[item.identity])
+    return report
 
 
 def _delete_document(connection: sqlite3.Connection, identity: str) -> None:
@@ -372,32 +535,13 @@ def update_pdf_project_database(
         protected_files=(project / "manifest.json",),
         protected_directories=(project / "source", project / "knowledge"),
     )
-    if not database.is_file():
-        raise QueryCoreError(
-            "incremental base database does not exist; run build-pdf-project first"
-        )
-
-    previous = _previous_documents(database, project_id)
-    current = {entry["source_file"]: entry for entry in entries}
-    previous_identities = set(previous)
-    current_identities = set(current)
-    added = tuple(sorted(current_identities - previous_identities))
-    removed = tuple(sorted(previous_identities - current_identities))
-    shared = current_identities & previous_identities
-    changed = tuple(
-        sorted(
-            identity
-            for identity in shared
-            if current[identity]["source_sha256"]
-            != previous[identity].source_sha256
-        )
+    report, current, _previous = _compare_with_entries(
+        root, project_id, entries, database
     )
-    unchanged = tuple(sorted(shared - set(changed)))
-
-    for identity in unchanged:
-        _validate_unchanged_entry(
-            root, project_id, current[identity], previous[identity]
-        )
+    added = tuple(item.identity for item in report.added)
+    changed = tuple(item.identity for item in report.changed)
+    removed = tuple(item.identity for item in report.removed)
+    unchanged = tuple(item.identity for item in report.unchanged)
 
     result = ProjectUpdateResult(
         database=database,

@@ -8,7 +8,10 @@ from .fixtures import build_synthetic_fixture
 from .package import cached_payload, extract_payload, inspect_pdf, package_pdf
 from .pdf_adapter import build_pdf_database
 from .project_pdf_adapter import build_pdf_project_database
-from .project_pdf_update import update_pdf_project_database
+from .project_pdf_update import (
+    compare_pdf_project_database,
+    update_pdf_project_database,
+)
 from .query import QueryCore
 from .revit_snapshot import finalize_revit_export
 
@@ -42,6 +45,13 @@ def parser() -> argparse.ArgumentParser:
     build_project.add_argument("--repo-root", type=Path, default=Path("."))
     build_project.add_argument("project_directory", type=Path)
     build_project.add_argument("output", type=Path)
+    compare_project = commands.add_parser(
+        "compare-pdf-project",
+        help="report project document changes and duplicate-byte groups without mutation",
+    )
+    compare_project.add_argument("--repo-root", type=Path, default=Path("."))
+    compare_project.add_argument("project_directory", type=Path)
+    compare_project.add_argument("database", type=Path)
     update_project = commands.add_parser(
         "update-pdf-project",
         help="incrementally update an existing PDF project Query Core",
@@ -93,6 +103,11 @@ def main(argv: list[str] | None = None) -> int:
                 args.repo_root, args.project_directory, args.output
             )
         )
+    elif args.command == "compare-pdf-project":
+        report = compare_pdf_project_database(
+            args.repo_root, args.project_directory, args.database
+        )
+        print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
     elif args.command == "update-pdf-project":
         result = update_pdf_project_database(
             args.repo_root, args.project_directory, args.database
