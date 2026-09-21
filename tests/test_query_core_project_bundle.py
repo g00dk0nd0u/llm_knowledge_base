@@ -46,6 +46,23 @@ def _pdf(path: Path, text: str) -> None:
     document.close()
 
 
+def _set_project_pipeline_contract(root: Path, version: str) -> None:
+    manifest_path = root / "projects/example/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["pipeline_version"] = version
+    for entry in manifest["documents"]:
+        entry["pipeline_version"] = version
+        knowledge = root / entry["knowledge_path"]
+        document_path = knowledge / "document.json"
+        document = json.loads(document_path.read_text())
+        document["pipeline_version"] = version
+        document_path.write_text(json.dumps(document), encoding="utf-8")
+        (knowledge / ".pdf-pipeline-v1").unlink(missing_ok=True)
+        (knowledge / ".pdf-pipeline-v2").unlink(missing_ok=True)
+        (knowledge / f".pdf-pipeline-v{version}").touch()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
 @pytest.fixture
 def bundle(tmp_path: Path) -> tuple[Path, Path, Path]:
     root = tmp_path / "repository"
@@ -80,6 +97,31 @@ def test_packages_deterministic_nested_byte_exact_bundle(
     for relative in ("project.sqlite", "sources/z.pdf", "sources/nested/a.pdf"):
         assert (second / relative).read_bytes() == (output / relative).read_bytes()
     assert inspect_pdf_project_bundle(output) == manifest
+
+
+def test_synthetic_v2_bundle_round_trip_search_and_generation_binding(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "repository"
+    _pdf(root / "projects/example/source/a.pdf", "future v2 日本語検索")
+    process_all(root)
+    _set_project_pipeline_contract(root, "2")
+    database = build_pdf_project_database(
+        root, Path("projects/example"), tmp_path / "v2.sqlite"
+    )
+    output = tmp_path / "v2-bundle"
+    package_pdf_project_bundle(root, Path("projects/example"), database, output)
+    manifest = inspect_pdf_project_bundle(output)
+    assert manifest["pipeline_version"] == "2"
+    assert manifest["created_from"] == "pdf-pipeline/2"
+    assert query_core_main(["search", str(output), "日本語検索"]) == 0
+    assert "日本語検索" in capsys.readouterr().out
+
+    manifest_path = output / "bundle.json"
+    manifest["pipeline_version"] = "1"
+    _write_manifest(manifest_path, manifest)
+    with pytest.raises(QueryCoreError, match="created_from mismatch"):
+        inspect_pdf_project_bundle(output)
 
 
 def test_bundle_cli_searches_english_and_japanese_after_move(

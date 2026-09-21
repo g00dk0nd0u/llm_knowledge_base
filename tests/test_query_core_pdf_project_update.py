@@ -45,6 +45,23 @@ def _knowledge_for(root: Path, identity: str) -> Path:
     return root / entry["knowledge_path"]
 
 
+def _set_project_pipeline_contract(root: Path, version: str) -> None:
+    manifest_path = root / "projects/example/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["pipeline_version"] = version
+    for entry in manifest["documents"]:
+        entry["pipeline_version"] = version
+        knowledge = root / entry["knowledge_path"]
+        document_path = knowledge / "document.json"
+        document = json.loads(document_path.read_text())
+        document["pipeline_version"] = version
+        document_path.write_text(json.dumps(document), encoding="utf-8")
+        (knowledge / ".pdf-pipeline-v1").unlink(missing_ok=True)
+        (knowledge / ".pdf-pipeline-v2").unlink(missing_ok=True)
+        (knowledge / f".pdf-pipeline-v{version}").touch()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
 def _canonical_tables(database: Path) -> dict[str, list[tuple]]:
     ordering = {
         "metadata": "key",
@@ -362,3 +379,19 @@ def test_update_keeps_pipeline_owned_inputs_protected(
     assert source.read_bytes() == source_bytes
     assert manifest.read_bytes() == manifest_bytes
     assert document.read_bytes() == document_bytes
+
+
+def test_pipeline_generation_is_incremental_compatibility_boundary(
+    project: tuple[Path, Path],
+) -> None:
+    root, v1_database = project
+    _set_project_pipeline_contract(root, "2")
+    with pytest.raises(QueryCoreError, match="FULL REBUILD REQUIRED"):
+        update_pdf_project_database(root, Path("projects/example"), v1_database)
+
+    v2_database = build_pdf_project_database(
+        root, Path("projects/example"), root / "v2-project.sqlite"
+    )
+    result = update_pdf_project_database(root, Path("projects/example"), v2_database)
+    assert result.added == result.changed == result.removed == ()
+    assert validate_database(v2_database)["created_from"] == "pdf-pipeline/2"

@@ -1,4 +1,4 @@
-"""Deterministic project adapter for already-processed PDF Pipeline v1 output."""
+"""Deterministic project adapter for supported PDF Pipeline output."""
 
 from __future__ import annotations
 
@@ -17,10 +17,8 @@ from .build import (
 )
 from .errors import QueryCoreError
 from .pdf_adapter import _validate_output_location, records_from_pdf_pipeline
+from .pdf_pipeline_contract import created_from, require_matching_marker, require_pipeline_version
 from .query import validate_database
-
-PIPELINE_VERSION = "1"
-
 
 def _logical_path(value: Any, prefix: tuple[str, ...], label: str) -> str:
     if not isinstance(value, str):
@@ -48,7 +46,7 @@ def _inside(path: Path, parent: Path, label: str) -> Path:
 
 def _manifest(
     repo_root: Path, project_directory: Path
-) -> tuple[str, list[dict[str, Any]]]:
+) -> tuple[str, str, list[dict[str, Any]]]:
     root = Path(repo_root).resolve()
     project = Path(project_directory)
     if not project.is_absolute():
@@ -74,8 +72,9 @@ def _manifest(
         raise QueryCoreError("project manifest must be a JSON object")
     if manifest.get("project_id") != project_id:
         raise QueryCoreError("manifest project_id does not match project directory")
-    if manifest.get("pipeline_version") != PIPELINE_VERSION:
-        raise QueryCoreError("manifest pipeline_version must be 1")
+    pipeline_version = require_pipeline_version(
+        manifest.get("pipeline_version"), "manifest pipeline_version"
+    )
     entries = manifest.get("documents")
     if not isinstance(entries, list):
         raise QueryCoreError("manifest documents must be a list")
@@ -96,8 +95,11 @@ def _manifest(
             value = entry.get(key)
             if not isinstance(value, kind) or isinstance(value, bool):
                 raise QueryCoreError(f"manifest document {index} has invalid {key}")
-        if entry["pipeline_version"] != PIPELINE_VERSION:
-            raise QueryCoreError(f"manifest document {index} pipeline_version must be 1")
+        if entry["pipeline_version"] != pipeline_version:
+            raise QueryCoreError(
+                f"manifest document {index} pipeline_version must match project "
+                f"pipeline_version {pipeline_version}"
+            )
         _logical_path(
             entry["source_file"],
             ("projects", project_id, "source"),
@@ -122,16 +124,13 @@ def _manifest(
             raise QueryCoreError(
                 f"knowledge directory does not exist: {entry['knowledge_path']}"
             )
-        if not (knowledge / ".pdf-pipeline-v1").is_file():
-            raise QueryCoreError(
-                f"knowledge directory is unowned: {entry['knowledge_path']}"
-            )
+        require_matching_marker(knowledge, pipeline_version)
         for key in seen:
             if entry[key] in seen[key]:
                 raise QueryCoreError(f"duplicate manifest {key}: {entry[key]}")
             seen[key].add(entry[key])
         checked.append(entry)
-    return project_id, sorted(checked, key=lambda item: item["source_file"])
+    return project_id, pipeline_version, sorted(checked, key=lambda item: item["source_file"])
 
 
 def _records_for_manifest_entry(
@@ -165,7 +164,7 @@ def build_pdf_project_database(
 ) -> Path:
     """Build one fresh project snapshot, materializing one document bundle at a time."""
     root, output = Path(repo_root).resolve(), Path(output)
-    project_id, entries = _manifest(root, project_directory)
+    project_id, pipeline_version, entries = _manifest(root, project_directory)
     project = (root / "projects" / project_id).resolve()
     _validate_output_location(
         output,
@@ -185,7 +184,7 @@ def build_pdf_project_database(
                 "schema_version": str(SCHEMA_VERSION),
                 "generator_version": GENERATOR_VERSION,
                 "project_id": project_id,
-                "created_from": "pdf-pipeline/1",
+                "created_from": created_from(pipeline_version),
                 "binding_mode": "project",
             },
         )

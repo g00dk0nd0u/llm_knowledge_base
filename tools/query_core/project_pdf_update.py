@@ -14,14 +14,10 @@ from typing import Any
 from .build import GENERATOR_VERSION, SCHEMA_VERSION, _insert_records
 from .errors import QueryCoreError
 from .pdf_adapter import _project_id, _sha256, _validate_output_location
-from .project_pdf_adapter import (
-    PIPELINE_VERSION,
-    _manifest,
-    _records_for_manifest_entry,
-)
+from .pdf_pipeline_contract import require_created_from
+from .project_pdf_adapter import _manifest, _records_for_manifest_entry
 from .query import validate_database
 
-_CREATED_FROM = "pdf-pipeline/1"
 _RELEVANT_REQUIRES_EMPTY = (
     "source_models",
     "link_instances",
@@ -208,16 +204,18 @@ def _validate_fts_integrity(connection: sqlite3.Connection) -> None:
 
 
 def _previous_documents(
-    database: Path, project_id: str
+    database: Path, project_id: str, pipeline_version: str
 ) -> dict[str, _PreviousDocument]:
     metadata = validate_database(database)
     required_metadata = {
         "binding_mode": "project",
         "project_id": project_id,
-        "created_from": _CREATED_FROM,
         "schema_version": str(SCHEMA_VERSION),
         "generator_version": GENERATOR_VERSION,
     }
+    require_created_from(
+        metadata.get("created_from"), pipeline_version, "incremental base metadata created_from"
+    )
     for key, expected in required_metadata.items():
         if metadata.get(key) != expected:
             raise QueryCoreError(
@@ -277,7 +275,7 @@ def _previous_documents(
 
 
 def _validate_current_entry(
-    root: Path, project_id: str, entry: dict[str, Any]
+    root: Path, project_id: str, pipeline_version: str, entry: dict[str, Any]
 ) -> None:
     identity = entry["source_file"]
     expected_document_id = _expected_document_id(identity)
@@ -304,7 +302,7 @@ def _validate_current_entry(
         "source_sha256": source_hash,
         "project_id": project_id,
         "page_count": entry["page_count"],
-        "pipeline_version": PIPELINE_VERSION,
+        "pipeline_version": pipeline_version,
     }
     for key, value in expected.items():
         if document.get(key) != value:
@@ -333,10 +331,11 @@ def _validate_current_entry(
 def _validate_unchanged_entry(
     root: Path,
     project_id: str,
+    pipeline_version: str,
     entry: dict[str, Any],
     previous: _PreviousDocument,
 ) -> None:
-    _validate_current_entry(root, project_id, entry)
+    _validate_current_entry(root, project_id, pipeline_version, entry)
     identity = entry["source_file"]
     if previous.document_id != entry["document_id"]:
         raise QueryCoreError(
@@ -362,6 +361,7 @@ def _duplicate_groups(current: dict[str, dict[str, Any]]) -> tuple[DuplicateByte
 def _compare_with_entries(
     root: Path,
     project_id: str,
+    pipeline_version: str,
     entries: list[dict[str, Any]],
     database: Path,
 ) -> tuple[
@@ -374,7 +374,7 @@ def _compare_with_entries(
         raise QueryCoreError(
             "incremental base database does not exist; run build-pdf-project first"
         )
-    previous = _previous_documents(database, project_id)
+    previous = _previous_documents(database, project_id, pipeline_version)
     current = {entry["source_file"]: entry for entry in entries}
 
     previous_identities = set(previous)
@@ -392,7 +392,7 @@ def _compare_with_entries(
 
     for identity in unchanged_identities:
         _validate_unchanged_entry(
-            root, project_id, current[identity], previous[identity]
+            root, project_id, pipeline_version, current[identity], previous[identity]
         )
 
     report = ProjectComparisonReport(
@@ -440,12 +440,12 @@ def compare_pdf_project_database(
 ) -> ProjectComparisonReport:
     """Compare current project inputs with a prior project Query Core without mutation."""
     root = Path(repo_root).resolve()
-    project_id, entries = _manifest(root, project_directory)
+    project_id, pipeline_version, entries = _manifest(root, project_directory)
     report, current, _previous = _compare_with_entries(
-        root, project_id, entries, Path(database)
+        root, project_id, pipeline_version, entries, Path(database)
     )
     for item in (*report.added, *report.changed):
-        _validate_current_entry(root, project_id, current[item.identity])
+        _validate_current_entry(root, project_id, pipeline_version, current[item.identity])
     return report
 
 
@@ -528,7 +528,7 @@ def update_pdf_project_database(
 ) -> ProjectUpdateResult:
     """Atomically update one validated project DB, reusing unchanged document rows."""
     root, database = Path(repo_root).resolve(), Path(database)
-    project_id, entries = _manifest(root, project_directory)
+    project_id, pipeline_version, entries = _manifest(root, project_directory)
     project = (root / "projects" / project_id).resolve()
     _validate_output_location(
         database,
@@ -536,7 +536,7 @@ def update_pdf_project_database(
         protected_directories=(project / "source", project / "knowledge"),
     )
     report, current, _previous = _compare_with_entries(
-        root, project_id, entries, database
+        root, project_id, pipeline_version, entries, database
     )
     added = tuple(item.identity for item in report.added)
     changed = tuple(item.identity for item in report.changed)

@@ -44,6 +44,23 @@ def project(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def _set_project_pipeline_contract(root: Path, version: str) -> None:
+    manifest_path = root / "projects/example/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["pipeline_version"] = version
+    for entry in manifest["documents"]:
+        entry["pipeline_version"] = version
+        knowledge = root / entry["knowledge_path"]
+        document_path = knowledge / "document.json"
+        document = json.loads(document_path.read_text())
+        document["pipeline_version"] = version
+        document_path.write_text(json.dumps(document), encoding="utf-8")
+        (knowledge / ".pdf-pipeline-v1").unlink(missing_ok=True)
+        (knowledge / ".pdf-pipeline-v2").unlink(missing_ok=True)
+        (knowledge / f".pdf-pipeline-v{version}").touch()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
 def test_project_build_search_hierarchy_determinism_and_package_boundary(
     project: Path,
 ) -> None:
@@ -83,6 +100,23 @@ def test_project_build_search_hierarchy_determinism_and_package_boundary(
         ).fetchall() for table in first}
     with pytest.raises(QueryCoreError, match="project-bound"):
         package_pdf(project / "projects/example/source/a.pdf", output, project / "bad.pdf")
+
+
+def test_synthetic_v2_project_build_and_mixed_version_rejection(project: Path) -> None:
+    _set_project_pipeline_contract(project, "2")
+    output = build_pdf_project_database(
+        project, Path("projects/example"), project / "v2.sqlite"
+    )
+    assert validate_database(output)["created_from"] == "pdf-pipeline/2"
+    with QueryCore(output) as core:
+        assert core.search_pdf_text("日本語")
+
+    manifest_path = project / "projects/example/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["documents"][0]["pipeline_version"] = "1"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(QueryCoreError, match="must match project"):
+        build_pdf_project_database(project, Path("projects/example"), project / "mixed.sqlite")
 
 
 @pytest.mark.parametrize(
