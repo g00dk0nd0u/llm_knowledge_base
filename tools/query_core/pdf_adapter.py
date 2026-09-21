@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,9 @@ def _bbox(value: Any, label: str) -> list[float]:
         not isinstance(value, list)
         or len(value) != 4
         or any(
-            isinstance(item, bool) or not isinstance(item, (int, float))
+            isinstance(item, bool)
+            or not isinstance(item, (int, float))
+            or not math.isfinite(item)
             for item in value
         )
         or value[0] > value[2]
@@ -39,6 +42,15 @@ def _bbox(value: Any, label: str) -> list[float]:
     ):
         raise QueryCoreError(f"invalid {label} bbox")
     return [float(item) for item in value]
+
+
+def _provenance(primitive: dict[str, Any], label: str) -> str:
+    provenance = primitive.get("provenance")
+    if provenance != "embedded_pdf_text":
+        raise QueryCoreError(
+            f"invalid {label} provenance: expected embedded_pdf_text"
+        )
+    return provenance
 
 
 def records_from_pdf_pipeline(
@@ -167,6 +179,7 @@ def records_from_pdf_pipeline(
         for bi, block in enumerate(blocks):
             if block.get("order_index") != bi:
                 raise QueryCoreError("non-deterministic block order")
+            block_provenance = _provenance(block, "block")
             lines = block.get("lines")
             if not isinstance(lines, list) or block.get("text") != "\n".join(
                 line.get("text", "") for line in lines
@@ -196,7 +209,7 @@ def records_from_pdf_pipeline(
                     "text": block.get("text", ""),
                     **common,
                     "coordinate_space": "pdf_points_top_left",
-                    "provenance": block.get("provenance", "embedded_pdf_text"),
+                    "provenance": block_provenance,
                     "evidence_id": evidence_id,
                 }
             )
@@ -211,6 +224,7 @@ def records_from_pdf_pipeline(
             for li, line in enumerate(lines):
                 if line.get("order_index") != li:
                     raise QueryCoreError("non-deterministic line order")
+                line_provenance = _provenance(line, "line")
                 spans = line.get("spans")
                 if not isinstance(spans, list) or line.get("text") != "".join(
                     span.get("text", "") for span in spans
@@ -226,12 +240,13 @@ def records_from_pdf_pipeline(
                         "text": line.get("text", ""),
                         **dict(zip(("x_min", "y_min", "x_max", "y_max"), lb)),
                         "coordinate_space": "pdf_points_top_left",
-                        "provenance": line.get("provenance", "embedded_pdf_text"),
+                        "provenance": line_provenance,
                     }
                 )
                 for si, span in enumerate(spans):
                     if span.get("order_index") != si:
                         raise QueryCoreError("non-deterministic span order")
+                    span_provenance = _provenance(span, "span")
                     sb = _bbox(span.get("bbox"), "span")
                     row = {
                         "id": _id(
@@ -242,7 +257,7 @@ def records_from_pdf_pipeline(
                         "text": span.get("text", ""),
                         **dict(zip(("x_min", "y_min", "x_max", "y_max"), sb)),
                         "coordinate_space": "pdf_points_top_left",
-                        "provenance": span.get("provenance", "embedded_pdf_text"),
+                        "provenance": span_provenance,
                     }
                     for source_key, target_key in (
                         ("font_name", "font_name"),

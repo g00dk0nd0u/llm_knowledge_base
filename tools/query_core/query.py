@@ -23,6 +23,26 @@ REQUIRED_METADATA = {
     "created_from",
 }
 REQUIRED_VIRTUAL_TABLES = {"geometry_rtree", "search_fts"}
+PDF_TEXT_TABLES = {"pdf_text_blocks", "pdf_text_lines", "pdf_text_spans"}
+PDF_TEXT_REQUIRED_COLUMNS = {
+    "pdf_text_blocks": {
+        "id", "page_id", "order_index", "text", "x_min", "y_min", "x_max",
+        "y_max", "coordinate_space", "provenance", "evidence_id",
+    },
+    "pdf_text_lines": {
+        "id", "block_id", "order_index", "text", "x_min", "y_min", "x_max",
+        "y_max", "coordinate_space", "provenance",
+    },
+    "pdf_text_spans": {
+        "id", "line_id", "order_index", "text", "x_min", "y_min", "x_max",
+        "y_max", "coordinate_space", "provenance", "font_name", "font_size",
+        "font_flags",
+    },
+}
+PDF_TEXT_PAGE_COLUMNS = {
+    "media_x_min", "media_y_min", "media_x_max", "media_y_max",
+    "crop_x_min", "crop_y_min", "crop_x_max", "crop_y_max", "coordinate_space",
+}
 REQUIRED_COLUMNS = {
     "metadata": {"key", "value"},
     "documents": {"id", "identity", "title", "source_filename", "source_sha256"},
@@ -406,6 +426,26 @@ def validate_database(path: Path) -> dict[str, str]:
                     f"incompatible Query Core v2 schema; {table} missing columns: "
                     + ", ".join(missing_columns)
                 )
+        present_pdf_text_tables = PDF_TEXT_TABLES & objects.keys()
+        if present_pdf_text_tables and present_pdf_text_tables != PDF_TEXT_TABLES:
+            missing = sorted(PDF_TEXT_TABLES - present_pdf_text_tables)
+            raise QueryCoreError(
+                "incomplete PDF text capability; missing tables: " + ", ".join(missing)
+            )
+        if present_pdf_text_tables:
+            for table, required in PDF_TEXT_REQUIRED_COLUMNS.items():
+                actual = {
+                    row["name"]
+                    for row in connection.execute(
+                        f"PRAGMA table_info({json.dumps(table)})"
+                    )
+                }
+                missing_columns = sorted(required - actual)
+                if missing_columns:
+                    raise QueryCoreError(
+                        f"incompatible PDF text capability; {table} missing columns: "
+                        + ", ".join(missing_columns)
+                    )
         if "pdf_pages" in objects:
             required_pdf_page_columns = {
                 "id",
@@ -420,6 +460,8 @@ def validate_database(path: Path) -> dict[str, str]:
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(pdf_pages)")
             }
+            if present_pdf_text_tables:
+                required_pdf_page_columns |= PDF_TEXT_PAGE_COLUMNS
             missing_columns = sorted(required_pdf_page_columns - actual)
             if missing_columns:
                 raise QueryCoreError(
