@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import shutil
@@ -12,7 +13,7 @@ import pytest
 from tools.pdf_pipeline.pipeline import process_all
 from tools.query_core.errors import QueryCoreError
 from tools.query_core.package import extract_payload, inspect_pdf, package_pdf
-from tools.query_core.pdf_adapter import build_pdf_database
+from tools.query_core.pdf_adapter import _sha256, build_pdf_database
 from tools.query_core.query import QueryCore, validate_database
 
 
@@ -179,6 +180,57 @@ def test_optional_pdf_capability_rejects_partial_schema(
         connection.execute("ALTER TABLE pdf_pages DROP COLUMN media_x_min")
     with pytest.raises(QueryCoreError, match="pdf_pages missing columns: media_x_min"):
         validate_database(old_pages)
+
+    missing_pages = tmp_path / "missing-pages.sqlite"
+    shutil.copyfile(current, missing_pages)
+    with sqlite3.connect(missing_pages) as connection:
+        connection.execute("DROP TABLE pdf_pages")
+    with pytest.raises(
+        QueryCoreError, match="PDF text capability; missing table: pdf_pages"
+    ):
+        validate_database(missing_pages)
+
+
+def test_adapter_cross_checks_project_id_from_source_path(
+    processed_pdf: tuple[Path, Path, Path], tmp_path: Path
+) -> None:
+    root, _source, knowledge = processed_pdf
+    assert build_pdf_database(root, knowledge, tmp_path / "valid.sqlite").exists()
+    document_path = knowledge / "document.json"
+    document = json.loads(document_path.read_text())
+    document["project_id"] = "other"
+    document_path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(QueryCoreError, match="project_id does not match source_file"):
+        build_pdf_database(root, knowledge, tmp_path / "mismatch.sqlite")
+
+
+@pytest.mark.parametrize(
+    "source_file",
+    [
+        "projects/example/source/../sample.pdf",
+        "projects/example/./source/sample.pdf",
+        "/projects/example/source/sample.pdf",
+        "projects/example/not-source/sample.pdf",
+        "projects/example/source",
+    ],
+)
+def test_adapter_rejects_noncanonical_source_paths(
+    processed_pdf: tuple[Path, Path, Path], tmp_path: Path, source_file: str
+) -> None:
+    root, _source, knowledge = processed_pdf
+    document_path = knowledge / "document.json"
+    document = json.loads(document_path.read_text())
+    document["source_file"] = source_file
+    document_path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(QueryCoreError, match="source_file must match"):
+        build_pdf_database(root, knowledge, tmp_path / "bad-path.sqlite")
+
+
+def test_streaming_sha256_matches_one_shot_hash(tmp_path: Path) -> None:
+    content = (bytes(range(256)) * 12_289) + b"bounded-memory-tail"
+    source = tmp_path / "large.pdf"
+    source.write_bytes(content)
+    assert _sha256(source) == hashlib.sha256(content).hexdigest()
 
 
 @pytest.mark.parametrize(

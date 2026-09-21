@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .build import build_database
@@ -25,6 +25,35 @@ def _load(path: Path) -> dict[str, Any]:
 def _id(kind: str, identity: str, revision: str, *indexes: int) -> str:
     seed = "\0".join((identity, revision, *(str(value) for value in indexes)))
     return f"{kind}-" + hashlib.sha256(seed.encode()).hexdigest()[:24]
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _project_id(source_file: Any) -> str:
+    if not isinstance(source_file, str):
+        raise QueryCoreError("source_file must be a canonical repository-relative path")
+    logical = PurePosixPath(source_file)
+    parts = logical.parts
+    if (
+        logical.is_absolute()
+        or logical.as_posix() != source_file
+        or len(parts) < 4
+        or parts[0] != "projects"
+        or not parts[1]
+        or parts[2] != "source"
+        or any(part in {".", ".."} for part in parts)
+        or logical.suffix.lower() != ".pdf"
+    ):
+        raise QueryCoreError(
+            "source_file must match projects/<project-id>/source/<path>.pdf"
+        )
+    return parts[1]
 
 
 def _bbox(value: Any, label: str) -> list[float]:
@@ -76,6 +105,9 @@ def records_from_pdf_pipeline(
     ):
         raise QueryCoreError("invalid or unsupported PDF Pipeline document contract")
     identity, revision = document["source_file"], document["source_sha256"]
+    source_project_id = _project_id(identity)
+    if document["project_id"] != source_project_id:
+        raise QueryCoreError("project_id does not match source_file project identity")
     expected_document_id = (
         "doc-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
     )
@@ -88,7 +120,7 @@ def records_from_pdf_pipeline(
         raise QueryCoreError("source_file escapes repo root") from exc
     if not source.is_file():
         raise QueryCoreError(f"source PDF does not exist: {identity}")
-    actual = hashlib.sha256(source.read_bytes()).hexdigest()
+    actual = _sha256(source)
     if actual != revision:
         raise QueryCoreError("source PDF byte SHA-256 mismatch")
     pages = document["pages"]

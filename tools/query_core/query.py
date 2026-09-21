@@ -433,6 +433,10 @@ def validate_database(path: Path) -> dict[str, str]:
                 "incomplete PDF text capability; missing tables: " + ", ".join(missing)
             )
         if present_pdf_text_tables:
+            if "pdf_pages" not in objects:
+                raise QueryCoreError(
+                    "incomplete PDF text capability; missing table: pdf_pages"
+                )
             for table, required in PDF_TEXT_REQUIRED_COLUMNS.items():
                 actual = {
                     row["name"]
