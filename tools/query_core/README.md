@@ -284,6 +284,47 @@ an explicit remove plus add; equal byte hashes at different logical paths remain
 documents. Incremental update does not persist revision history, deduplicate equal PDFs,
 or generate a project bundle.
 
+## Package a portable PDF project
+
+Single-document packaging is unchanged: an original `source.pdf` and a
+`binding_mode=single_document` Query Core become one Enhanced PDF. It never accepts a
+project-bound payload.
+
+For a current project database, `package-pdf-project` creates Project Query Bundle v1:
+
+```bash
+python -m tools.query_core package-pdf-project --repo-root . \
+  projects/example artifacts/example-project.sqlite artifacts/example-query-bundle
+python -m tools.query_core inspect-pdf-project-bundle \
+  artifacts/example-query-bundle
+python -m tools.query_core search \
+  artifacts/example-query-bundle "fire resistance"
+```
+
+Its canonical, portable directory layout is:
+
+```text
+example-query-bundle/
+├─ bundle.json
+├─ project.sqlite
+└─ sources/
+   └─ <original relative path below projects/example/source/>
+```
+
+`bundle.json` maps every canonical logical identity to its bundled path, exact source
+SHA-256, and a one-to-one source/Query Core page map. Source PDFs are copied
+byte-for-byte and remain authoritative, with original one-based page numbering. There
+is no binder PDF, duplicate per-PDF database, or runtime dependency on `knowledge/`
+sidecars.
+
+Packaging rejects a stale database and writes into a sibling temporary directory before
+strict verification and atomic rename. Normal bundle-directory search validates the
+manifest essentials, database SHA, Query Core schema, and project binding, but does not
+scan or hash all source PDFs. `inspect-pdf-project-bundle` exhaustively verifies every
+source path, SHA, mapping, symlink boundary, and case-insensitive collision. The public
+`project_bundle_source()` resolver verifies only the selected PDF before navigation.
+ZIP, tar, binder, and other archive/container forms are not the Phase 2C1 contract.
+
 ```bash
 python -m tools.query_core build-fixture artifacts/query-demo
 python -m tools.query_core package artifacts/query-demo/drawing.pdf artifacts/query-demo/project.sqlite artifacts/query-demo/enhanced.pdf

@@ -8,6 +8,11 @@ from .fixtures import build_synthetic_fixture
 from .package import cached_payload, extract_payload, inspect_pdf, package_pdf
 from .pdf_adapter import build_pdf_database
 from .project_pdf_adapter import build_pdf_project_database
+from .project_bundle import (
+    inspect_pdf_project_bundle,
+    package_pdf_project_bundle,
+    project_bundle_database,
+)
 from .project_pdf_update import (
     compare_pdf_project_database,
     update_pdf_project_database,
@@ -59,6 +64,17 @@ def parser() -> argparse.ArgumentParser:
     update_project.add_argument("--repo-root", type=Path, default=Path("."))
     update_project.add_argument("project_directory", type=Path)
     update_project.add_argument("database", type=Path)
+    package_project = commands.add_parser(
+        "package-pdf-project", help="create a portable project Query Bundle directory"
+    )
+    package_project.add_argument("--repo-root", type=Path, default=Path("."))
+    package_project.add_argument("project_directory", type=Path)
+    package_project.add_argument("database", type=Path)
+    package_project.add_argument("output", type=Path)
+    inspect_project = commands.add_parser(
+        "inspect-pdf-project-bundle", help="strictly verify a project Query Bundle"
+    )
+    inspect_project.add_argument("bundle_directory", type=Path)
     finalize = commands.add_parser(
         "finalize-revit-export",
         help="validate a Revit export and create its Enhanced PDF",
@@ -89,6 +105,8 @@ def main(argv: list[str] | None = None) -> int:
         database = (
             cached_payload(args.source)
             if args.source.suffix.lower() == ".pdf"
+            else project_bundle_database(args.source)
+            if args.source.is_dir()
             else args.source
         )
         with QueryCore(database) as core:
@@ -113,6 +131,15 @@ def main(argv: list[str] | None = None) -> int:
             args.repo_root, args.project_directory, args.database
         )
         print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2))
+    elif args.command == "package-pdf-project":
+        print(package_pdf_project_bundle(
+            args.repo_root, args.project_directory, args.database, args.output
+        ))
+    elif args.command == "inspect-pdf-project-bundle":
+        print(json.dumps(
+            inspect_pdf_project_bundle(args.bundle_directory),
+            ensure_ascii=False, indent=2, sort_keys=True,
+        ))
     elif args.command == "finalize-revit-export":
         print(finalize_revit_export(args.directory, args.output))
     return 0
