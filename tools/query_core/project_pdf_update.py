@@ -376,8 +376,6 @@ def _compare_with_entries(
         )
     previous = _previous_documents(database, project_id)
     current = {entry["source_file"]: entry for entry in entries}
-    for entry in entries:
-        _validate_current_entry(root, project_id, entry)
 
     previous_identities = set(previous)
     current_identities = set(current)
@@ -443,9 +441,11 @@ def compare_pdf_project_database(
     """Compare current project inputs with a prior project Query Core without mutation."""
     root = Path(repo_root).resolve()
     project_id, entries = _manifest(root, project_directory)
-    report, _current, _previous = _compare_with_entries(
+    report, current, _previous = _compare_with_entries(
         root, project_id, entries, Path(database)
     )
+    for item in (*report.added, *report.changed):
+        _validate_current_entry(root, project_id, current[item.identity])
     return report
 
 
