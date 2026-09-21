@@ -118,3 +118,17 @@ portable handover artifact; SQLite = embedded v2 machine payload; Query Core =
 runtime; LLM = optional consumer.** A Revit 2025/2026/2027 Phase B1 offline exporter is available under
 `revit_exporter/`; it emits this contract but adds no corridor compliance reasoning
 or change-impact analysis.
+
+For one already-processed PDF, `python -m tools.query_core build-pdf` creates a
+`binding_mode=single_document` database. For a project snapshot, use:
+
+```bash
+python -m tools.query_core build-pdf-project --repo-root . \
+  projects/example artifacts/example-project.sqlite
+```
+
+The project manifest determines current membership, while every source PDF and all
+PDF Pipeline sidecars are independently validated. This command performs a fresh,
+atomic full rebuild and inserts one document at a time for bounded memory use. It
+does not run PDF Pipeline, incrementally update an old database, deduplicate equal
+PDF bytes, or package a project bundle; those capabilities are not yet implemented.
