@@ -253,6 +253,52 @@ def test_manifest_array_order_is_not_semantic(project: Path) -> None:
         assert left.search_pdf_text("shared") == right.search_pdf_text("shared")
 
 
+def test_project_build_protects_pipeline_owned_output_locations(
+    project: Path,
+) -> None:
+    project_directory = project / "projects/example"
+    source = project_directory / "source/a.pdf"
+    manifest = project_directory / "manifest.json"
+    manifest_data = json.loads(manifest.read_text())
+    document = project / manifest_data["documents"][0]["knowledge_path"] / "document.json"
+    original = {
+        source: source.read_bytes(),
+        manifest: manifest.read_bytes(),
+        document: document.read_bytes(),
+    }
+    new_source = project_directory / "source/new.sqlite"
+    new_knowledge = project_directory / "knowledge/new.sqlite"
+    source_alias = project / "source-alias"
+    knowledge_alias = project / "knowledge-alias"
+    source_alias.symlink_to(project_directory / "source", target_is_directory=True)
+    knowledge_alias.symlink_to(
+        project_directory / "knowledge", target_is_directory=True
+    )
+    outputs = (
+        source,
+        new_source,
+        manifest,
+        document,
+        new_knowledge,
+        source_alias / "aliased.sqlite",
+        knowledge_alias / "aliased.sqlite",
+    )
+    for output in outputs:
+        with pytest.raises(
+            QueryCoreError, match="protected PDF Pipeline project inputs"
+        ):
+            build_pdf_project_database(
+                project, Path("projects/example"), output
+            )
+
+    for path, content in original.items():
+        assert path.read_bytes() == content
+    assert not new_source.exists()
+    assert not new_knowledge.exists()
+    assert not (source_alias / "aliased.sqlite").exists()
+    assert not (knowledge_alias / "aliased.sqlite").exists()
+
+
 def test_empty_project_and_mid_build_failure_preserves_output(tmp_path: Path, project: Path) -> None:
     empty = tmp_path / "empty/projects/empty"
     empty.mkdir(parents=True)

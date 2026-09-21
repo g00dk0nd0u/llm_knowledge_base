@@ -12,6 +12,29 @@ from .build import build_database
 from .errors import QueryCoreError
 
 
+def _validate_output_location(
+    output: Path,
+    *,
+    protected_files: tuple[Path, ...] = (),
+    protected_directories: tuple[Path, ...] = (),
+) -> None:
+    """Reject output aliases that resolve onto pipeline-owned inputs."""
+    resolved = Path(output).resolve()
+    if resolved in {path.resolve() for path in protected_files}:
+        raise QueryCoreError(
+            "Query Core output may not overwrite protected PDF Pipeline project inputs"
+        )
+    for directory in protected_directories:
+        try:
+            resolved.relative_to(directory.resolve())
+        except ValueError:
+            continue
+        raise QueryCoreError(
+            "Query Core output may not be placed inside protected PDF Pipeline "
+            "project inputs"
+        )
+
+
 def _load(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -305,6 +328,11 @@ def records_from_pdf_pipeline(
 def build_pdf_database(
     repo_root: Path, knowledge_directory: Path, output: Path
 ) -> Path:
-    return build_database(
-        records_from_pdf_pipeline(repo_root, knowledge_directory), output
+    records = records_from_pdf_pipeline(repo_root, knowledge_directory)
+    source = Path(repo_root).resolve() / records["source_document_identity"]
+    _validate_output_location(
+        output,
+        protected_files=(source,),
+        protected_directories=(Path(knowledge_directory),),
     )
+    return build_database(records, output)

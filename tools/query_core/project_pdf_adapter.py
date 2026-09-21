@@ -16,7 +16,7 @@ from .build import (
     _insert_records,
 )
 from .errors import QueryCoreError
-from .pdf_adapter import records_from_pdf_pipeline
+from .pdf_adapter import _validate_output_location, records_from_pdf_pipeline
 from .query import validate_database
 
 PIPELINE_VERSION = "1"
@@ -114,6 +114,12 @@ def build_pdf_project_database(
     """Build one fresh project snapshot, materializing one document bundle at a time."""
     root, output = Path(repo_root).resolve(), Path(output)
     project_id, entries = _manifest(root, project_directory)
+    project = (root / "projects" / project_id).resolve()
+    _validate_output_location(
+        output,
+        protected_files=(project / "manifest.json",),
+        protected_directories=(project / "source", project / "knowledge"),
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(prefix=f".{output.name}.", dir=output.parent)
     os.close(fd)
