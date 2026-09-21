@@ -253,6 +253,37 @@ source document identity and SHA, one-based PDF page, bbox, and the standard
 viewer-neutral evidence navigation descriptor. Databases created before these
 optional PDF-native tables remain readable.
 
+## Build or incrementally update a PDF project
+
+`build-pdf-project` consumes the current project manifest and strictly reparses every
+owned PDF Pipeline v1 document into a fresh project-bound Query Core. It is the
+correctness-reference full rebuild.
+
+```bash
+python -m tools.query_core build-pdf-project --repo-root . \
+  projects/example artifacts/example-project.sqlite
+```
+
+After PDF Pipeline has been rerun, `update-pdf-project` may reuse a compatible existing
+project database. It compares logical source identities and SHA-256 revisions, validates
+unchanged authoritative sources plus their document metadata, and intentionally skips
+unchanged page-sidecar parsing. Added and changed documents still go through the strict
+single-document parser.
+
+```bash
+python -m tools.query_core update-pdf-project --repo-root . \
+  projects/example artifacts/example-project.sqlite
+```
+
+The updater never mutates the live database in place. It snapshots the validated base
+through SQLite Backup API, applies added/changed/removed deltas only to the temporary
+database, validates cached PDF search/evidence mappings, checks FTS5 external-content
+integrity, checks foreign keys and Query Core metadata, then atomically replaces the
+output. A failed update leaves the previous database unchanged. A logical path rename is
+an explicit remove plus add; equal byte hashes at different logical paths remain distinct
+documents. Incremental update does not persist revision history, deduplicate equal PDFs,
+or generate a project bundle.
+
 ```bash
 python -m tools.query_core build-fixture artifacts/query-demo
 python -m tools.query_core package artifacts/query-demo/drawing.pdf artifacts/query-demo/project.sqlite artifacts/query-demo/enhanced.pdf
