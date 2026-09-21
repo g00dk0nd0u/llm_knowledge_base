@@ -240,6 +240,23 @@ def test_database_symlink_is_rejected_by_runtime_and_inspector(
         inspect_pdf_project_bundle(output)
 
 
+def test_manifest_symlink_is_rejected_by_all_bundle_consumers(
+    bundle: tuple[Path, Path, Path], tmp_path: Path
+) -> None:
+    _root, _database, output = bundle
+    manifest = output / "bundle.json"
+    external = tmp_path / "external-bundle.json"
+    manifest.replace(external)
+    manifest.symlink_to(external)
+
+    with pytest.raises(QueryCoreError, match="manifest may not be a symlink"):
+        inspect_pdf_project_bundle(output)
+    with pytest.raises(QueryCoreError, match="manifest may not be a symlink"):
+        project_bundle_database(output)
+    with pytest.raises(QueryCoreError, match="manifest may not be a symlink"):
+        project_bundle_source(output, "projects/example/source/nested/a.pdf")
+
+
 def test_case_insensitive_source_collision_is_rejected(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     _pdf(root / "projects/example/source/Foo/A.pdf", "first")

@@ -24,7 +24,7 @@ _DATABASE_PATH = "project.sqlite"
 
 
 def _load_manifest(directory: Path) -> dict[str, Any]:
-    path = directory / "bundle.json"
+    path = _regular_file(directory, "bundle.json", "project bundle manifest")
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
