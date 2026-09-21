@@ -41,6 +41,7 @@ _RELEVANT_REQUIRES_EMPTY = (
     "spatial_boundaries",
     "spatial_boundary_segments",
     "geometries",
+    "geometry_rtree",
 )
 
 
@@ -83,6 +84,72 @@ def _load_json_object(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
+def _validate_cached_pdf_rows(connection: sqlite3.Connection) -> None:
+    """Require the previous PDF-native cache to be internally canonical."""
+    unexpected_search = connection.execute(
+        "SELECT s.record_kind,s.record_id FROM search_content s "
+        "LEFT JOIN pdf_text_blocks b ON b.id=s.record_id "
+        "WHERE s.record_kind<>'pdf_text_block' OR b.id IS NULL OR b.text='' "
+        "OR s.content<>b.text LIMIT 1"
+    ).fetchone()
+    if unexpected_search is not None:
+        raise QueryCoreError(
+            "incremental base has noncanonical cached search_content rows"
+        )
+    missing_search = connection.execute(
+        "SELECT b.id FROM pdf_text_blocks b "
+        "LEFT JOIN search_content s ON s.record_kind='pdf_text_block' "
+        "AND s.record_id=b.id "
+        "WHERE b.text<>'' AND s.record_id IS NULL LIMIT 1"
+    ).fetchone()
+    if missing_search is not None:
+        raise QueryCoreError(
+            "incremental base is missing cached search_content rows"
+        )
+    duplicate_evidence = connection.execute(
+        "SELECT evidence_id FROM pdf_text_blocks GROUP BY evidence_id "
+        "HAVING count(*)<>1 LIMIT 1"
+    ).fetchone()
+    if duplicate_evidence is not None:
+        raise QueryCoreError(
+            "incremental base has noncanonical PDF block evidence mapping"
+        )
+    orphan_evidence = connection.execute(
+        "SELECT e.id FROM evidence e "
+        "LEFT JOIN pdf_text_blocks b ON b.evidence_id=e.id "
+        "WHERE b.id IS NULL LIMIT 1"
+    ).fetchone()
+    if orphan_evidence is not None:
+        raise QueryCoreError(
+            "incremental base has noncanonical unreferenced PDF evidence"
+        )
+    mismatched_evidence = connection.execute(
+        "SELECT b.id FROM pdf_text_blocks b "
+        "JOIN pdf_pages p ON p.id=b.page_id "
+        "JOIN evidence e ON e.id=b.evidence_id "
+        "WHERE e.document_id<>p.document_id OR e.pdf_page<>p.page_number "
+        "OR e.coordinate_space IS NOT b.coordinate_space "
+        "OR e.x_min IS NOT b.x_min OR e.y_min IS NOT b.y_min "
+        "OR e.x_max IS NOT b.x_max OR e.y_max IS NOT b.y_max LIMIT 1"
+    ).fetchone()
+    if mismatched_evidence is not None:
+        raise QueryCoreError(
+            "incremental base has inconsistent PDF block evidence"
+        )
+
+
+def _validate_fts_integrity(connection: sqlite3.Connection) -> None:
+    """Verify FTS5 index contents against the external search_content table."""
+    try:
+        connection.execute(
+            "INSERT INTO search_fts(search_fts,rank) VALUES('integrity-check',1)"
+        )
+    except sqlite3.DatabaseError as exc:
+        raise QueryCoreError(
+            "incremental update produced inconsistent FTS5 search index"
+        ) from exc
+
+
 def _previous_documents(
     database: Path, project_id: str
 ) -> dict[str, _PreviousDocument]:
@@ -115,6 +182,7 @@ def _previous_documents(
                     "incremental base is not a PDF-native project Query Core: "
                     f"{table} contains rows"
                 )
+        _validate_cached_pdf_rows(connection)
         page_counts = dict(
             connection.execute(
                 "SELECT document_id,count(*) FROM pdf_pages GROUP BY document_id"
@@ -365,6 +433,8 @@ def update_pdf_project_database(
             raise QueryCoreError(f"SQLite integrity check failed: {integrity}")
         if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise QueryCoreError("incremental update produced foreign-key violations")
+        _validate_cached_pdf_rows(connection)
+        _validate_fts_integrity(connection)
         connection.close()
         connection = None
         validate_database(temporary)
