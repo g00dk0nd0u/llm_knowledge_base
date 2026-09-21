@@ -23,6 +23,26 @@ REQUIRED_METADATA = {
     "created_from",
 }
 REQUIRED_VIRTUAL_TABLES = {"geometry_rtree", "search_fts"}
+PDF_TEXT_TABLES = {"pdf_text_blocks", "pdf_text_lines", "pdf_text_spans"}
+PDF_TEXT_REQUIRED_COLUMNS = {
+    "pdf_text_blocks": {
+        "id", "page_id", "order_index", "text", "x_min", "y_min", "x_max",
+        "y_max", "coordinate_space", "provenance", "evidence_id",
+    },
+    "pdf_text_lines": {
+        "id", "block_id", "order_index", "text", "x_min", "y_min", "x_max",
+        "y_max", "coordinate_space", "provenance",
+    },
+    "pdf_text_spans": {
+        "id", "line_id", "order_index", "text", "x_min", "y_min", "x_max",
+        "y_max", "coordinate_space", "provenance", "font_name", "font_size",
+        "font_flags",
+    },
+}
+PDF_TEXT_PAGE_COLUMNS = {
+    "media_x_min", "media_y_min", "media_x_max", "media_y_max",
+    "crop_x_min", "crop_y_min", "crop_x_max", "crop_y_max", "coordinate_space",
+}
 REQUIRED_COLUMNS = {
     "metadata": {"key", "value"},
     "documents": {"id", "identity", "title", "source_filename", "source_sha256"},
@@ -406,6 +426,30 @@ def validate_database(path: Path) -> dict[str, str]:
                     f"incompatible Query Core v2 schema; {table} missing columns: "
                     + ", ".join(missing_columns)
                 )
+        present_pdf_text_tables = PDF_TEXT_TABLES & objects.keys()
+        if present_pdf_text_tables and present_pdf_text_tables != PDF_TEXT_TABLES:
+            missing = sorted(PDF_TEXT_TABLES - present_pdf_text_tables)
+            raise QueryCoreError(
+                "incomplete PDF text capability; missing tables: " + ", ".join(missing)
+            )
+        if present_pdf_text_tables:
+            if "pdf_pages" not in objects:
+                raise QueryCoreError(
+                    "incomplete PDF text capability; missing table: pdf_pages"
+                )
+            for table, required in PDF_TEXT_REQUIRED_COLUMNS.items():
+                actual = {
+                    row["name"]
+                    for row in connection.execute(
+                        f"PRAGMA table_info({json.dumps(table)})"
+                    )
+                }
+                missing_columns = sorted(required - actual)
+                if missing_columns:
+                    raise QueryCoreError(
+                        f"incompatible PDF text capability; {table} missing columns: "
+                        + ", ".join(missing_columns)
+                    )
         if "pdf_pages" in objects:
             required_pdf_page_columns = {
                 "id",
@@ -420,6 +464,8 @@ def validate_database(path: Path) -> dict[str, str]:
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(pdf_pages)")
             }
+            if present_pdf_text_tables:
+                required_pdf_page_columns |= PDF_TEXT_PAGE_COLUMNS
             missing_columns = sorted(required_pdf_page_columns - actual)
             if missing_columns:
                 raise QueryCoreError(
@@ -543,6 +589,67 @@ class QueryCore:
             "SELECT record_kind,record_id,content FROM search_content WHERE instr(lower(content),lower(?))>0 ORDER BY record_kind,record_id LIMIT ?",
             (query, limit),
         )
+
+    def search_pdf_text(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Search source PDF blocks and return their exact stored navigation."""
+        tables = {
+            row["name"]
+            for row in self.connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        if "pdf_text_blocks" not in tables or not query.strip():
+            return []
+        try:
+            hits = self._rows(
+                "SELECT s.record_id FROM search_fts f JOIN search_content s "
+                "ON s.rowid=f.rowid WHERE search_fts MATCH ? "
+                "AND s.record_kind='pdf_text_block' ORDER BY rank,s.record_id LIMIT ?",
+                (query, limit),
+            )
+        except sqlite3.OperationalError:
+            hits = []
+        if not hits:
+            hits = self._rows(
+                "SELECT record_id FROM search_content "
+                "WHERE record_kind='pdf_text_block' "
+                "AND instr(lower(content),lower(?))>0 ORDER BY record_id LIMIT ?",
+                (query, limit),
+            )
+        results = []
+        for hit in hits:
+            rows = self._rows(
+                "SELECT b.*,p.page_number,d.id AS document_id,d.identity AS document_identity,"
+                "d.source_filename,d.source_sha256,e.id AS evidence_id,e.pdf_page "
+                "FROM pdf_text_blocks b JOIN pdf_pages p ON p.id=b.page_id "
+                "JOIN documents d ON d.id=p.document_id JOIN evidence e ON e.id=b.evidence_id "
+                "WHERE b.id=?",
+                (hit["record_id"],),
+            )
+            if not rows:
+                continue
+            row = rows[0]
+            navigation_row = dict(row)
+            navigation_row.update(sheet_id=None, view_id=None)
+            navigation = navigation_target(navigation_row, source_kind="evidence")
+            results.append(
+                {
+                    "block_id": row["id"],
+                    "text": row["text"],
+                    "provenance": row["provenance"],
+                    "document": {
+                        "id": row["document_id"],
+                        "identity": row["document_identity"],
+                        "source_filename": row["source_filename"],
+                        "source_sha256": row["source_sha256"],
+                    },
+                    "pdf_page": row["pdf_page"],
+                    "bbox": [row[k] for k in ("x_min", "y_min", "x_max", "y_max")],
+                    "coordinate_space": row["coordinate_space"],
+                    "navigation": navigation,
+                }
+            )
+        return results
 
     def get_entity(self, kind: str, entity_id: str) -> dict[str, Any] | None:
         table = ENTITY_TABLES.get(kind)

@@ -9,8 +9,34 @@ CREATE TABLE pdf_pages (
   width_points REAL NOT NULL CHECK(width_points > 0 AND width_points < 1.7976931348623157e308),
   height_points REAL NOT NULL CHECK(height_points > 0 AND height_points < 1.7976931348623157e308),
   rotation INTEGER NOT NULL CHECK(rotation IN (0,90,180,270)),
+  media_x_min REAL, media_y_min REAL, media_x_max REAL, media_y_max REAL,
+  crop_x_min REAL, crop_y_min REAL, crop_x_max REAL, crop_y_max REAL,
+  coordinate_space TEXT CHECK(coordinate_space IS NULL OR coordinate_space='pdf_points_top_left'),
   provenance TEXT NOT NULL,
   UNIQUE(document_id, page_number)
+) WITHOUT ROWID;
+CREATE TABLE pdf_text_blocks (
+  id TEXT PRIMARY KEY, page_id TEXT NOT NULL REFERENCES pdf_pages(id) ON DELETE CASCADE,
+  order_index INTEGER NOT NULL CHECK(order_index>=0), text TEXT NOT NULL,
+  x_min REAL NOT NULL,y_min REAL NOT NULL,x_max REAL NOT NULL,y_max REAL NOT NULL,
+  coordinate_space TEXT NOT NULL CHECK(coordinate_space='pdf_points_top_left'),
+  provenance TEXT NOT NULL, evidence_id TEXT NOT NULL REFERENCES evidence(id),
+  UNIQUE(page_id,order_index), CHECK(x_min<=x_max AND y_min<=y_max)
+) WITHOUT ROWID;
+CREATE TABLE pdf_text_lines (
+  id TEXT PRIMARY KEY, block_id TEXT NOT NULL REFERENCES pdf_text_blocks(id) ON DELETE CASCADE,
+  order_index INTEGER NOT NULL CHECK(order_index>=0), text TEXT NOT NULL,
+  x_min REAL NOT NULL,y_min REAL NOT NULL,x_max REAL NOT NULL,y_max REAL NOT NULL,
+  coordinate_space TEXT NOT NULL CHECK(coordinate_space='pdf_points_top_left'), provenance TEXT NOT NULL,
+  UNIQUE(block_id,order_index), CHECK(x_min<=x_max AND y_min<=y_max)
+) WITHOUT ROWID;
+CREATE TABLE pdf_text_spans (
+  id TEXT PRIMARY KEY, line_id TEXT NOT NULL REFERENCES pdf_text_lines(id) ON DELETE CASCADE,
+  order_index INTEGER NOT NULL CHECK(order_index>=0), text TEXT NOT NULL,
+  x_min REAL NOT NULL,y_min REAL NOT NULL,x_max REAL NOT NULL,y_max REAL NOT NULL,
+  coordinate_space TEXT NOT NULL CHECK(coordinate_space='pdf_points_top_left'), provenance TEXT NOT NULL,
+  font_name TEXT, font_size REAL, font_flags INTEGER,
+  UNIQUE(line_id,order_index), CHECK(x_min<=x_max AND y_min<=y_max)
 ) WITHOUT ROWID;
 CREATE TABLE source_models (
   id TEXT PRIMARY KEY, role TEXT NOT NULL CHECK(role IN ('host','link')), title TEXT NOT NULL,

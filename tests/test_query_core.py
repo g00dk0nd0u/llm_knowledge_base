@@ -236,6 +236,9 @@ def test_legacy_v2_without_pdf_pages_or_binding_mode_remains_valid(
     legacy = tmp_path / "legacy.sqlite"
     shutil.copyfile(fixture[1], legacy)
     with sqlite3.connect(legacy) as connection:
+        connection.execute("DROP TABLE pdf_text_spans")
+        connection.execute("DROP TABLE pdf_text_lines")
+        connection.execute("DROP TABLE pdf_text_blocks")
         connection.execute("DROP TABLE pdf_pages")
         connection.execute("DELETE FROM metadata WHERE key='binding_mode'")
         connection.execute(
