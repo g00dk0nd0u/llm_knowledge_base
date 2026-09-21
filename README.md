@@ -168,5 +168,36 @@ validated Query Core is the cached canonical representation for an unchanged sou
 SHA.
 
 None of the project commands runs PDF Pipeline automatically. Equal PDF bytes at different
-logical source paths remain distinct documents. Revision-history storage and project
-bundle packaging are not yet implemented.
+logical source paths remain distinct documents. Revision-history storage is not implemented.
+
+### Portable PDF deliverables
+
+A **single-document Enhanced PDF** remains `source.pdf` plus a single-document Query
+Core embedded into one output PDF. Project-bound databases remain deliberately rejected
+by that packaging command.
+
+A **Project Query Bundle** instead combines many authoritative source PDFs with one
+current project-bound Query Core in a portable directory:
+
+```text
+example-query-bundle/
+├─ bundle.json
+├─ project.sqlite
+└─ sources/
+   └─ <original path below projects/example/source/>
+```
+
+```bash
+python -m tools.query_core package-pdf-project --repo-root . \
+  projects/example artifacts/example-project.sqlite artifacts/example-query-bundle
+python -m tools.query_core inspect-pdf-project-bundle \
+  artifacts/example-query-bundle
+python -m tools.query_core search \
+  artifacts/example-query-bundle "fire resistance"
+```
+
+The PDFs are byte-for-byte copies and retain their original one-based page numbering;
+no binder PDF or knowledge sidecars are included. Ordinary search verifies bundle and
+database metadata plus the database SHA without hashing every PDF. Strict inspection
+hashes every source, while navigation resolves and hashes only the selected source.
+The canonical Phase 2C1 format is this directory, not a ZIP or other archive.
