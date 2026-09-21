@@ -24,6 +24,18 @@ def _pdf(path: Path, text: str, *, width: int = 595, rotation: int = 0) -> None:
     document.close()
 
 
+def _offset_box_pdf(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    document = fitz.open()
+    page = document.new_page(width=400, height=600)
+    page.insert_text((50, 80), "project offset box")
+    document.xref_set_key(page.xref, "MediaBox", "[10 20 410 620]")
+    document.xref_set_key(page.xref, "CropBox", "[40 100 340 550]")
+    document.xref_set_key(page.xref, "Rotate", "90")
+    document.save(path)
+    document.close()
+
+
 @pytest.fixture
 def project(tmp_path: Path) -> Path:
     _pdf(tmp_path / "projects/example/source/b.pdf", "shared 共通 日本語検索")
@@ -95,6 +107,152 @@ def test_manifest_rejections(project: Path, mutation, message: str) -> None:
         build_pdf_project_database(project, Path("projects/example"), project / "bad.sqlite")
 
 
+@pytest.mark.parametrize(
+    "knowledge_path",
+    [
+        "projects/example/knowledge/../other",
+        "projects/example/./knowledge/foo",
+        "/projects/example/knowledge/foo",
+        "projects/other/knowledge/foo",
+    ],
+)
+def test_rejects_noncanonical_knowledge_paths(
+    project: Path, knowledge_path: str
+) -> None:
+    manifest_path = project / "projects/example/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["documents"][0]["knowledge_path"] = knowledge_path
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(QueryCoreError, match="knowledge_path must be under"):
+        build_pdf_project_database(
+            project, Path("projects/example"), project / "bad.sqlite"
+        )
+
+
+def test_rejects_missing_and_unowned_knowledge_directories(project: Path) -> None:
+    manifest_path = project / "projects/example/manifest.json"
+    original = json.loads(manifest_path.read_text())
+    manifest = json.loads(json.dumps(original))
+    manifest["documents"][0]["knowledge_path"] = (
+        "projects/example/knowledge/does-not-exist"
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(QueryCoreError, match="knowledge directory does not exist"):
+        build_pdf_project_database(
+            project, Path("projects/example"), project / "missing.sqlite"
+        )
+
+    manifest_path.write_text(json.dumps(original), encoding="utf-8")
+    knowledge = project / original["documents"][0]["knowledge_path"]
+    (knowledge / ".pdf-pipeline-v1").unlink()
+    with pytest.raises(QueryCoreError, match="knowledge directory is unowned"):
+        build_pdf_project_database(
+            project, Path("projects/example"), project / "unowned.sqlite"
+        )
+
+
+def test_rejects_knowledge_symlink_escape(project: Path) -> None:
+    manifest_path = project / "projects/example/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    outside = project / "outside"
+    outside.mkdir()
+    escaped = project / "projects/example/knowledge/escaped"
+    escaped.symlink_to(outside, target_is_directory=True)
+    manifest["documents"][0]["knowledge_path"] = (
+        "projects/example/knowledge/escaped"
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(QueryCoreError, match="resolves outside"):
+        build_pdf_project_database(
+            project, Path("projects/example"), project / "escaped.sqlite"
+        )
+
+
+@pytest.mark.parametrize(
+    "project_directory",
+    [Path("projects/example/.."), Path("example")],
+)
+def test_rejects_malformed_project_directory(
+    project: Path, project_directory: Path
+) -> None:
+    with pytest.raises(QueryCoreError, match="projects/<project-id>"):
+        build_pdf_project_database(
+            project, project_directory, project / "bad-project.sqlite"
+        )
+
+
+def test_rejects_stale_actual_source_sha(project: Path) -> None:
+    source = project / "projects/example/source/a.pdf"
+    source.write_bytes(source.read_bytes() + b"stale source bytes")
+    with pytest.raises(QueryCoreError, match="source PDF byte SHA-256 mismatch"):
+        build_pdf_project_database(
+            project, Path("projects/example"), project / "stale.sqlite"
+        )
+
+
+def test_project_preserves_nonzero_media_and_distinct_crop_boxes(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "projects/boxes/source/offset.pdf"
+    _offset_box_pdf(source)
+    process_all(tmp_path)
+    manifest = json.loads(
+        (tmp_path / "projects/boxes/manifest.json").read_text()
+    )
+    knowledge = tmp_path / manifest["documents"][0]["knowledge_path"]
+    sidecar = json.loads((knowledge / "pages/p0001.json").read_text())
+    database = build_pdf_project_database(
+        tmp_path, Path("projects/boxes"), tmp_path / "boxes.sqlite"
+    )
+    with sqlite3.connect(database) as connection:
+        row = connection.execute(
+            "SELECT width_points,height_points,rotation,media_x_min,media_y_min,"
+            "media_x_max,media_y_max,crop_x_min,crop_y_min,crop_x_max,crop_y_max,"
+            "coordinate_space FROM pdf_pages"
+        ).fetchone()
+    assert row == (
+        sidecar["width_points"],
+        sidecar["height_points"],
+        sidecar["rotation"],
+        *sidecar["media_box"],
+        *sidecar["crop_box"],
+        "pdf_points_top_left",
+    )
+    assert sidecar["media_box"] == [-30.0, -70.0, 370.0, 530.0]
+    assert sidecar["crop_box"] == [0.0, 0.0, 300.0, 450.0]
+
+
+def test_manifest_array_order_is_not_semantic(project: Path) -> None:
+    ordered = build_pdf_project_database(
+        project, Path("projects/example"), project / "ordered.sqlite"
+    )
+    manifest_path = project / "projects/example/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["documents"].reverse()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    reversed_database = build_pdf_project_database(
+        project, Path("projects/example"), project / "reversed.sqlite"
+    )
+    tables = (
+        "documents",
+        "pdf_pages",
+        "pdf_text_blocks",
+        "pdf_text_lines",
+        "pdf_text_spans",
+        "evidence",
+        "search_content",
+    )
+    with sqlite3.connect(ordered) as left, sqlite3.connect(
+        reversed_database
+    ) as right:
+        for table in tables:
+            order = "record_id" if table == "search_content" else "id"
+            query = f"SELECT * FROM {table} ORDER BY {order}"
+            assert left.execute(query).fetchall() == right.execute(query).fetchall()
+    with QueryCore(ordered) as left, QueryCore(reversed_database) as right:
+        assert left.search_pdf_text("shared") == right.search_pdf_text("shared")
+
+
 def test_empty_project_and_mid_build_failure_preserves_output(tmp_path: Path, project: Path) -> None:
     empty = tmp_path / "empty/projects/empty"
     empty.mkdir(parents=True)
@@ -164,18 +322,52 @@ def test_twenty_document_project(tmp_path: Path) -> None:
 
 
 def test_revision_replacement_and_removed_document(project: Path) -> None:
+    def identities(database: Path) -> dict[str, dict[str, object]]:
+        with sqlite3.connect(database) as connection:
+            documents = connection.execute(
+                "SELECT id,identity,source_sha256 FROM documents ORDER BY identity"
+            ).fetchall()
+            result = {
+                identity: {"document": (document_id, identity, source_sha256)}
+                for document_id, identity, source_sha256 in documents
+            }
+            queries = {
+                "pages": (
+                    "SELECT p.id,d.identity FROM pdf_pages p "
+                    "JOIN documents d ON d.id=p.document_id"
+                ),
+                "blocks": (
+                    "SELECT b.id,d.identity FROM pdf_text_blocks b "
+                    "JOIN pdf_pages p ON p.id=b.page_id "
+                    "JOIN documents d ON d.id=p.document_id"
+                ),
+                "lines": (
+                    "SELECT l.id,d.identity FROM pdf_text_lines l "
+                    "JOIN pdf_text_blocks b ON b.id=l.block_id "
+                    "JOIN pdf_pages p ON p.id=b.page_id "
+                    "JOIN documents d ON d.id=p.document_id"
+                ),
+                "spans": (
+                    "SELECT s.id,d.identity FROM pdf_text_spans s "
+                    "JOIN pdf_text_lines l ON l.id=s.line_id "
+                    "JOIN pdf_text_blocks b ON b.id=l.block_id "
+                    "JOIN pdf_pages p ON p.id=b.page_id "
+                    "JOIN documents d ON d.id=p.document_id"
+                ),
+                "evidence": (
+                    "SELECT e.id,d.identity FROM evidence e "
+                    "JOIN documents d ON d.id=e.document_id"
+                ),
+            }
+            for kind, query in queries.items():
+                for record_id, identity in connection.execute(query):
+                    result[identity].setdefault(kind, []).append(record_id)
+            return result
+
     first = build_pdf_project_database(
         project, Path("projects/example"), project / "revision-a.sqlite"
     )
-    with sqlite3.connect(first) as connection:
-        before = connection.execute(
-            "SELECT id,identity,source_sha256 FROM documents ORDER BY identity"
-        ).fetchall()
-        before_blocks = connection.execute(
-            "SELECT b.id,d.identity FROM pdf_text_blocks b "
-            "JOIN pdf_pages p ON p.id=b.page_id "
-            "JOIN documents d ON d.id=p.document_id ORDER BY d.identity"
-        ).fetchall()
+    before = identities(first)
 
     source_a = project / "projects/example/source/a.pdf"
     source_a.unlink()
@@ -184,20 +376,14 @@ def test_revision_replacement_and_removed_document(project: Path) -> None:
     revised = build_pdf_project_database(
         project, Path("projects/example"), project / "revision-b.sqlite"
     )
-    with sqlite3.connect(revised) as connection:
-        after = connection.execute(
-            "SELECT id,identity,source_sha256 FROM documents ORDER BY identity"
-        ).fetchall()
-        after_blocks = connection.execute(
-            "SELECT b.id,d.identity FROM pdf_text_blocks b "
-            "JOIN pdf_pages p ON p.id=b.page_id "
-            "JOIN documents d ON d.id=p.document_id ORDER BY d.identity"
-        ).fetchall()
-    assert before[0][:2] == after[0][:2]
-    assert before[0][2] != after[0][2]
-    assert before[1] == after[1]
-    assert before_blocks[0][0] != after_blocks[0][0]
-    assert before_blocks[1] == after_blocks[1]
+    after = identities(revised)
+    changed = "projects/example/source/a.pdf"
+    unchanged = "projects/example/source/b.pdf"
+    assert before[changed]["document"][:2] == after[changed]["document"][:2]
+    assert before[changed]["document"][2] != after[changed]["document"][2]
+    for kind in ("pages", "blocks", "lines", "spans", "evidence"):
+        assert before[changed][kind] != after[changed][kind]
+    assert before[unchanged] == after[unchanged]
     with QueryCore(revised) as core:
         assert core.search_pdf_text("English project") == []
         assert len(core.search_pdf_text("replacement revision")) == 1

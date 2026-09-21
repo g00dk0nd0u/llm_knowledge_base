@@ -476,7 +476,6 @@ def _metadata(records: dict[str, Any]) -> dict[str, str]:
 
 def build_database(records: dict[str, Any], output: Path) -> Path:
     """Atomically build schema v2 from validated canonical records."""
-    _validate(records)
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(prefix=f".{output.name}.", dir=output.parent)
