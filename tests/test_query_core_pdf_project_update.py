@@ -106,6 +106,20 @@ def test_unchanged_source_byte_change_requires_pipeline_refresh(
     assert database.read_bytes() == original
 
 
+def test_stale_manifest_sha_is_rejected_without_replacing_database(
+    project: tuple[Path, Path],
+) -> None:
+    root, database = project
+    original = database.read_bytes()
+    manifest_path = root / "projects/example/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["documents"][0]["source_sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(QueryCoreError, match="source_sha256 mismatch"):
+        update_pdf_project_database(root, Path("projects/example"), database)
+    assert database.read_bytes() == original
+
+
 def test_added_changed_removed_update_matches_fresh_full_rebuild(
     project: tuple[Path, Path],
 ) -> None:
@@ -141,6 +155,23 @@ def test_added_changed_removed_update_matches_fresh_full_rebuild(
         )[0]["navigation"]
 
 
+def test_rename_is_removed_plus_added_not_identity_reuse(
+    project: tuple[Path, Path],
+) -> None:
+    root, database = project
+    source = root / "projects/example/source/a.pdf"
+    renamed = root / "projects/example/source/archive/a-renamed.pdf"
+    renamed.parent.mkdir(parents=True)
+    renamed.write_bytes(source.read_bytes())
+    source.unlink()
+    process_all(root)
+    result = update_pdf_project_database(root, Path("projects/example"), database)
+    assert result.added == ("projects/example/source/archive/a-renamed.pdf",)
+    assert result.removed == ("projects/example/source/a.pdf",)
+    assert result.changed == ()
+    assert result.unchanged == ("projects/example/source/b.pdf",)
+
+
 def test_changed_sidecar_failure_preserves_previous_database_bytes(
     project: tuple[Path, Path],
 ) -> None:
@@ -155,6 +186,26 @@ def test_changed_sidecar_failure_preserves_previous_database_bytes(
         / "pages/p0001.json"
     )
     sidecar.write_text("{broken changed sidecar", encoding="utf-8")
+
+    with pytest.raises(QueryCoreError):
+        update_pdf_project_database(root, Path("projects/example"), database)
+    assert database.read_bytes() == original
+    validate_database(database)
+
+
+def test_mid_update_failure_after_valid_delta_preserves_previous_database_bytes(
+    project: tuple[Path, Path],
+) -> None:
+    root, database = project
+    original = database.read_bytes()
+    _pdf(root / "projects/example/source/c.pdf", "valid delta before failure")
+    _pdf(root / "projects/example/source/d.pdf", "broken delta")
+    process_all(root)
+    broken = (
+        _knowledge_for(root, "projects/example/source/d.pdf")
+        / "pages/p0001.json"
+    )
+    broken.write_text("{broken delta sidecar", encoding="utf-8")
 
     with pytest.raises(QueryCoreError):
         update_pdf_project_database(root, Path("projects/example"), database)
@@ -179,6 +230,31 @@ def test_all_removed_produces_valid_empty_project(
     with QueryCore(database) as core:
         assert core.search_pdf_text("alpha") == []
         assert core.search_pdf_text("日本語") == []
+
+
+def test_empty_to_populated_update_matches_fresh_full_rebuild(tmp_path: Path) -> None:
+    project_dir = tmp_path / "projects/empty"
+    (project_dir / "source").mkdir(parents=True)
+    (project_dir / "knowledge").mkdir()
+    (project_dir / "manifest.json").write_text(
+        json.dumps(
+            {"project_id": "empty", "pipeline_version": "1", "documents": []}
+        ),
+        encoding="utf-8",
+    )
+    database = build_pdf_project_database(
+        tmp_path, Path("projects/empty"), tmp_path / "empty.sqlite"
+    )
+    _pdf(project_dir / "source/first.pdf", "first populated token")
+    process_all(tmp_path)
+    result = update_pdf_project_database(
+        tmp_path, Path("projects/empty"), database
+    )
+    assert result.added == ("projects/empty/source/first.pdf",)
+    fresh = build_pdf_project_database(
+        tmp_path, Path("projects/empty"), tmp_path / "fresh-empty.sqlite"
+    )
+    assert _canonical_tables(database) == _canonical_tables(fresh)
 
 
 def test_added_identical_bytes_remain_distinct_logical_documents(
@@ -217,6 +293,48 @@ def test_rejects_ineligible_incremental_base_metadata(
         update_pdf_project_database(root, Path("projects/example"), database)
 
 
+def test_rejects_non_pdf_native_incremental_base(project: tuple[Path, Path]) -> None:
+    root, database = project
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO source_models "
+            "(id,role,title,model_identity_kind,model_identity) VALUES (?,?,?,?,?)",
+            ("model-1", "host", "host", "path", "host.rvt"),
+        )
+        connection.commit()
+    with pytest.raises(QueryCoreError, match="source_models contains rows"):
+        update_pdf_project_database(root, Path("projects/example"), database)
+
+
+def test_rejects_noncanonical_cached_search_content(
+    project: tuple[Path, Path],
+) -> None:
+    root, database = project
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE search_content SET content='tampered cache' WHERE rowid=("
+            "SELECT min(rowid) FROM search_content)"
+        )
+        connection.commit()
+    with pytest.raises(QueryCoreError, match="cached search_content"):
+        update_pdf_project_database(root, Path("projects/example"), database)
+
+
+def test_delta_update_detects_fts_external_content_corruption(
+    project: tuple[Path, Path],
+) -> None:
+    root, database = project
+    with sqlite3.connect(database) as connection:
+        connection.execute("INSERT INTO search_fts(search_fts) VALUES('delete-all')")
+        connection.commit()
+    corrupted = database.read_bytes()
+    _pdf(root / "projects/example/source/c.pdf", "trigger delta after corrupt fts")
+    process_all(root)
+    with pytest.raises(QueryCoreError, match="FTS5 search index"):
+        update_pdf_project_database(root, Path("projects/example"), database)
+    assert database.read_bytes() == corrupted
+
+
 def test_rejects_missing_incremental_base(tmp_path: Path) -> None:
     _pdf(tmp_path / "projects/example/source/a.pdf", "one")
     process_all(tmp_path)
@@ -232,10 +350,15 @@ def test_update_keeps_pipeline_owned_inputs_protected(
     root, _database = project
     source = root / "projects/example/source/a.pdf"
     manifest = root / "projects/example/manifest.json"
-    source_bytes, manifest_bytes = source.read_bytes(), manifest.read_bytes()
-    with pytest.raises(QueryCoreError, match="protected PDF Pipeline project inputs"):
-        update_pdf_project_database(root, Path("projects/example"), source)
-    with pytest.raises(QueryCoreError, match="protected PDF Pipeline project inputs"):
-        update_pdf_project_database(root, Path("projects/example"), manifest)
+    document = _knowledge_for(root, "projects/example/source/a.pdf") / "document.json"
+    source_bytes = source.read_bytes()
+    manifest_bytes = manifest.read_bytes()
+    document_bytes = document.read_bytes()
+    for protected in (source, manifest, document):
+        with pytest.raises(
+            QueryCoreError, match="protected PDF Pipeline project inputs"
+        ):
+            update_pdf_project_database(root, Path("projects/example"), protected)
     assert source.read_bytes() == source_bytes
     assert manifest.read_bytes() == manifest_bytes
+    assert document.read_bytes() == document_bytes
