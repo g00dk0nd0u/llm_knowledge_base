@@ -200,6 +200,38 @@ def _database_documents(database: Path) -> dict[str, tuple[str, str, int]]:
         raise QueryCoreError(f"invalid project bundle database: {exc}") from exc
 
 
+def _database_document(
+    database: Path, identity: str
+) -> tuple[str, str, int] | None:
+    """Read one document tuple and require its PDF pages to be one-based contiguous."""
+    try:
+        with sqlite3.connect(f"file:{database.resolve()}?mode=ro", uri=True) as connection:
+            row = connection.execute(
+                "SELECT d.id,d.source_sha256,count(p.id) "
+                "FROM documents d LEFT JOIN pdf_pages p ON p.document_id=d.id "
+                "WHERE d.identity=? GROUP BY d.id,d.source_sha256",
+                (identity,),
+            ).fetchone()
+            if row is None:
+                return None
+            pages = [
+                page[0]
+                for page in connection.execute(
+                    "SELECT p.page_number FROM pdf_pages p "
+                    "JOIN documents d ON d.id=p.document_id "
+                    "WHERE d.identity=? ORDER BY p.page_number",
+                    (identity,),
+                )
+            ]
+            if pages != list(range(1, row[2] + 1)):
+                raise QueryCoreError(
+                    f"project bundle database has non-contiguous PDF pages: {identity}"
+                )
+            return row[0], row[1], row[2]
+    except sqlite3.Error as exc:
+        raise QueryCoreError(f"invalid project bundle database: {exc}") from exc
+
+
 def inspect_pdf_project_bundle(bundle_directory: Path) -> dict[str, Any]:
     """Exhaustively verify a portable project bundle and every bundled source."""
     directory = Path(bundle_directory)
@@ -214,6 +246,7 @@ def inspect_pdf_project_bundle(bundle_directory: Path) -> dict[str, Any]:
     if _database_documents(database) != expected:
         raise QueryCoreError("project bundle database/document map mismatch")
     for item in entries:
+        _database_document(database, item["identity"])
         source = _regular_file(directory, item["bundle_path"], "bundled source PDF")
         if _sha256(source) != item["source_sha256"]:
             raise QueryCoreError(f"bundled source PDF SHA-256 mismatch: {item['identity']}")
@@ -226,23 +259,20 @@ def inspect_pdf_project_bundle(bundle_directory: Path) -> dict[str, Any]:
 def project_bundle_source(bundle_directory: Path, identity: str) -> Path:
     """Resolve and SHA-verify exactly one source PDF selected by logical identity."""
     directory = Path(bundle_directory)
-    manifest = _load_manifest(directory)
-    expected = {
-        "bundle_format": BUNDLE_FORMAT,
-        "binding_mode": "project",
-        "created_from": _CREATED_FROM,
-        "schema_version": SCHEMA_VERSION,
-        "generator_version": GENERATOR_VERSION,
-        "pipeline_version": PIPELINE_VERSION,
-    }
-    for key, value in expected.items():
-        if manifest.get(key) != value:
-            raise QueryCoreError(f"project bundle {key} mismatch")
+    manifest, database = _lightweight_manifest(directory)
     entries = _document_entries(manifest)
     matches = [item for item in entries if item["identity"] == identity]
     if not matches:
         raise QueryCoreError(f"unknown project bundle identity: {identity}")
     item = matches[0]
+    database_tuple = _database_document(database, identity)
+    manifest_tuple = (
+        item["document_id"], item["source_sha256"], item["page_count"]
+    )
+    if database_tuple != manifest_tuple:
+        raise QueryCoreError(
+            f"project bundle source does not match Query Core document: {identity}"
+        )
     source = _regular_file(directory, item["bundle_path"], "bundled source PDF")
     if _sha256(source) != item["source_sha256"]:
         raise QueryCoreError(f"bundled source PDF SHA-256 mismatch: {identity}")
