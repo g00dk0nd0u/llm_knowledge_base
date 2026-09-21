@@ -2,6 +2,12 @@
 
 from .build import build_database
 from .errors import QueryCoreError
+from .project_bundle import (
+    BUNDLE_FORMAT,
+    inspect_pdf_project_bundle,
+    package_pdf_project_bundle,
+    project_bundle_database,
+)
 from .project_pdf_adapter import build_pdf_project_database
 from .project_pdf_update import (
     DuplicateByteGroup,
@@ -17,6 +23,7 @@ SCHEMA_VERSION = 2
 GENERATOR_VERSION = "query-core/2.0"
 
 __all__ = [
+    "BUNDLE_FORMAT",
     "DuplicateByteGroup",
     "GENERATOR_VERSION",
     "ProjectComparisonReport",
@@ -28,5 +35,8 @@ __all__ = [
     "build_database",
     "build_pdf_project_database",
     "compare_pdf_project_database",
+    "inspect_pdf_project_bundle",
+    "package_pdf_project_bundle",
+    "project_bundle_database",
     "update_pdf_project_database",
 ]
