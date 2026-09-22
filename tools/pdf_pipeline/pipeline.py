@@ -234,6 +234,11 @@ def _intersects(a: Any, b: Any) -> bool:
     return min(a[2], b[2]) - max(a[0], b[0]) > TABLE_EPSILON and min(a[3], b[3]) - max(a[1], b[1]) > TABLE_EPSILON
 
 
+def _geometry_key(bbox: Any) -> tuple[float, float, float, float]:
+    """Sort page geometry in reading order with complete bbox tie-breaks."""
+    return (bbox[1], bbox[0], bbox[3], bbox[2])
+
+
 def _extract_tables(page: fitz.Page, drawings: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Persist only complete ruled grids; text always comes from existing spans."""
     usable = any(any(item and item[0] in {"l", "re"} for item in path.get("items", [])) for path in drawings)
@@ -248,7 +253,7 @@ def _extract_tables(page: fitz.Page, drawings: list[dict[str, Any]], blocks: lis
                 page.set_rotation(0)
             candidates = sorted(
                 page.find_tables(strategy="lines_strict", use_layout=False, paths=drawings).tables,
-                key=lambda candidate: tuple(candidate.bbox),
+                key=lambda candidate: _geometry_key(candidate.bbox),
             )
         finally:
             if rotation:
@@ -320,7 +325,7 @@ def _extract_tables(page: fitz.Page, drawings: list[dict[str, Any]], blocks: lis
                 reasons[reason] = reasons.get(reason, 0) + 1
             else:
                 accepted.append({"order_index": 0, "bbox": _bbox(bbox), "row_count": candidate.row_count, "column_count": candidate.col_count, "provenance": "derived_pdf_table", "cells": cells})
-        accepted.sort(key=lambda table: tuple(table["bbox"]))
+        accepted.sort(key=lambda table: _geometry_key(table["bbox"]))
         for index, table in enumerate(accepted):
             table["order_index"] = index
         status = "completed" if candidates else "no_candidates"
@@ -566,7 +571,7 @@ def _valid_v2_table_contract(structured: dict[str, Any]) -> bool:
         row_count = table.get("row_count")
         column_count = table.get("column_count")
         cells = table.get("cells")
-        bbox_key = tuple(bbox) if _valid_rect(bbox) else None
+        bbox_key = _geometry_key(bbox) if _valid_rect(bbox) else None
         if (
             set(table) != {
                 "order_index", "bbox", "row_count", "column_count", "provenance", "cells"
