@@ -70,6 +70,9 @@ def _canonical_tables(database: Path) -> dict[str, list[tuple]]:
         "pdf_text_blocks": "id",
         "pdf_text_lines": "id",
         "pdf_text_spans": "id",
+        "pdf_tables": "id",
+        "pdf_table_cells": "id",
+        "pdf_table_cell_spans": "cell_id,order_index",
         "evidence": "id",
         "search_content": "record_kind,record_id",
     }

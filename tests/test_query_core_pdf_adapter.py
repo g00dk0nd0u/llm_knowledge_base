@@ -48,6 +48,56 @@ def _set_pipeline_contract(knowledge: Path, version: str) -> None:
     (knowledge / f".pdf-pipeline-v{version}").touch()
 
 
+def _ruled_table_pdf(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    document = fitz.open()
+    page = document.new_page(width=400, height=300)
+    for x in (40, 140, 240):
+        page.draw_line((x, 40), (x, 160))
+    for y in (40, 100, 160):
+        page.draw_line((40, y), (240, y))
+    page.insert_text((55, 70), "Header")
+    page.insert_text((155, 70), "日本語", fontname="japan")
+    page.insert_text((55, 125), "line one")
+    page.insert_text((55, 145), "line two")
+    document.save(path)
+    document.close()
+
+
+def test_v2_ruled_table_persists_authoritative_cells_and_round_trips(tmp_path: Path) -> None:
+    source = tmp_path / "projects/example/source/table.pdf"
+    _ruled_table_pdf(source)
+    process_all(tmp_path)
+    manifest = json.loads((tmp_path / "projects/example/manifest.json").read_text())
+    knowledge = tmp_path / manifest["documents"][0]["knowledge_path"]
+    database = build_pdf_database(tmp_path, knowledge, tmp_path / "table.sqlite")
+    with sqlite3.connect(database) as connection:
+        table = connection.execute(
+            "SELECT order_index,row_count,column_count,x_min,y_min,x_max,y_max,detection_method "
+            "FROM pdf_tables"
+        ).fetchone()
+        assert table[:3] == (0, 2, 2)
+        assert table[-1] == "pymupdf_lines_strict"
+        cells = connection.execute(
+            "SELECT row_index,column_index,text FROM pdf_table_cells ORDER BY row_index,column_index"
+        ).fetchall()
+        assert cells == [(0, 0, "Header"), (0, 1, "日本語"), (1, 0, "line one\nline two"), (1, 1, "")]
+        assert connection.execute("SELECT count(*) FROM pdf_table_cell_spans").fetchone()[0] == 4
+        assert connection.execute(
+            "SELECT count(*) FROM search_content WHERE record_kind<>'pdf_text_block'"
+        ).fetchone()[0] == 0
+    rebuilt = build_pdf_database(tmp_path, knowledge, tmp_path / "rebuilt-table.sqlite")
+    with sqlite3.connect(database) as left, sqlite3.connect(rebuilt) as right:
+        for table_name in ("pdf_tables", "pdf_table_cells", "pdf_table_cell_spans"):
+            assert left.execute(f"SELECT * FROM {table_name} ORDER BY 1,2").fetchall() == right.execute(
+                f"SELECT * FROM {table_name} ORDER BY 1,2"
+            ).fetchall()
+    enhanced = package_pdf(source, database, tmp_path / "table-enhanced.pdf")
+    extracted = extract_payload(enhanced, tmp_path / "table-extracted.sqlite")
+    with sqlite3.connect(extracted) as connection:
+        assert connection.execute("SELECT count(*) FROM pdf_tables").fetchone()[0] == 1
+
+
 def test_single_pdf_build_search_navigation_determinism_and_package(
     processed_pdf: tuple[Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -125,7 +175,7 @@ def test_single_pdf_build_search_navigation_determinism_and_package(
     )
 
 
-def test_synthetic_v2_build_ignores_additive_tables_and_packages(
+def test_synthetic_v2_build_rejects_malformed_table_contract(
     processed_pdf: tuple[Path, Path, Path], tmp_path: Path
 ) -> None:
     root, source, knowledge = processed_pdf
@@ -134,10 +184,8 @@ def test_synthetic_v2_build_ignores_additive_tables_and_packages(
     sidecar = json.loads(sidecar_path.read_text())
     sidecar.update(table_extraction={"status": "future"}, tables=[{"dummy": True}])
     sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
-    database = build_pdf_database(root, knowledge, tmp_path / "v2.sqlite")
-    assert validate_database(database)["created_from"] == "pdf-pipeline/2"
-    enhanced = package_pdf(source, database, tmp_path / "v2-enhanced.pdf")
-    assert inspect_pdf(enhanced)["schema_version"] == 2
+    with pytest.raises(QueryCoreError, match="table extraction contract"):
+        build_pdf_database(root, knowledge, tmp_path / "v2.sqlite")
 
 
 @pytest.mark.parametrize(
@@ -201,6 +249,9 @@ def test_adapter_rejects_stale_or_tampered_inputs(
 
 
 def _drop_pdf_text_tables(connection: sqlite3.Connection) -> None:
+    connection.execute("DROP TABLE pdf_table_cell_spans")
+    connection.execute("DROP TABLE pdf_table_cells")
+    connection.execute("DROP TABLE pdf_tables")
     connection.execute("DROP TABLE pdf_text_spans")
     connection.execute("DROP TABLE pdf_text_lines")
     connection.execute("DROP TABLE pdf_text_blocks")

@@ -236,6 +236,9 @@ def test_legacy_v2_without_pdf_pages_or_binding_mode_remains_valid(
     legacy = tmp_path / "legacy.sqlite"
     shutil.copyfile(fixture[1], legacy)
     with sqlite3.connect(legacy) as connection:
+        connection.execute("DROP TABLE pdf_table_cell_spans")
+        connection.execute("DROP TABLE pdf_table_cells")
+        connection.execute("DROP TABLE pdf_tables")
         connection.execute("DROP TABLE pdf_text_spans")
         connection.execute("DROP TABLE pdf_text_lines")
         connection.execute("DROP TABLE pdf_text_blocks")
