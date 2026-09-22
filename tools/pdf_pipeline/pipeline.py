@@ -278,20 +278,33 @@ def _extract_tables(page: fitz.Page, drawings: list[dict[str, Any]], blocks: lis
                 reason = "overlapping_candidate"
             cells: list[dict[str, Any]] = []
             if reason is None:
-                for row_index, row in enumerate(rows):
-                    for column_index, cell_bbox in enumerate(row.cells):
-                        assigned = []
-                        for block_index, line_index, span_index, span in spans:
-                            span_bbox = span["bbox"]
-                            if _intersects(bbox, span_bbox):
-                                containing = [c for r in rows for c in r.cells if c is not None and _contains(c, span_bbox)]
-                                if len(containing) != 1:
-                                    reason = "ambiguous_span_mapping"
-                                    break
-                                if containing[0] == cell_bbox:
-                                    assigned.append((block_index, line_index, span_index, span["text"]))
-                        if reason:
-                            break
+                row_major_cells = [
+                    (row_index, column_index, cell_bbox)
+                    for row_index, row in enumerate(rows)
+                    for column_index, cell_bbox in enumerate(row.cells)
+                ]
+                assignments: list[list[tuple[int, int, int, str]]] = [
+                    [] for _cell in row_major_cells
+                ]
+                for block_index, line_index, span_index, span in spans:
+                    span_bbox = span["bbox"]
+                    if not _intersects(bbox, span_bbox):
+                        continue
+                    containing = [
+                        index
+                        for index, (_row, _column, cell_bbox) in enumerate(row_major_cells)
+                        if _contains(cell_bbox, span_bbox)
+                    ]
+                    if len(containing) != 1:
+                        reason = "ambiguous_span_mapping"
+                        break
+                    assignments[containing[0]].append(
+                        (block_index, line_index, span_index, span["text"])
+                    )
+                if reason is None:
+                    for (row_index, column_index, cell_bbox), assigned in zip(
+                        row_major_cells, assignments, strict=True
+                    ):
                         line_groups: list[list[str]] = []
                         previous_line = None
                         refs = []
@@ -303,8 +316,6 @@ def _extract_tables(page: fitz.Page, drawings: list[dict[str, Any]], blocks: lis
                             line_groups[-1].append(text)
                             refs.append({"block_index": bi, "line_index": li, "span_index": si})
                         cells.append({"row_index": row_index, "column_index": column_index, "row_span": 1, "column_span": 1, "bbox": _bbox(cell_bbox), "text": "\n".join("".join(group) for group in line_groups), "span_refs": refs})
-                    if reason:
-                        break
             if reason:
                 reasons[reason] = reasons.get(reason, 0) + 1
             else:
@@ -463,6 +474,182 @@ def _atomic_json(path: Path, data: dict[str, Any]) -> None:
         raise
 
 
+def _nonnegative_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _valid_v2_table_contract(structured: dict[str, Any]) -> bool:
+    """Validate cached v2 table data and every reference to source text evidence."""
+    extraction = structured.get("table_extraction")
+    tables = structured.get("tables")
+    required_extraction = {
+        "status",
+        "algorithm",
+        "algorithm_version",
+        "library",
+        "library_version",
+        "candidate_count",
+        "accepted_count",
+        "rejected_count",
+        "rejection_counts",
+    }
+    if (
+        not isinstance(extraction, dict)
+        or set(extraction) != required_extraction
+        or extraction.get("status") not in {"completed", "no_candidates", "extraction_error"}
+        or extraction.get("algorithm") != "pymupdf_lines_strict"
+        or extraction.get("algorithm_version") != "1"
+        or extraction.get("library") != "PyMuPDF"
+        or extraction.get("library_version") != fitz.__version__
+        or not all(
+            _nonnegative_integer(extraction.get(key))
+            for key in ("candidate_count", "accepted_count", "rejected_count")
+        )
+        or not isinstance(extraction.get("rejection_counts"), dict)
+        or any(
+            not isinstance(reason, str)
+            or not reason
+            or not isinstance(count, int)
+            or isinstance(count, bool)
+            or count < 1
+            for reason, count in extraction.get("rejection_counts", {}).items()
+        )
+        or not isinstance(tables, list)
+        or extraction["candidate_count"]
+        != extraction["accepted_count"] + extraction["rejected_count"]
+        or extraction["accepted_count"] != len(tables)
+    ):
+        return False
+    status = extraction["status"]
+    rejection_counts = extraction["rejection_counts"]
+    allowed_rejections = {
+        "insufficient_dimensions",
+        "invalid_shape",
+        "merged_or_missing_cell",
+        "invalid_cell_geometry",
+        "ambiguous_span_mapping",
+        "overlapping_candidate",
+        "extraction_error",
+    }
+    if (
+        not set(rejection_counts).issubset(allowed_rejections)
+        or (
+            status == "no_candidates"
+            and (extraction["candidate_count"] != 0 or rejection_counts)
+        )
+        or (
+            status == "completed"
+            and (
+                extraction["candidate_count"] < 1
+                or sum(rejection_counts.values()) != extraction["rejected_count"]
+            )
+        )
+        or (
+            status == "extraction_error"
+            and (
+                extraction["candidate_count"] != 0
+                or tables
+                or rejection_counts != {"extraction_error": 1}
+            )
+        )
+    ):
+        return False
+
+    blocks = structured.get("text_blocks")
+    if not isinstance(blocks, list):
+        return False
+    previous_bbox: tuple[float, ...] | None = None
+    for table_index, table in enumerate(tables):
+        if not isinstance(table, dict):
+            return False
+        bbox = table.get("bbox")
+        row_count = table.get("row_count")
+        column_count = table.get("column_count")
+        cells = table.get("cells")
+        bbox_key = tuple(bbox) if _valid_rect(bbox) else None
+        if (
+            set(table) != {
+                "order_index", "bbox", "row_count", "column_count", "provenance", "cells"
+            }
+            or table.get("order_index") != table_index
+            or bbox_key is None
+            or (previous_bbox is not None and bbox_key < previous_bbox)
+            or not isinstance(row_count, int)
+            or isinstance(row_count, bool)
+            or row_count < 2
+            or not isinstance(column_count, int)
+            or isinstance(column_count, bool)
+            or column_count < 2
+            or table.get("provenance") != "derived_pdf_table"
+            or not isinstance(cells, list)
+            or len(cells) != row_count * column_count
+        ):
+            return False
+        previous_bbox = bbox_key
+        for cell_index, cell in enumerate(cells):
+            expected_row, expected_column = divmod(cell_index, column_count)
+            if (
+                not isinstance(cell, dict)
+                or set(cell) != {
+                    "row_index", "column_index", "row_span", "column_span",
+                    "bbox", "text", "span_refs",
+                }
+                or cell.get("row_index") != expected_row
+                or cell.get("column_index") != expected_column
+                or cell.get("row_span") != 1
+                or cell.get("column_span") != 1
+                or not _valid_rect(cell.get("bbox"))
+                or not _contains(bbox, cell["bbox"])
+                or not isinstance(cell.get("text"), str)
+                or not isinstance(cell.get("span_refs"), list)
+            ):
+                return False
+            referenced: list[tuple[int, int, int, str]] = []
+            for reference in cell["span_refs"]:
+                if (
+                    not isinstance(reference, dict)
+                    or set(reference) != {"block_index", "line_index", "span_index"}
+                ):
+                    return False
+                indices = tuple(
+                    reference.get(key)
+                    for key in ("block_index", "line_index", "span_index")
+                )
+                if not all(_nonnegative_integer(index) for index in indices):
+                    return False
+                block_index, line_index, span_index = indices
+                try:
+                    block = blocks[block_index]
+                    line = block["lines"][line_index]
+                    span = line["spans"][span_index]
+                except (IndexError, KeyError, TypeError):
+                    return False
+                if (
+                    block.get("order_index") != block_index
+                    or line.get("order_index") != line_index
+                    or span.get("order_index") != span_index
+                    or not isinstance(span.get("text"), str)
+                    or not span["text"]
+                    or not _valid_rect(span.get("bbox"))
+                    or not _contains(cell["bbox"], span["bbox"])
+                ):
+                    return False
+                referenced.append((*indices, span["text"]))
+            if referenced != sorted(referenced, key=lambda item: item[:3]):
+                return False
+            line_groups: list[list[str]] = []
+            previous_line = None
+            for block_index, line_index, _span_index, text in referenced:
+                key = (block_index, line_index)
+                if key != previous_line:
+                    line_groups.append([])
+                    previous_line = key
+                line_groups[-1].append(text)
+            if cell["text"] != "\n".join("".join(group) for group in line_groups):
+                return False
+    return True
+
+
 def _generated_tree_is_valid(
     output: Path,
     *,
@@ -517,6 +704,7 @@ def _generated_tree_is_valid(
             or structured.get("page") != number
             or structured.get("coordinate_space") != "pdf_points_top_left"
             or not isinstance(structured.get("text_blocks"), list)
+            or (version == "2" and not _valid_v2_table_contract(structured))
         ):
             return False
         required.extend(
@@ -533,10 +721,18 @@ def _generated_tree_is_valid(
 
 def _ownership_version(output: Path) -> str | None:
     """Return the sole declared owner, rejecting ambiguous marker state."""
-    present = [version for version, marker in MANAGED_MARKERS.items() if (output / marker).is_file()]
-    if len(present) > 1:
+    marker_names = sorted(
+        path.name for path in output.glob(".pdf-pipeline-v*") if path.is_file()
+    )
+    if len(marker_names) > 1:
         raise PipelineError(f"ambiguous PDF pipeline ownership markers: {output}")
-    return present[0] if present else None
+    if not marker_names:
+        return None
+    marker_name = marker_names[0]
+    versions = [version for version, known in MANAGED_MARKERS.items() if known == marker_name]
+    if not versions:
+        raise PipelineError(f"unsupported PDF pipeline ownership marker {marker_name}: {output}")
+    return versions[0]
 
 
 def _rollback_project(

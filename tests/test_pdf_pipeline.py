@@ -45,6 +45,31 @@ def make_ruled_table(path: Path) -> None:
     document.close()
 
 
+def make_large_ruled_table(path: Path, rows: int = 10, columns: int = 10) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    document = fitz.open()
+    page = document.new_page(width=600, height=500)
+    left, top, cell_width, cell_height = 40, 40, 50, 35
+    shape = page.new_shape()
+    for column in range(columns + 1):
+        x = left + column * cell_width
+        shape.draw_line((x, top), (x, top + rows * cell_height))
+    for row in range(rows + 1):
+        y = top + row * cell_height
+        shape.draw_line((left, y), (left + columns * cell_width, y))
+    shape.finish()
+    shape.commit()
+    for row in range(rows):
+        for column in range(columns):
+            page.insert_text(
+                (left + column * cell_width + 5, top + row * cell_height + 20),
+                f"{row}:{column}",
+                fontsize=7,
+            )
+    document.save(path)
+    document.close()
+
+
 @pytest.fixture
 def repository(tmp_path: Path) -> Path:
     (tmp_path / "projects" / "example" / "source").mkdir(parents=True)
@@ -110,6 +135,43 @@ def test_ruled_table_uses_source_spans_and_is_deterministic(repository: Path) ->
     assert (knowledge / "pages/p0001.json").read_bytes() == first
 
 
+def test_large_ruled_table_assigns_each_span_to_one_cell(repository: Path) -> None:
+    make_large_ruled_table(repository / "projects/example/source/large-table.pdf")
+    process_all(repository)
+    _manifest, _document, knowledge = load_outputs(repository)
+    page = json.loads((knowledge / "pages/p0001.json").read_text())
+
+    table = page["tables"][0]
+    assert (table["row_count"], table["column_count"]) == (10, 10)
+    assert len(table["cells"]) == 100
+    assert [cell["text"] for cell in table["cells"]] == [
+        f"{row}:{column}" for row in range(10) for column in range(10)
+    ]
+
+
+@pytest.mark.parametrize("corruption", ["missing_tables", "accepted_count", "span_ref"])
+def test_corrupt_v2_table_contract_is_rebuilt(
+    repository: Path, corruption: str
+) -> None:
+    pdf = repository / "projects/example/source/table.pdf"
+    make_ruled_table(pdf)
+    process_all(repository)
+    _manifest, _document, knowledge = load_outputs(repository)
+    sidecar = knowledge / "pages/p0001.json"
+    canonical = sidecar.read_bytes()
+    page = json.loads(canonical)
+    if corruption == "missing_tables":
+        page.pop("tables")
+    elif corruption == "accepted_count":
+        page["table_extraction"]["accepted_count"] = 2
+    else:
+        page["tables"][0]["cells"][0]["span_refs"][0]["span_index"] = 999
+    sidecar.write_text(json.dumps(page), encoding="utf-8")
+
+    assert process_all(repository).processed == 1
+    assert sidecar.read_bytes() == canonical
+
+
 def test_aligned_text_without_drawings_has_no_table(repository: Path) -> None:
     make_pdf(repository / "projects/example/source/prose.pdf", ["A       B       C\nD       E       F"])
     process_all(repository)
@@ -172,6 +234,21 @@ def test_v1_tree_migrates_to_v2(repository: Path) -> None:
     assert migrated_manifest["pipeline_version"] == migrated_document["pipeline_version"] == "2"
     assert (migrated / ".pdf-pipeline-v2").is_file()
     assert not (migrated / ".pdf-pipeline-v1").exists()
+
+
+def test_unknown_ownership_markers_are_rejected(repository: Path) -> None:
+    pdf = repository / "projects/example/source/sample.pdf"
+    make_pdf(pdf, ["Source text"])
+    process_all(repository)
+    _manifest, _document, knowledge = load_outputs(repository)
+    unknown = knowledge / ".pdf-pipeline-v999"
+    unknown.touch()
+    with pytest.raises(PipelineError, match="ambiguous PDF pipeline ownership"):
+        process_all(repository)
+
+    (knowledge / ".pdf-pipeline-v2").unlink()
+    with pytest.raises(PipelineError, match="unsupported PDF pipeline ownership marker"):
+        process_all(repository)
 
 
 def test_idempotency_update_and_stale_cleanup(repository: Path) -> None:
