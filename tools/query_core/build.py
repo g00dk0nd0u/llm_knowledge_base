@@ -29,6 +29,9 @@ TABLES = (
     "pdf_text_blocks",
     "pdf_text_lines",
     "pdf_text_spans",
+    "pdf_tables",
+    "pdf_table_cells",
+    "pdf_table_cell_spans",
     "parameters",
     "relationships",
     "annotations",
@@ -75,7 +78,8 @@ def _validate(records: dict[str, Any]) -> None:
     spaces = {row.get("id"): row for row in records.get("spaces", [])}
     revit_tables = set(TABLES) - {
         "documents", "pdf_pages", "pdf_text_blocks", "pdf_text_lines",
-        "pdf_text_spans", "evidence", "search_content"
+        "pdf_text_spans", "pdf_tables", "pdf_table_cells",
+        "pdf_table_cell_spans", "evidence", "search_content"
     }
     uses_revit = bool(model_rows) or any(
         records.get(table, []) for table in revit_tables
@@ -154,6 +158,20 @@ def _validate(records: dict[str, Any]) -> None:
     _validate_order(records, "pdf_text_blocks", "page_id", "order_index")
     _validate_order(records, "pdf_text_lines", "block_id", "order_index")
     _validate_order(records, "pdf_text_spans", "line_id", "order_index")
+    _validate_order(records, "pdf_tables", "page_id", "order_index")
+    _validate_order(records, "pdf_table_cell_spans", "cell_id", "order_index")
+    tables = {row.get("id"): row for row in records.get("pdf_tables", [])}
+    cells: dict[str, list[dict[str, Any]]] = {}
+    for cell in records.get("pdf_table_cells", []):
+        table = tables.get(cell.get("table_id"))
+        if table is None:
+            raise QueryCoreError("PDF table cell references nonexistent table")
+        cells.setdefault(cell["table_id"], []).append(cell)
+    for table_id, table in tables.items():
+        ordered = sorted(cells.get(table_id, []), key=lambda row: (row.get("row_index"), row.get("column_index")))
+        expected = [(r, c) for r in range(table["row_count"]) for c in range(table["column_count"])]
+        if [(row.get("row_index"), row.get("column_index")) for row in ordered] != expected:
+            raise QueryCoreError("PDF table cells must form a complete row-major grid")
     for table in ("parameters", "annotations", "annotation_segments"):
         for row in records.get(table, []):
             if row.get("numeric_value") is not None and not row.get("unit"):

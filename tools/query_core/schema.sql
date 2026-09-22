@@ -38,6 +38,40 @@ CREATE TABLE pdf_text_spans (
   font_name TEXT, font_size REAL, font_flags INTEGER,
   UNIQUE(line_id,order_index), CHECK(x_min<=x_max AND y_min<=y_max)
 ) WITHOUT ROWID;
+CREATE TABLE pdf_tables (
+  id TEXT PRIMARY KEY,
+  page_id TEXT NOT NULL REFERENCES pdf_pages(id) ON DELETE CASCADE,
+  order_index INTEGER NOT NULL CHECK(order_index>=0),
+  row_count INTEGER NOT NULL CHECK(row_count>=2),
+  column_count INTEGER NOT NULL CHECK(column_count>=2),
+  x_min REAL NOT NULL,y_min REAL NOT NULL,x_max REAL NOT NULL,y_max REAL NOT NULL,
+  coordinate_space TEXT NOT NULL CHECK(coordinate_space='pdf_points_top_left'),
+  provenance TEXT NOT NULL CHECK(provenance='derived_pdf_table'),
+  detection_method TEXT NOT NULL,
+  algorithm_version TEXT NOT NULL,
+  library TEXT NOT NULL,
+  library_version TEXT NOT NULL,
+  UNIQUE(page_id,order_index), CHECK(x_min<x_max AND y_min<y_max)
+) WITHOUT ROWID;
+CREATE TABLE pdf_table_cells (
+  id TEXT PRIMARY KEY,
+  table_id TEXT NOT NULL REFERENCES pdf_tables(id) ON DELETE CASCADE,
+  row_index INTEGER NOT NULL CHECK(row_index>=0),
+  column_index INTEGER NOT NULL CHECK(column_index>=0),
+  row_span INTEGER NOT NULL CHECK(row_span=1),
+  column_span INTEGER NOT NULL CHECK(column_span=1),
+  text TEXT NOT NULL,
+  x_min REAL NOT NULL,y_min REAL NOT NULL,x_max REAL NOT NULL,y_max REAL NOT NULL,
+  coordinate_space TEXT NOT NULL CHECK(coordinate_space='pdf_points_top_left'),
+  provenance TEXT NOT NULL CHECK(provenance='derived_pdf_table'),
+  UNIQUE(table_id,row_index,column_index), CHECK(x_min<x_max AND y_min<y_max)
+) WITHOUT ROWID;
+CREATE TABLE pdf_table_cell_spans (
+  cell_id TEXT NOT NULL REFERENCES pdf_table_cells(id) ON DELETE CASCADE,
+  span_id TEXT NOT NULL REFERENCES pdf_text_spans(id) ON DELETE CASCADE,
+  order_index INTEGER NOT NULL CHECK(order_index>=0),
+  PRIMARY KEY(cell_id,order_index), UNIQUE(cell_id,span_id)
+) WITHOUT ROWID;
 CREATE TABLE source_models (
   id TEXT PRIMARY KEY, role TEXT NOT NULL CHECK(role IN ('host','link')), title TEXT NOT NULL,
   revit_version TEXT, model_identity_kind TEXT NOT NULL, model_identity TEXT NOT NULL,

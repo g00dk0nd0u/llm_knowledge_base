@@ -166,6 +166,9 @@ def records_from_pdf_pipeline(
         "pdf_text_blocks": [],
         "pdf_text_lines": [],
         "pdf_text_spans": [],
+        "pdf_tables": [],
+        "pdf_table_cells": [],
+        "pdf_table_cell_spans": [],
         "evidence": [],
         "search_content": [],
     }
@@ -319,7 +322,114 @@ def records_from_pdf_pipeline(
                         if source_key in span:
                             row[target_key] = span[source_key]
                     records["pdf_text_spans"].append(row)
+        if pipeline_version == "2":
+            _append_tables(records, sidecar, identity, revision, expected_page, page_id)
     return records
+
+
+def _append_tables(
+    records: dict[str, Any], sidecar: dict[str, Any], identity: str,
+    revision: str, page: int, page_id: str,
+) -> None:
+    """Strictly translate accepted v2 tables after resolving authoritative spans."""
+    extraction, tables = sidecar.get("table_extraction"), sidecar.get("tables")
+    required = {"status", "algorithm", "algorithm_version", "library", "library_version",
+                "candidate_count", "accepted_count", "rejected_count", "rejection_counts"}
+    count_keys = ("candidate_count", "accepted_count", "rejected_count")
+    if (not isinstance(extraction, dict) or set(extraction) != required
+            or extraction.get("status") not in {"completed", "no_candidates", "extraction_error"}
+            or extraction.get("algorithm") != "pymupdf_lines_strict"
+            or extraction.get("algorithm_version") != "1"
+            or extraction.get("library") != "PyMuPDF"
+            or not isinstance(extraction.get("library_version"), str)
+            or not extraction.get("library_version")
+            or any(not isinstance(extraction.get(k), int) or isinstance(extraction[k], bool)
+                   or extraction[k] < 0 for k in count_keys)
+            or not isinstance(extraction.get("rejection_counts"), dict)
+            or any(not isinstance(k, str) or not k or not isinstance(v, int)
+                   or isinstance(v, bool) or v < 1
+                   for k, v in extraction.get("rejection_counts", {}).items())
+            or not isinstance(tables, list) or extraction.get("accepted_count") != len(tables)
+            or extraction.get("candidate_count") != extraction.get("accepted_count") + extraction.get("rejected_count")
+            or (extraction.get("status") != "extraction_error"
+                and sum(extraction.get("rejection_counts", {}).values()) != extraction.get("rejected_count"))
+            or (extraction.get("status") == "extraction_error" and
+                (extraction.get("candidate_count") != 0 or tables
+                 or extraction.get("rejection_counts") != {"extraction_error": 1}))
+            or (extraction.get("status") == "no_candidates" and
+                (extraction.get("candidate_count") != 0 or tables
+                 or extraction.get("rejection_counts")))
+            or (extraction.get("status") == "completed" and
+                extraction.get("candidate_count") < 1)):
+        raise QueryCoreError("invalid Pipeline v2 table extraction contract")
+    blocks = sidecar.get("text_blocks", [])
+    previous_bbox = None
+    for ti, table in enumerate(tables):
+        if (not isinstance(table, dict) or set(table) != {"order_index", "bbox", "row_count", "column_count", "provenance", "cells"}
+                or table.get("order_index") != ti or table.get("provenance") != "derived_pdf_table"):
+            raise QueryCoreError("invalid Pipeline v2 table structure")
+        tb = _bbox(table.get("bbox"), "table")
+        geometry_key = (tb[1], tb[0], tb[3], tb[2])
+        if tb[0] >= tb[2] or tb[1] >= tb[3] or (previous_bbox is not None and geometry_key < previous_bbox):
+            raise QueryCoreError("invalid or non-deterministic table bbox")
+        previous_bbox = geometry_key
+        rows, columns, cells = table.get("row_count"), table.get("column_count"), table.get("cells")
+        if (not isinstance(rows, int) or isinstance(rows, bool) or rows < 2
+                or not isinstance(columns, int) or isinstance(columns, bool) or columns < 2
+                or not isinstance(cells, list) or len(cells) != rows * columns):
+            raise QueryCoreError("invalid Pipeline v2 table dimensions")
+        table_id = _id("pdf-table", identity, revision, page, ti)
+        records["pdf_tables"].append({"id": table_id, "page_id": page_id, "order_index": ti,
+            "row_count": rows, "column_count": columns, **dict(zip(("x_min", "y_min", "x_max", "y_max"), tb)),
+            "coordinate_space": "pdf_points_top_left", "provenance": "derived_pdf_table",
+            "detection_method": extraction["algorithm"], "algorithm_version": extraction["algorithm_version"],
+            "library": extraction["library"], "library_version": extraction["library_version"]})
+        for ci, cell in enumerate(cells):
+            row_index, column_index = divmod(ci, columns)
+            if (not isinstance(cell, dict) or set(cell) != {"row_index", "column_index", "row_span", "column_span", "bbox", "text", "span_refs"}
+                    or cell.get("row_index") != row_index or cell.get("column_index") != column_index
+                    or cell.get("row_span") != 1 or cell.get("column_span") != 1
+                    or not isinstance(cell.get("text"), str) or not isinstance(cell.get("span_refs"), list)):
+                raise QueryCoreError("invalid Pipeline v2 table cell structure")
+            cb = _bbox(cell.get("bbox"), "table cell")
+            if cb[0] >= cb[2] or cb[1] >= cb[3] or cb[0] < tb[0] or cb[1] < tb[1] or cb[2] > tb[2] or cb[3] > tb[3]:
+                raise QueryCoreError("table cell bbox lies outside table")
+            resolved = []
+            for ref in cell["span_refs"]:
+                if not isinstance(ref, dict) or set(ref) != {"block_index", "line_index", "span_index"}:
+                    raise QueryCoreError("malformed table cell span_ref")
+                indexes = tuple(ref.get(k) for k in ("block_index", "line_index", "span_index"))
+                if any(not isinstance(v, int) or isinstance(v, bool) or v < 0 for v in indexes):
+                    raise QueryCoreError("malformed table cell span_ref")
+                bi, li, si = indexes
+                try:
+                    span = blocks[bi]["lines"][li]["spans"][si]
+                except (IndexError, KeyError, TypeError):
+                    raise QueryCoreError("table cell span_ref does not resolve") from None
+                if span.get("order_index") != si or not isinstance(span.get("text"), str) or not span["text"]:
+                    raise QueryCoreError("table cell span_ref does not resolve")
+                sb = _bbox(span.get("bbox"), "referenced span")
+                if sb[0] < cb[0] or sb[1] < cb[1] or sb[2] > cb[2] or sb[3] > cb[3]:
+                    raise QueryCoreError("table cell span_ref lies outside cell bbox")
+                resolved.append((bi, li, si, span["text"], _id("pdf-span", identity, revision, page, bi, li, si)))
+            if resolved != sorted(resolved, key=lambda item: item[:3]) or len({item[4] for item in resolved}) != len(resolved):
+                raise QueryCoreError("table cell span_refs are not deterministic and unique")
+            groups: list[list[str]] = []
+            previous_line = None
+            for bi, li, _si, text, _span_id in resolved:
+                if (bi, li) != previous_line:
+                    groups.append([]); previous_line = (bi, li)
+                groups[-1].append(text)
+            reconstructed = "\n".join("".join(group) for group in groups)
+            if reconstructed != cell["text"]:
+                raise QueryCoreError("table cell text does not match authoritative source spans")
+            cell_id = _id("pdf-cell", identity, revision, page, ti, row_index, column_index)
+            records["pdf_table_cells"].append({"id": cell_id, "table_id": table_id, "row_index": row_index,
+                "column_index": column_index, "row_span": 1, "column_span": 1, "text": reconstructed,
+                **dict(zip(("x_min", "y_min", "x_max", "y_max"), cb)), "coordinate_space": "pdf_points_top_left",
+                "provenance": "derived_pdf_table"})
+            records["pdf_table_cell_spans"].extend({"cell_id": cell_id, "span_id": item[4], "order_index": oi}
+                for oi, item in enumerate(resolved))
 
 
 def build_pdf_database(
