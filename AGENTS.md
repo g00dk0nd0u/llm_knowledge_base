@@ -16,9 +16,10 @@ This repository is a private personal knowledge base for LLM-assisted retrieval 
 - Do not commit bulk rendered page images unless explicitly required.
 - Temporary PNG/WebP/crops/tiles belong outside version control by default.
 - Pipeline changes must remain reproducible and deterministic where practical.
-- PDF pipeline v1 extracts embedded text only; do not add OCR, LLM summaries, inferred
-  metadata, or image captions to generated output.
-- Treat `.pdf-pipeline-v1` as the ownership marker for generated document directories;
+- PDF Pipeline v2 extracts embedded text and conservative ruled-table structure only;
+  do not add OCR, LLM summaries, inferred metadata, or image captions.
+- Treat `.pdf-pipeline-v2` as the current ownership marker (and `.pdf-pipeline-v1` as
+  legacy pipeline ownership) for generated document directories;
   stale cleanup must never delete an unmarked directory.
 - Keep on-demand rendered images in ignored artifact locations, never under `knowledge/`.
 

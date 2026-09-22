@@ -255,7 +255,7 @@ def test_empty_to_populated_update_matches_fresh_full_rebuild(tmp_path: Path) ->
     (project_dir / "knowledge").mkdir()
     (project_dir / "manifest.json").write_text(
         json.dumps(
-            {"project_id": "empty", "pipeline_version": "1", "documents": []}
+            {"project_id": "empty", "pipeline_version": "2", "documents": []}
         ),
         encoding="utf-8",
     )
@@ -384,23 +384,23 @@ def test_update_keeps_pipeline_owned_inputs_protected(
 def test_pipeline_generation_is_incremental_compatibility_boundary(
     project: tuple[Path, Path],
 ) -> None:
-    root, v1_database = project
-    v1_result = update_pdf_project_database(
-        root, Path("projects/example"), v1_database
+    root, v2_database = project
+    v2_result = update_pdf_project_database(
+        root, Path("projects/example"), v2_database
     )
-    assert v1_result.added == v1_result.changed == v1_result.removed == ()
-
-    _set_project_pipeline_contract(root, "2")
-    with pytest.raises(QueryCoreError, match="FULL REBUILD REQUIRED"):
-        update_pdf_project_database(root, Path("projects/example"), v1_database)
-
-    v2_database = build_pdf_project_database(
-        root, Path("projects/example"), root / "v2-project.sqlite"
-    )
-    result = update_pdf_project_database(root, Path("projects/example"), v2_database)
-    assert result.added == result.changed == result.removed == ()
-    assert validate_database(v2_database)["created_from"] == "pdf-pipeline/2"
+    assert v2_result.added == v2_result.changed == v2_result.removed == ()
 
     _set_project_pipeline_contract(root, "1")
     with pytest.raises(QueryCoreError, match="FULL REBUILD REQUIRED"):
         update_pdf_project_database(root, Path("projects/example"), v2_database)
+
+    v1_database = build_pdf_project_database(
+        root, Path("projects/example"), root / "v1-project.sqlite"
+    )
+    result = update_pdf_project_database(root, Path("projects/example"), v1_database)
+    assert result.added == result.changed == result.removed == ()
+    assert validate_database(v1_database)["created_from"] == "pdf-pipeline/1"
+
+    _set_project_pipeline_contract(root, "2")
+    with pytest.raises(QueryCoreError, match="FULL REBUILD REQUIRED"):
+        update_pdf_project_database(root, Path("projects/example"), v1_database)

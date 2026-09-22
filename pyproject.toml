@@ -7,7 +7,7 @@ name = "llm-knowledge-base-pdf-pipeline"
 version = "1.0.0"
 requires-python = ">=3.12"
 dependencies = [
-  "PyMuPDF>=1.24,<2",
+  "PyMuPDF==1.28.2",
   "jsonschema>=4.23,<5",
   "tzdata>=2025.2",
 ]

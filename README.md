@@ -61,7 +61,7 @@ When visual confirmation is needed:
 source PDF → selected page → high-resolution PNG/crop/tile → Vision LLM
 ```
 
-## PDF pipeline v1
+## PDF Pipeline v2
 
 Use Python 3.12 and install the local package:
 
@@ -80,7 +80,9 @@ source SHA-256, stable path-derived document ID, and original one-based PDF page
 Reruns skip unchanged sources; updates retain the document ID; removed PDFs have their
 pipeline-managed knowledge removed.
 
-The pipeline extracts embedded text only. It performs **no OCR, LLM summarization,
+The pipeline extracts embedded text first and adds only conservative, fully ruled table
+structure derived from vector lines. Cell text is rebuilt from, and linked to, the
+source-faithful spans. Borderless and merged-cell tables are deferred. It performs **no OCR, LLM summarization,
 metadata inference, image captioning, or architectural interpretation**. A textless or
 low-text page is explicitly marked and recommended for visual review. This recommendation
 is only a processing hint. The original PDF and cited page remain the authority, especially
