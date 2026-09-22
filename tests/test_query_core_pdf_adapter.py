@@ -104,7 +104,13 @@ def test_v2_ruled_table_persists_authoritative_cells_and_round_trips(tmp_path: P
         assert connection.execute("SELECT count(*) FROM pdf_tables").fetchone()[0] == 1
     with QueryCore(extracted) as core:
         assert core.has_pdf_table_capability() is True
-        assert [item["row_count"] for item in core.list_pdf_tables()] == [2]
+        table = core.list_pdf_tables()[0]
+        detail = core.get_pdf_table(table["table_id"])
+        assert detail is not None
+        cell = core.get_pdf_table_cell(detail["cells"][0]["cell_id"])
+        assert cell is not None
+        assert cell["source_spans"]
+        assert core.search_pdf_table_cells("Header")[0]["cell_id"] == cell["cell_id"]
 
 
 @pytest.mark.parametrize("damage", ["span_ref", "cell_text"])
@@ -196,6 +202,16 @@ def test_pdf_table_read_api_preserves_structure_traceability_and_search(
         assert [hit["text"] for hit in core.search_pdf_table_cells("e", limit=1)] == [
             "Header"
         ]
+        traced_sql = []
+        core.connection.set_trace_callback(traced_sql.append)
+        assert [hit["text"] for hit in core.search_pdf_table_cells("e", limit=2)] == [
+            "Header",
+            "line one\nline two",
+        ]
+        assert any(
+            "FROM pdf_table_cells" in statement and "LIMIT 2" in statement
+            for statement in traced_sql
+        )
         assert core.search_pdf_table_cells("  ") == []
         with pytest.raises(QueryCoreError, match="positive integer"):
             core.search_pdf_table_cells("e", limit=-1)
@@ -240,26 +256,6 @@ def test_pdf_table_read_api_distinguishes_legacy_and_empty_capability(
         assert core.get_pdf_table("unknown") is None
         assert core.get_pdf_table_cell("unknown") is None
         assert core.search_pdf_table_cells("anything") == []
-
-
-@pytest.mark.parametrize("damage", ["span_ref", "cell_text"])
-def test_v2_table_rejects_malformed_source_traceability(
-    tmp_path: Path, damage: str
-) -> None:
-    _source, knowledge, _database = _table_bundle(tmp_path)
-    sidecar_path = knowledge / "pages/p0001.json"
-    sidecar = json.loads(sidecar_path.read_text())
-    cell = sidecar["tables"][0]["cells"][0]
-    if damage == "span_ref":
-        cell["span_refs"][0]["span_index"] = 999
-        message = "span_ref does not resolve"
-    else:
-        cell["text"] = "not authoritative"
-        message = "does not match authoritative source spans"
-    sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
-    with pytest.raises(QueryCoreError, match=message):
-        build_pdf_database(tmp_path, knowledge, tmp_path / "invalid.sqlite")
-
 
 def test_validate_rejects_cross_cell_span_relation(tmp_path: Path) -> None:
     _source, _knowledge, database = _table_bundle(tmp_path)

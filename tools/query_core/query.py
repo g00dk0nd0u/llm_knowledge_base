@@ -839,9 +839,9 @@ class QueryCore:
         }
 
     def _pdf_cell_rows(
-        self, where: str, values: tuple[Any, ...]
+        self, where: str, values: tuple[Any, ...], *, limit: int | None = None
     ) -> list[dict[str, Any]]:
-        return self._rows(
+        sql = (
             "SELECT c.id AS cell_id,c.*,t.id AS table_id,t.order_index AS table_order_index,"
             "t.row_count,t.column_count,t.x_min AS table_x_min,t.y_min AS table_y_min,"
             "t.x_max AS table_x_max,t.y_max AS table_y_max,t.coordinate_space AS table_coordinate_space,"
@@ -851,7 +851,13 @@ class QueryCore:
             "JOIN pdf_tables t ON t.id=c.table_id JOIN pdf_pages p ON p.id=t.page_id "
             "JOIN documents d ON d.id=p.document_id WHERE "
             + where
-            + " ORDER BY d.identity,p.page_number,t.order_index,c.row_index,c.column_index,c.id",
+            + " ORDER BY d.identity,p.page_number,t.order_index,c.row_index,c.column_index,c.id"
+        )
+        if limit is not None:
+            sql += " LIMIT ?"
+            values += (limit,)
+        return self._rows(
+            sql,
             values,
         )
 
@@ -905,7 +911,7 @@ class QueryCore:
             raise QueryCoreError("limit must be a positive integer")
         if not query.strip() or not self.has_pdf_table_capability():
             return []
-        rows = self._pdf_cell_rows("instr(c.text,?)>0", (query,))[:limit]
+        rows = self._pdf_cell_rows("instr(c.text,?)>0", (query,), limit=limit)
         results = []
         for row in rows:
             result = self._pdf_cell(row)
