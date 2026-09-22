@@ -20,6 +20,7 @@ from tools.query_core.project_bundle import (
 )
 from tools.query_core.project_pdf_adapter import build_pdf_project_database
 from tools.query_core.pdf_adapter import build_pdf_database
+from tools.query_core.query import QueryCore
 
 
 def _sha256(path: Path) -> str:
@@ -46,7 +47,7 @@ def _pdf(path: Path, text: str) -> None:
     document.close()
 
 
-def _table_pdf(path: Path) -> None:
+def _table_pdf(path: Path, prefix: str = "Bundle") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     document = fitz.open()
     page = document.new_page(width=400, height=300)
@@ -54,8 +55,12 @@ def _table_pdf(path: Path) -> None:
         page.draw_line((x, 40), (x, 160))
     for y in (40, 100, 160):
         page.draw_line((40, y), (240, y))
-    for point, text in (((55, 70), "Bundle-A"), ((155, 70), "Bundle-B"),
-                        ((55, 130), "Bundle-C"), ((155, 130), "Bundle-D")):
+    for point, text in (
+        ((55, 70), f"{prefix}-Shared"),
+        ((155, 70), f"{prefix}-B"),
+        ((55, 130), f"{prefix}-C"),
+        ((155, 130), f"{prefix}-D"),
+    ):
         page.insert_text(point, text)
     document.save(path)
     document.close()
@@ -133,11 +138,73 @@ def test_actual_table_rows_survive_project_bundle_round_trip(tmp_path: Path) -> 
             assert expected and actual == expected
         assert packaged.execute(
             "SELECT text,x_min,y_min,x_max,y_max FROM pdf_table_cells "
-            "WHERE text='Bundle-A'"
+            "WHERE text='Bundle-Shared'"
         ).fetchone() == original.execute(
             "SELECT text,x_min,y_min,x_max,y_max FROM pdf_table_cells "
-            "WHERE text='Bundle-A'"
+            "WHERE text='Bundle-Shared'"
         ).fetchone()
+
+
+def test_multi_document_table_api_and_project_bundle_round_trip(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    _table_pdf(root / "projects/example/source/z.pdf", "Zulu")
+    _table_pdf(root / "projects/example/source/a.pdf", "Alpha")
+    process_all(root)
+    database = build_pdf_project_database(
+        root, Path("projects/example"), tmp_path / "multi-table.sqlite"
+    )
+
+    with QueryCore(database) as core:
+        ordinary_text = core.search_text("Shared")
+        ordinary_pdf_text = core.search_pdf_text("Shared")
+        assert core.has_pdf_table_capability() is True
+        tables = core.list_pdf_tables()
+        identities = [item["document"]["identity"] for item in tables]
+        assert identities == [
+            "projects/example/source/a.pdf",
+            "projects/example/source/z.pdf",
+        ]
+        assert [
+            item["document"]["identity"]
+            for item in core.list_pdf_tables(document_identity=identities[1])
+        ] == [identities[1]]
+        hits = core.search_pdf_table_cells("Shared")
+        assert [item["text"] for item in hits] == ["Alpha-Shared", "Zulu-Shared"]
+        assert [item["document"]["identity"] for item in hits] == identities
+        details = [core.get_pdf_table(item["table_id"]) for item in tables]
+        assert all(item is not None and len(item["cells"]) == 4 for item in details)
+        cells = [core.get_pdf_table_cell(item["cell_id"]) for item in hits]
+        assert [item["document"]["identity"] for item in cells] == identities
+        assert all(item["pdf_page"] == 1 and item["source_spans"] for item in cells)
+        assert core.search_text("Shared") == ordinary_text
+        assert core.search_pdf_text("Shared") == ordinary_pdf_text
+        assert len(ordinary_text) == len(ordinary_pdf_text) == 2
+        representative = hits[0]
+
+    output = tmp_path / "multi-table-bundle"
+    package_pdf_project_bundle(root, Path("projects/example"), database, output)
+    assert inspect_pdf_project_bundle(output)["bundle_format"] == BUNDLE_FORMAT
+    with QueryCore(project_bundle_database(output)) as core:
+        assert core.has_pdf_table_capability() is True
+        tables = core.list_pdf_tables()
+        detail = core.get_pdf_table(tables[0]["table_id"])
+        hits = core.search_pdf_table_cells("Shared")
+        assert detail is not None
+        assert {
+            "table_id": hits[0]["table"]["table_id"],
+            "cell_id": hits[0]["cell_id"],
+            "document": hits[0]["document"]["identity"],
+            "pdf_page": hits[0]["pdf_page"],
+            "bbox": hits[0]["bbox"],
+            "source_spans": hits[0]["source_spans"],
+        } == {
+            "table_id": representative["table"]["table_id"],
+            "cell_id": representative["cell_id"],
+            "document": representative["document"]["identity"],
+            "pdf_page": representative["pdf_page"],
+            "bbox": representative["bbox"],
+            "source_spans": representative["source_spans"],
+        }
 
 
 def test_synthetic_v2_bundle_round_trip_search_and_generation_binding(
