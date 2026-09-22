@@ -691,6 +691,231 @@ class QueryCore:
     def _rows(self, sql: str, values: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         return [dict(row) for row in self.connection.execute(sql, values)]
 
+    def has_pdf_table_capability(self) -> bool:
+        """Return whether this v2 payload includes the optional PDF table schema."""
+        tables = {
+            row["name"]
+            for row in self.connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        return PDF_TABLE_TABLES <= tables
+
+    @staticmethod
+    def _pdf_table_navigation(
+        row: dict[str, Any], *, source_kind: str, source_id: str
+    ) -> dict[str, Any]:
+        bbox = [row[key] for key in ("x_min", "y_min", "x_max", "y_max")]
+        return {
+            "document": {
+                "id": row["document_id"],
+                "identity": row["document_identity"],
+                "source_filename": row["source_filename"],
+            },
+            "sheet_id": None,
+            "sheet_number": None,
+            "sheet_name": None,
+            "pdf_page": row["pdf_page"],
+            "view_id": None,
+            "view_name": None,
+            "bbox": bbox,
+            "coordinate_space": row["coordinate_space"],
+            "bbox_quality": None,
+            "link_instance_id": None,
+            "provenance": row["provenance"],
+            "source_kind": source_kind,
+            "source_id": source_id,
+            "can_zoom": True,
+        }
+
+    @staticmethod
+    def _pdf_document(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["document_id"],
+            "identity": row["document_identity"],
+            "source_filename": row["source_filename"],
+            "source_sha256": row["source_sha256"],
+        }
+
+    def _pdf_table_summary(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "table_id": row["table_id"],
+            "document": self._pdf_document(row),
+            "pdf_page": row["pdf_page"],
+            "order_index": row["order_index"],
+            "row_count": row["row_count"],
+            "column_count": row["column_count"],
+            "bbox": [row[key] for key in ("x_min", "y_min", "x_max", "y_max")],
+            "coordinate_space": row["coordinate_space"],
+            "provenance": row["provenance"],
+            "extraction": {
+                "detection_method": row["detection_method"],
+                "algorithm_version": row["algorithm_version"],
+                "library": row["library"],
+                "library_version": row["library_version"],
+            },
+            "navigation": self._pdf_table_navigation(
+                row, source_kind="pdf_table", source_id=row["table_id"]
+            ),
+        }
+
+    def _pdf_table_rows(
+        self, where: str = "", values: tuple[Any, ...] = ()
+    ) -> list[dict[str, Any]]:
+        return self._rows(
+            "SELECT t.id AS table_id,t.*,p.page_number AS pdf_page,"
+            "d.id AS document_id,d.identity AS document_identity,"
+            "d.source_filename,d.source_sha256 FROM pdf_tables t "
+            "JOIN pdf_pages p ON p.id=t.page_id "
+            "JOIN documents d ON d.id=p.document_id "
+            + where
+            + " ORDER BY d.identity,p.page_number,t.order_index,t.id",
+            values,
+        )
+
+    def list_pdf_tables(
+        self, document_identity: str | None = None, pdf_page: int | None = None
+    ) -> list[dict[str, Any]]:
+        """List accepted PDF tables in deterministic document reading order."""
+        if pdf_page is not None and (
+            isinstance(pdf_page, bool) or not isinstance(pdf_page, int) or pdf_page < 1
+        ):
+            raise QueryCoreError("pdf_page must be a positive integer")
+        if not self.has_pdf_table_capability():
+            return []
+        clauses, values = [], []
+        if document_identity is not None:
+            clauses.append("d.identity=?")
+            values.append(document_identity)
+        if pdf_page is not None:
+            clauses.append("p.page_number=?")
+            values.append(pdf_page)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        return [
+            self._pdf_table_summary(row)
+            for row in self._pdf_table_rows(where, tuple(values))
+        ]
+
+    def _pdf_cell_source_spans(self, cell_id: str) -> list[dict[str, Any]]:
+        rows = self._rows(
+            "SELECT s.id AS span_id,s.text,s.x_min,s.y_min,s.x_max,s.y_max,"
+            "s.coordinate_space,s.provenance,s.order_index AS span_index,"
+            "l.order_index AS line_index,b.order_index AS block_index "
+            "FROM pdf_table_cell_spans cs JOIN pdf_text_spans s ON s.id=cs.span_id "
+            "JOIN pdf_text_lines l ON l.id=s.line_id "
+            "JOIN pdf_text_blocks b ON b.id=l.block_id WHERE cs.cell_id=? "
+            "ORDER BY cs.order_index",
+            (cell_id,),
+        )
+        return [
+            {
+                "span_id": row["span_id"],
+                "text": row["text"],
+                "source_ref": {
+                    key: row[key] for key in ("block_index", "line_index", "span_index")
+                },
+                "bbox": [row[key] for key in ("x_min", "y_min", "x_max", "y_max")],
+                "coordinate_space": row["coordinate_space"],
+                "provenance": row["provenance"],
+            }
+            for row in rows
+        ]
+
+    def _pdf_cell(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "cell_id": row["cell_id"],
+            "row_index": row["row_index"],
+            "column_index": row["column_index"],
+            "row_span": row["row_span"],
+            "column_span": row["column_span"],
+            "text": row["text"],
+            "bbox": [row[key] for key in ("x_min", "y_min", "x_max", "y_max")],
+            "coordinate_space": row["coordinate_space"],
+            "provenance": row["provenance"],
+            "source_spans": self._pdf_cell_source_spans(row["cell_id"]),
+            "navigation": self._pdf_table_navigation(
+                row, source_kind="pdf_table_cell", source_id=row["cell_id"]
+            ),
+        }
+
+    def _pdf_cell_rows(
+        self, where: str, values: tuple[Any, ...]
+    ) -> list[dict[str, Any]]:
+        return self._rows(
+            "SELECT c.id AS cell_id,c.*,t.id AS table_id,t.order_index AS table_order_index,"
+            "t.row_count,t.column_count,t.x_min AS table_x_min,t.y_min AS table_y_min,"
+            "t.x_max AS table_x_max,t.y_max AS table_y_max,t.coordinate_space AS table_coordinate_space,"
+            "t.provenance AS table_provenance,t.detection_method,t.algorithm_version,t.library,t.library_version,"
+            "p.page_number AS pdf_page,d.id AS document_id,d.identity AS document_identity,"
+            "d.source_filename,d.source_sha256 FROM pdf_table_cells c "
+            "JOIN pdf_tables t ON t.id=c.table_id JOIN pdf_pages p ON p.id=t.page_id "
+            "JOIN documents d ON d.id=p.document_id WHERE "
+            + where
+            + " ORDER BY d.identity,p.page_number,t.order_index,c.row_index,c.column_index,c.id",
+            values,
+        )
+
+    def _table_row_from_cell(self, row: dict[str, Any]) -> dict[str, Any]:
+        table = dict(row)
+        table.update(
+            order_index=row["table_order_index"],
+            x_min=row["table_x_min"],
+            y_min=row["table_y_min"],
+            x_max=row["table_x_max"],
+            y_max=row["table_y_max"],
+            coordinate_space=row["table_coordinate_space"],
+            provenance=row["table_provenance"],
+        )
+        return table
+
+    def get_pdf_table(self, table_id: str) -> dict[str, Any] | None:
+        """Return one accepted PDF table and its row-major cells."""
+        if not self.has_pdf_table_capability():
+            return None
+        rows = self._pdf_table_rows(" WHERE t.id=?", (table_id,))
+        if not rows:
+            return None
+        result = self._pdf_table_summary(rows[0])
+        result["cells"] = [
+            self._pdf_cell(row) for row in self._pdf_cell_rows("t.id=?", (table_id,))
+        ]
+        return result
+
+    def get_pdf_table_cell(self, cell_id: str) -> dict[str, Any] | None:
+        """Return one table cell, its source spans, and containing table summary."""
+        if not self.has_pdf_table_capability():
+            return None
+        rows = self._pdf_cell_rows("c.id=?", (cell_id,))
+        if not rows:
+            return None
+        row = rows[0]
+        result = self._pdf_cell(row)
+        result.update(
+            document=self._pdf_document(row),
+            pdf_page=row["pdf_page"],
+            table=self._pdf_table_summary(self._table_row_from_cell(row)),
+        )
+        return result
+
+    def search_pdf_table_cells(
+        self, query: str, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Search cell text directly; ``limit`` must be a positive integer."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise QueryCoreError("limit must be a positive integer")
+        if not query.strip() or not self.has_pdf_table_capability():
+            return []
+        rows = self._pdf_cell_rows("instr(c.text,?)>0", (query,))[:limit]
+        results = []
+        for row in rows:
+            result = self._pdf_cell(row)
+            table = self._pdf_table_summary(self._table_row_from_cell(row))
+            result.update(
+                document=self._pdf_document(row), pdf_page=row["pdf_page"], table=table
+            )
+            results.append(result)
+        return results
+
     def search_text(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
         if not query.strip():
             return []

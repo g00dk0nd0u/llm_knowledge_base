@@ -39,7 +39,7 @@ def parser() -> argparse.ArgumentParser:
     search.add_argument("source", type=Path)
     search.add_argument("query")
     build_pdf = commands.add_parser(
-        "build-pdf", help="build Query Core from one PDF Pipeline v1 document"
+        "build-pdf", help="build Query Core from one PDF Pipeline v1 or v2 document"
     )
     build_pdf.add_argument("--repo-root", type=Path, default=Path("."))
     build_pdf.add_argument("knowledge_directory", type=Path)

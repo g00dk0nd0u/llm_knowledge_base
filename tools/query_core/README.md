@@ -248,8 +248,11 @@ python -m tools.query_core build-pdf --repo-root . \
 ```
 
 Pipeline v2 is the current producer; Pipeline v1 remains supported for legacy inputs.
-Additive table fields are ignored and are not persisted. Marker, declared version, and
-`created_from` generation must agree.
+Its conservatively accepted ruled tables are persisted as an optional Query Core v2
+capability. Source PDF spans remain authoritative evidence: every non-empty derived
+cell traces back to ordered `pdf_text_spans`. Ordinary FTS remains source-text-only;
+table text is not duplicated into `search_content` or `search_fts`. Marker, declared
+version, and `created_from` generation must agree.
 
 The additive `pdf_text_blocks`, `pdf_text_lines`, and `pdf_text_spans` tables retain
 pipeline order, text, bboxes, provenance, and `pdf_points_top_left` coordinates.
@@ -257,6 +260,16 @@ Block text is indexed as `pdf_text_block`; `QueryCore.search_pdf_text()` returns
 source document identity and SHA, one-based PDF page, bbox, and the standard
 viewer-neutral evidence navigation descriptor. Databases created before these
 optional PDF-native tables remain readable.
+
+`QueryCore.has_pdf_table_capability()` distinguishes those legacy tableless v2
+databases from current databases containing zero accepted tables. The read-only APIs
+`list_pdf_tables(document_identity=None, pdf_page=None)`, `get_pdf_table(table_id)`,
+`get_pdf_table_cell(cell_id)`, and `search_pdf_table_cells(query, limit=20)` expose
+deterministically ordered tables, cells, authoritative span links, and viewer-neutral
+navigation. Cell search is a direct Unicode substring search, not FTS, and rejects a
+non-positive or non-integer `limit` with `QueryCoreError`. This capability makes no
+header or other semantic inference and does not yet support borderless, partially
+ruled, or merged-cell tables.
 
 ## Build or incrementally update a PDF project
 

@@ -102,6 +102,144 @@ def test_v2_ruled_table_persists_authoritative_cells_and_round_trips(tmp_path: P
     extracted = extract_payload(enhanced, tmp_path / "table-extracted.sqlite")
     with sqlite3.connect(extracted) as connection:
         assert connection.execute("SELECT count(*) FROM pdf_tables").fetchone()[0] == 1
+    with QueryCore(extracted) as core:
+        assert core.has_pdf_table_capability() is True
+        assert [item["row_count"] for item in core.list_pdf_tables()] == [2]
+
+
+@pytest.mark.parametrize("damage", ["span_ref", "cell_text"])
+def test_v2_table_rejects_malformed_source_traceability(
+    tmp_path: Path, damage: str
+) -> None:
+    _source, knowledge, _database = _table_bundle(tmp_path)
+    sidecar_path = knowledge / "pages/p0001.json"
+    sidecar = json.loads(sidecar_path.read_text())
+    cell = sidecar["tables"][0]["cells"][0]
+    if damage == "span_ref":
+        cell["span_refs"][0]["span_index"] = 999
+        message = "span_ref does not resolve"
+    else:
+        cell["text"] = "not authoritative"
+        message = "does not match authoritative source spans"
+    sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+    with pytest.raises(QueryCoreError, match=message):
+        build_pdf_database(tmp_path, knowledge, tmp_path / "invalid.sqlite")
+
+
+def test_pdf_table_read_api_preserves_structure_traceability_and_search(
+    tmp_path: Path,
+) -> None:
+    _source, _knowledge, database = _table_bundle(tmp_path)
+    with sqlite3.connect(database) as connection:
+        table_id = connection.execute("SELECT id FROM pdf_tables").fetchone()[0]
+        cell_ids = dict(
+            connection.execute(
+                "SELECT text,id FROM pdf_table_cells ORDER BY row_index,column_index"
+            )
+        )
+        ordinary_counts = tuple(
+            connection.execute("SELECT count(*) FROM " + table).fetchone()[0]
+            for table in ("search_content", "search_fts")
+        )
+
+    with QueryCore(database) as core:
+        assert core.has_pdf_table_capability() is True
+        listed = core.list_pdf_tables()
+        assert [item["table_id"] for item in listed] == [table_id]
+        assert core.list_pdf_tables(document_identity="unknown") == []
+        assert core.list_pdf_tables(pdf_page=2) == []
+        assert (
+            core.list_pdf_tables(
+                document_identity="projects/example/source/table.pdf", pdf_page=1
+            )
+            == listed
+        )
+        with pytest.raises(QueryCoreError, match="positive integer"):
+            core.list_pdf_tables(pdf_page=True)
+
+        table = core.get_pdf_table(table_id)
+        assert table is not None
+        assert table["bbox"] == table["navigation"]["bbox"]
+        assert table["navigation"]["source_kind"] == "pdf_table"
+        assert [
+            (cell["row_index"], cell["column_index"], cell["text"])
+            for cell in table["cells"]
+        ] == [
+            (0, 0, "Header"),
+            (0, 1, "日本語"),
+            (1, 0, "line one\nline two"),
+            (1, 1, ""),
+        ]
+        assert table["cells"][-1]["source_spans"] == []
+        japanese = core.get_pdf_table_cell(cell_ids["日本語"])
+        assert japanese is not None
+        assert japanese["table"]["table_id"] == table_id
+        assert japanese["navigation"]["source_kind"] == "pdf_table_cell"
+        assert japanese["bbox"] == japanese["navigation"]["bbox"]
+        span = japanese["source_spans"][0]
+        assert span["span_id"]
+        assert span["source_ref"] == {
+            "block_index": 0,
+            "line_index": 1,
+            "span_index": 0,
+        }
+        assert span["text"] == "日本語"
+        assert span["provenance"] == "embedded_pdf_text"
+        assert len(span["bbox"]) == 4
+
+        assert [hit["text"] for hit in core.search_pdf_table_cells("日本")] == [
+            "日本語"
+        ]
+        assert [hit["text"] for hit in core.search_pdf_table_cells("one\nline")] == [
+            "line one\nline two"
+        ]
+        assert [hit["text"] for hit in core.search_pdf_table_cells("e", limit=1)] == [
+            "Header"
+        ]
+        assert core.search_pdf_table_cells("  ") == []
+        with pytest.raises(QueryCoreError, match="positive integer"):
+            core.search_pdf_table_cells("e", limit=-1)
+        assert core.get_pdf_table("unknown") is None
+        assert core.get_pdf_table_cell("unknown") is None
+        assert len(core.search_pdf_text("Header")) == 1
+
+    with sqlite3.connect(database) as connection:
+        assert (
+            tuple(
+                connection.execute("SELECT count(*) FROM " + table).fetchone()[0]
+                for table in ("search_content", "search_fts")
+            )
+            == ordinary_counts
+        )
+
+
+def test_pdf_table_read_api_distinguishes_legacy_and_empty_capability(
+    tmp_path: Path,
+) -> None:
+    _source, _knowledge, database = _table_bundle(tmp_path)
+    empty = tmp_path / "empty.sqlite"
+    shutil.copyfile(database, empty)
+    with sqlite3.connect(empty) as connection:
+        connection.execute("DELETE FROM pdf_table_cell_spans")
+        connection.execute("DELETE FROM pdf_table_cells")
+        connection.execute("DELETE FROM pdf_tables")
+    with QueryCore(empty) as core:
+        assert core.has_pdf_table_capability() is True
+        assert core.list_pdf_tables() == []
+        assert core.search_pdf_table_cells("anything") == []
+
+    legacy = tmp_path / "legacy.sqlite"
+    shutil.copyfile(database, legacy)
+    with sqlite3.connect(legacy) as connection:
+        connection.execute("DROP TABLE pdf_table_cell_spans")
+        connection.execute("DROP TABLE pdf_table_cells")
+        connection.execute("DROP TABLE pdf_tables")
+    with QueryCore(legacy) as core:
+        assert core.has_pdf_table_capability() is False
+        assert core.list_pdf_tables() == []
+        assert core.get_pdf_table("unknown") is None
+        assert core.get_pdf_table_cell("unknown") is None
+        assert core.search_pdf_table_cells("anything") == []
 
 
 @pytest.mark.parametrize("damage", ["span_ref", "cell_text"])
