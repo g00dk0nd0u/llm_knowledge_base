@@ -23,6 +23,20 @@ def _pdf(path: Path, text: str) -> None:
     document.close()
 
 
+def _table_pdf(path: Path, prefix: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    document = fitz.open()
+    page = document.new_page(width=400, height=300)
+    for x in (40, 140, 240):
+        page.draw_line((x, 40), (x, 160))
+    for y in (40, 100, 160):
+        page.draw_line((40, y), (240, y))
+    for point, suffix in (((55, 70), "1"), ((155, 70), "2"), ((55, 130), "3"), ((155, 130), "4")):
+        page.insert_text(point, f"{prefix}-{suffix}")
+    document.save(path)
+    document.close()
+
+
 @pytest.fixture
 def project(tmp_path: Path) -> tuple[Path, Path]:
     _pdf(tmp_path / "projects/example/source/a.pdf", "alpha old searchable")
@@ -88,6 +102,73 @@ def _canonical_tables(database: Path) -> dict[str, list[tuple]]:
                 f"SELECT {','.join(columns)} FROM {table} ORDER BY {order_by}"
             ).fetchall()
     return result
+
+
+def _document_table_rows(database: Path, identity: str) -> dict[str, list[tuple]]:
+    with sqlite3.connect(database) as connection:
+        document_id = connection.execute(
+            "SELECT id FROM documents WHERE identity=?", (identity,)
+        ).fetchone()[0]
+        return {
+            "pdf_tables": connection.execute(
+                "SELECT t.* FROM pdf_tables t JOIN pdf_pages p ON p.id=t.page_id "
+                "WHERE p.document_id=? ORDER BY t.id", (document_id,)
+            ).fetchall(),
+            "pdf_table_cells": connection.execute(
+                "SELECT c.* FROM pdf_table_cells c JOIN pdf_tables t ON t.id=c.table_id "
+                "JOIN pdf_pages p ON p.id=t.page_id WHERE p.document_id=? ORDER BY c.id",
+                (document_id,),
+            ).fetchall(),
+            "pdf_table_cell_spans": connection.execute(
+                "SELECT l.* FROM pdf_table_cell_spans l JOIN pdf_table_cells c ON c.id=l.cell_id "
+                "JOIN pdf_tables t ON t.id=c.table_id JOIN pdf_pages p ON p.id=t.page_id "
+                "WHERE p.document_id=? ORDER BY l.cell_id,l.order_index", (document_id,)
+            ).fetchall(),
+        }
+
+
+def test_real_tables_incremental_update_matches_full_rebuild(tmp_path: Path) -> None:
+    source = tmp_path / "projects/example/source"
+    for name, prefix in (("a.pdf", "old-a"), ("b.pdf", "stable-b"), ("d.pdf", "removed-d")):
+        _table_pdf(source / name, prefix)
+    process_all(tmp_path)
+    database = build_pdf_project_database(
+        tmp_path, Path("projects/example"), tmp_path / "project-tables.sqlite"
+    )
+    with sqlite3.connect(database) as connection:
+        assert all(connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] > 0
+                   for table in ("pdf_tables", "pdf_table_cells", "pdf_table_cell_spans"))
+    stable_before = _document_table_rows(database, "projects/example/source/b.pdf")
+    old_a = _document_table_rows(database, "projects/example/source/a.pdf")
+    old_d = _document_table_rows(database, "projects/example/source/d.pdf")
+
+    (source / "a.pdf").unlink()
+    _table_pdf(source / "a.pdf", "new-a")
+    _table_pdf(source / "c.pdf", "added-c")
+    (source / "d.pdf").unlink()
+    process_all(tmp_path)
+    result = update_pdf_project_database(tmp_path, Path("projects/example"), database)
+    assert result.changed == ("projects/example/source/a.pdf",)
+    assert result.unchanged == ("projects/example/source/b.pdf",)
+    assert result.added == ("projects/example/source/c.pdf",)
+    assert result.removed == ("projects/example/source/d.pdf",)
+    assert _document_table_rows(database, "projects/example/source/b.pdf") == stable_before
+    new_a = _document_table_rows(database, "projects/example/source/a.pdf")
+    new_c = _document_table_rows(database, "projects/example/source/c.pdf")
+    assert all(new_a.values()) and all(new_c.values())
+    with sqlite3.connect(database) as connection:
+        current_ids = {row[0] for row in connection.execute("SELECT id FROM pdf_tables")}
+        assert current_ids.isdisjoint(row[0] for row in old_a["pdf_tables"])
+        assert current_ids.isdisjoint(row[0] for row in old_d["pdf_tables"])
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+    fresh = build_pdf_project_database(
+        tmp_path, Path("projects/example"), tmp_path / "fresh-tables.sqlite"
+    )
+    incremental = _canonical_tables(database)
+    rebuilt = _canonical_tables(fresh)
+    for table in ("pdf_tables", "pdf_table_cells", "pdf_table_cell_spans"):
+        assert incremental[table] == rebuilt[table]
 
 
 def test_noop_reuses_previous_rows_and_ignores_unchanged_sidecar_damage(

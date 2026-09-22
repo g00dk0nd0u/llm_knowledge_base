@@ -46,6 +46,21 @@ def _pdf(path: Path, text: str) -> None:
     document.close()
 
 
+def _table_pdf(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    document = fitz.open()
+    page = document.new_page(width=400, height=300)
+    for x in (40, 140, 240):
+        page.draw_line((x, 40), (x, 160))
+    for y in (40, 100, 160):
+        page.draw_line((40, y), (240, y))
+    for point, text in (((55, 70), "Bundle-A"), ((155, 70), "Bundle-B"),
+                        ((55, 130), "Bundle-C"), ((155, 130), "Bundle-D")):
+        page.insert_text(point, text)
+    document.save(path)
+    document.close()
+
+
 def _set_project_pipeline_contract(root: Path, version: str) -> None:
     manifest_path = root / "projects/example/manifest.json"
     manifest = json.loads(manifest_path.read_text())
@@ -97,6 +112,32 @@ def test_packages_deterministic_nested_byte_exact_bundle(
     for relative in ("project.sqlite", "sources/z.pdf", "sources/nested/a.pdf"):
         assert (second / relative).read_bytes() == (output / relative).read_bytes()
     assert inspect_pdf_project_bundle(output) == manifest
+
+
+def test_actual_table_rows_survive_project_bundle_round_trip(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    _table_pdf(root / "projects/example/source/table.pdf")
+    process_all(root)
+    database = build_pdf_project_database(
+        root, Path("projects/example"), tmp_path / "tables.sqlite"
+    )
+    output = tmp_path / "table-bundle"
+    package_pdf_project_bundle(root, Path("projects/example"), database, output)
+    assert inspect_pdf_project_bundle(output)["bundle_format"] == BUNDLE_FORMAT
+    resolved = project_bundle_database(output)
+    with sqlite3.connect(database) as original, sqlite3.connect(resolved) as packaged:
+        for table, order in (("pdf_tables", "id"), ("pdf_table_cells", "id"),
+                             ("pdf_table_cell_spans", "cell_id,order_index")):
+            expected = original.execute(f"SELECT * FROM {table} ORDER BY {order}").fetchall()
+            actual = packaged.execute(f"SELECT * FROM {table} ORDER BY {order}").fetchall()
+            assert expected and actual == expected
+        assert packaged.execute(
+            "SELECT text,x_min,y_min,x_max,y_max FROM pdf_table_cells "
+            "WHERE text='Bundle-A'"
+        ).fetchone() == original.execute(
+            "SELECT text,x_min,y_min,x_max,y_max FROM pdf_table_cells "
+            "WHERE text='Bundle-A'"
+        ).fetchone()
 
 
 def test_synthetic_v2_bundle_round_trip_search_and_generation_binding(

@@ -573,7 +573,8 @@ def _validate_pdf_table_rows(connection: sqlite3.Connection) -> None:
     """Validate persisted derived-table integrity beyond SQLite's foreign keys."""
     tables = list(connection.execute(
         "SELECT id,page_id,order_index,row_count,column_count,x_min,y_min,x_max,y_max,"
-        "coordinate_space,provenance,detection_method FROM pdf_tables ORDER BY page_id,order_index"
+        "coordinate_space,provenance,detection_method,algorithm_version,library,library_version "
+        "FROM pdf_tables ORDER BY page_id,order_index"
     ))
     expected_by_page: dict[str, int] = {}
     for table in tables:
@@ -585,6 +586,11 @@ def _validate_pdf_table_rows(connection: sqlite3.Connection) -> None:
                 or table["coordinate_space"] != "pdf_points_top_left"
                 or table["provenance"] != "derived_pdf_table"
                 or table["detection_method"] != "pymupdf_lines_strict"
+                or not isinstance(table["algorithm_version"], str)
+                or not table["algorithm_version"]
+                or table["library"] != "PyMuPDF"
+                or not isinstance(table["library_version"], str)
+                or not table["library_version"]
                 or not all(math.isfinite(table[k]) for k in ("x_min", "y_min", "x_max", "y_max"))
                 or table["x_min"] >= table["x_max"] or table["y_min"] >= table["y_max"]):
             raise QueryCoreError("invalid persisted PDF table")
@@ -604,12 +610,39 @@ def _validate_pdf_table_rows(connection: sqlite3.Connection) -> None:
                     or cell["x_max"] > table["x_max"] or cell["y_max"] > table["y_max"]):
                 raise QueryCoreError("invalid persisted PDF table cell")
             links = list(connection.execute(
-                "SELECT l.order_index,s.text,s.line_id FROM pdf_table_cell_spans l "
-                "JOIN pdf_text_spans s ON s.id=l.span_id WHERE l.cell_id=? ORDER BY l.order_index",
+                "SELECT l.order_index,s.id AS span_id,s.text,s.line_id,s.x_min,s.y_min,"
+                "s.x_max,s.y_max,s.coordinate_space,s.provenance,"
+                "b.page_id,b.order_index AS block_order,n.order_index AS line_order,"
+                "s.order_index AS span_order FROM pdf_table_cell_spans l "
+                "JOIN pdf_text_spans s ON s.id=l.span_id "
+                "JOIN pdf_text_lines n ON n.id=s.line_id "
+                "JOIN pdf_text_blocks b ON b.id=n.block_id "
+                "WHERE l.cell_id=? ORDER BY l.order_index",
                 (cell["id"],),
             ))
             if [link["order_index"] for link in links] != list(range(len(links))):
                 raise QueryCoreError("non-contiguous PDF table cell span order")
+            source_order = [
+                (link["block_order"], link["line_order"], link["span_order"])
+                for link in links
+            ]
+            if source_order != sorted(source_order) or len(set(source_order)) != len(source_order):
+                raise QueryCoreError("non-deterministic PDF table cell span order")
+            for link in links:
+                if (link["page_id"] != table["page_id"]
+                        or link["coordinate_space"] != "pdf_points_top_left"
+                        or link["provenance"] != "embedded_pdf_text"
+                        or not all(math.isfinite(link[key]) for key in
+                                   ("x_min", "y_min", "x_max", "y_max"))
+                        or link["x_min"] >= link["x_max"]
+                        or link["y_min"] >= link["y_max"]
+                        or link["x_min"] < cell["x_min"]
+                        or link["y_min"] < cell["y_min"]
+                        or link["x_max"] > cell["x_max"]
+                        or link["y_max"] > cell["y_max"]):
+                    raise QueryCoreError(
+                        "PDF table cell span is not authoritative for its page and bbox"
+                    )
             groups: list[list[str]] = []
             previous_line = None
             for link in links:
