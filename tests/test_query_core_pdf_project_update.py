@@ -385,6 +385,11 @@ def test_pipeline_generation_is_incremental_compatibility_boundary(
     project: tuple[Path, Path],
 ) -> None:
     root, v1_database = project
+    v1_result = update_pdf_project_database(
+        root, Path("projects/example"), v1_database
+    )
+    assert v1_result.added == v1_result.changed == v1_result.removed == ()
+
     _set_project_pipeline_contract(root, "2")
     with pytest.raises(QueryCoreError, match="FULL REBUILD REQUIRED"):
         update_pdf_project_database(root, Path("projects/example"), v1_database)
@@ -395,3 +400,7 @@ def test_pipeline_generation_is_incremental_compatibility_boundary(
     result = update_pdf_project_database(root, Path("projects/example"), v2_database)
     assert result.added == result.changed == result.removed == ()
     assert validate_database(v2_database)["created_from"] == "pdf-pipeline/2"
+
+    _set_project_pipeline_contract(root, "1")
+    with pytest.raises(QueryCoreError, match="FULL REBUILD REQUIRED"):
+        update_pdf_project_database(root, Path("projects/example"), v2_database)
