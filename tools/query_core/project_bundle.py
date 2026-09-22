@@ -14,12 +14,12 @@ from typing import Any
 from .build import GENERATOR_VERSION, SCHEMA_VERSION
 from .errors import QueryCoreError
 from .pdf_adapter import _project_id, _sha256, _validate_output_location
-from .project_pdf_adapter import PIPELINE_VERSION, _manifest
+from .pdf_pipeline_contract import created_from, require_created_from, require_pipeline_version
+from .project_pdf_adapter import _manifest
 from .project_pdf_update import compare_pdf_project_database
 from .query import validate_database
 
 BUNDLE_FORMAT = "query-core-project-bundle/1"
-_CREATED_FROM = "pdf-pipeline/1"
 _DATABASE_PATH = "project.sqlite"
 
 
@@ -144,13 +144,15 @@ def _lightweight_manifest(directory: Path) -> tuple[dict[str, Any], Path]:
     if directory.is_symlink() or not directory.is_dir():
         raise QueryCoreError("project bundle directory must be a non-symlink directory")
     manifest = _load_manifest(directory)
+    pipeline_version = require_pipeline_version(
+        manifest.get("pipeline_version"), "project bundle pipeline_version"
+    )
     expected = {
         "bundle_format": BUNDLE_FORMAT,
         "binding_mode": "project",
-        "created_from": _CREATED_FROM,
+        "created_from": created_from(pipeline_version),
         "schema_version": SCHEMA_VERSION,
         "generator_version": GENERATOR_VERSION,
-        "pipeline_version": PIPELINE_VERSION,
     }
     for key, value in expected.items():
         if manifest.get(key) != value:
@@ -170,7 +172,7 @@ def _lightweight_manifest(directory: Path) -> tuple[dict[str, Any], Path]:
     metadata_expected = {
         "project_id": manifest.get("project_id"),
         "binding_mode": "project",
-        "created_from": _CREATED_FROM,
+        "created_from": created_from(pipeline_version),
         "schema_version": str(SCHEMA_VERSION),
         "generator_version": GENERATOR_VERSION,
     }
@@ -287,7 +289,7 @@ def package_pdf_project_bundle(
 ) -> Path:
     """Atomically package a current project snapshot as a portable directory."""
     root = Path(repo_root).resolve()
-    project_id, entries = _manifest(root, project_directory)
+    project_id, pipeline_version, entries = _manifest(root, project_directory)
     project = (root / "projects" / project_id).resolve()
     output = Path(output)
     _validate_output_location(
@@ -300,6 +302,11 @@ def package_pdf_project_bundle(
     report = compare_pdf_project_database(root, project_directory, database)
     if report.added or report.changed or report.removed:
         raise QueryCoreError("project Query Core is stale; build or update it first")
+    database_metadata = validate_database(database)
+    require_created_from(
+        database_metadata.get("created_from"), pipeline_version,
+        "project bundle database created_from",
+    )
 
     documents: list[dict[str, Any]] = []
     folded: set[str] = set()
@@ -346,10 +353,10 @@ def package_pdf_project_bundle(
             "bundle_format": BUNDLE_FORMAT,
             "project_id": project_id,
             "binding_mode": "project",
-            "created_from": _CREATED_FROM,
+            "created_from": created_from(pipeline_version),
             "schema_version": SCHEMA_VERSION,
             "generator_version": GENERATOR_VERSION,
-            "pipeline_version": PIPELINE_VERSION,
+            "pipeline_version": pipeline_version,
             "database": {"path": _DATABASE_PATH, "sha256": database_sha},
             "documents": documents,
         }

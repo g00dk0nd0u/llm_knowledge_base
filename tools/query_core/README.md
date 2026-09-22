@@ -236,7 +236,8 @@ See [`REVIT_2026_MAPPING.md`](REVIT_2026_MAPPING.md) for the Phase B extraction 
 ## Build one PDF Pipeline document
 
 `build-pdf` consumes one pipeline-owned knowledge directory (`document.json`, its
-declared `pages/pNNNN.json` sidecars, and `.pdf-pipeline-v1`) and writes one
+declared `pages/pNNNN.json` sidecars, and the matching `.pdf-pipeline-v1` or
+`.pdf-pipeline-v2` marker) and writes one
 single-document Query Core database. It does not scan sibling documents or extract
 the PDF again. The adapter verifies the logical document/page identities, page
 metadata, text hierarchy, and the current source PDF byte hash before building.
@@ -245,6 +246,10 @@ metadata, text hierarchy, and the current source PDF byte hash before building.
 python -m tools.query_core build-pdf --repo-root . \
   projects/example/knowledge/example--0123456789ab artifacts/example.sqlite
 ```
+
+Pipeline v1 remains the current producer. Pipeline v2 consumption is enabled only as
+consumer-first compatibility preparation: additive table fields are ignored and are
+not persisted. Marker, declared version, and `created_from` generation must agree.
 
 The additive `pdf_text_blocks`, `pdf_text_lines`, and `pdf_text_spans` tables retain
 pipeline order, text, bboxes, provenance, and `pdf_points_top_left` coordinates.
@@ -256,7 +261,9 @@ optional PDF-native tables remain readable.
 ## Build or incrementally update a PDF project
 
 `build-pdf-project` consumes the current project manifest and strictly reparses every
-owned PDF Pipeline v1 document into a fresh project-bound Query Core. It is the
+owned PDF Pipeline v1 or v2 document into a fresh project-bound Query Core. A project
+must use one generation consistently, and incremental updates require the database
+`created_from` generation to match. It is the
 correctness-reference full rebuild.
 
 ```bash

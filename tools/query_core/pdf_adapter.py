@@ -1,4 +1,4 @@
-"""Strict single-document adapter from PDF Pipeline v1 to Query Core v2."""
+"""Strict single-document adapter from supported PDF Pipeline versions."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from typing import Any
 
 from .build import build_database
 from .errors import QueryCoreError
+from .pdf_pipeline_contract import created_from, require_matching_marker, require_pipeline_version
 
 
 def _validate_output_location(
@@ -110,11 +111,9 @@ def records_from_pdf_pipeline(
 ) -> dict[str, Any]:
     """Validate and translate exactly one generated knowledge directory."""
     root, directory = Path(repo_root).resolve(), Path(knowledge_directory).resolve()
-    if not (directory / ".pdf-pipeline-v1").is_file():
-        raise QueryCoreError(
-            "knowledge directory lacks .pdf-pipeline-v1 ownership marker"
-        )
     document = _load(directory / "document.json")
+    pipeline_version = require_pipeline_version(document.get("pipeline_version"))
+    require_matching_marker(directory, pipeline_version)
     required = (
         "document_id",
         "source_file",
@@ -123,9 +122,7 @@ def records_from_pdf_pipeline(
         "page_count",
         "pages",
     )
-    if document.get("pipeline_version") != "1" or any(
-        key not in document for key in required
-    ):
+    if any(key not in document for key in required):
         raise QueryCoreError("invalid or unsupported PDF Pipeline document contract")
     identity, revision = document["source_file"], document["source_sha256"]
     source_project_id = _project_id(identity)
@@ -152,7 +149,7 @@ def records_from_pdf_pipeline(
     title = document.get("pdf_metadata", {}).get("title") or Path(identity).name
     records: dict[str, Any] = {
         "project_id": document["project_id"],
-        "created_from": "pdf-pipeline/1",
+        "created_from": created_from(pipeline_version),
         "binding_mode": "single_document",
         "source_document_identity": identity,
         "source_document_sha256": revision,
@@ -225,7 +222,7 @@ def records_from_pdf_pipeline(
                 "crop_x_max": crop[2],
                 "crop_y_max": crop[3],
                 "coordinate_space": "pdf_points_top_left",
-                "provenance": "pdf_pipeline_v1",
+                "provenance": f"pdf_pipeline_v{pipeline_version}",
             }
         )
         blocks = sidecar.get("text_blocks")

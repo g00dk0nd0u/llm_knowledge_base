@@ -38,6 +38,16 @@ def processed_pdf(tmp_path: Path) -> tuple[Path, Path, Path]:
     return tmp_path, source, knowledge
 
 
+def _set_pipeline_contract(knowledge: Path, version: str) -> None:
+    document_path = knowledge / "document.json"
+    document = json.loads(document_path.read_text())
+    document["pipeline_version"] = version
+    document_path.write_text(json.dumps(document), encoding="utf-8")
+    (knowledge / ".pdf-pipeline-v1").unlink(missing_ok=True)
+    (knowledge / ".pdf-pipeline-v2").unlink(missing_ok=True)
+    (knowledge / f".pdf-pipeline-v{version}").touch()
+
+
 def test_single_pdf_build_search_navigation_determinism_and_package(
     processed_pdf: tuple[Path, Path, Path], tmp_path: Path
 ) -> None:
@@ -73,6 +83,7 @@ def test_single_pdf_build_search_navigation_determinism_and_package(
         ).fetchone()[0]
         == counts["pdf_text_blocks"]
     )
+
     assert (
         connection.execute(
             "SELECT count(*) FROM pdf_text_blocks b JOIN pdf_pages p ON p.id=b.page_id WHERE p.page_number=3"
@@ -112,6 +123,45 @@ def test_single_pdf_build_search_navigation_determinism_and_package(
         extract_payload(enhanced, tmp_path / "extracted.sqlite").read_bytes()
         == database.read_bytes()
     )
+
+
+def test_synthetic_v2_build_ignores_additive_tables_and_packages(
+    processed_pdf: tuple[Path, Path, Path], tmp_path: Path
+) -> None:
+    root, source, knowledge = processed_pdf
+    _set_pipeline_contract(knowledge, "2")
+    sidecar_path = knowledge / "pages/p0001.json"
+    sidecar = json.loads(sidecar_path.read_text())
+    sidecar.update(table_extraction={"status": "future"}, tables=[{"dummy": True}])
+    sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+    database = build_pdf_database(root, knowledge, tmp_path / "v2.sqlite")
+    assert validate_database(database)["created_from"] == "pdf-pipeline/2"
+    enhanced = package_pdf(source, database, tmp_path / "v2-enhanced.pdf")
+    assert inspect_pdf(enhanced)["schema_version"] == 2
+
+
+@pytest.mark.parametrize(
+    ("document_version", "markers"),
+    [
+        ("2", ("1",)),
+        ("1", ("2",)),
+        ("1", ("1", "2")),
+        ("1", ("1", "3")),
+        ("3", ("1",)),
+    ],
+)
+def test_rejects_pipeline_version_marker_mismatch(
+    processed_pdf: tuple[Path, Path, Path], tmp_path: Path,
+    document_version: str, markers: tuple[str, ...],
+) -> None:
+    root, _source, knowledge = processed_pdf
+    _set_pipeline_contract(knowledge, document_version)
+    for marker in (knowledge / ".pdf-pipeline-v1", knowledge / ".pdf-pipeline-v2"):
+        marker.unlink(missing_ok=True)
+    for version in markers:
+        (knowledge / f".pdf-pipeline-v{version}").touch()
+    with pytest.raises(QueryCoreError, match="pipeline_version|marker|unowned"):
+        build_pdf_database(root, knowledge, tmp_path / "bad-version.sqlite")
 
 
 def test_single_pdf_build_protects_source_and_knowledge_outputs(
