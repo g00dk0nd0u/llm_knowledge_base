@@ -127,6 +127,68 @@ def _document_table_rows(database: Path, identity: str) -> dict[str, list[tuple]
         }
 
 
+def _legacy_table_project(tmp_path: Path) -> tuple[Path, Path]:
+    source = tmp_path / "projects/example/source"
+    _table_pdf(source / "a.pdf", "legacy-a")
+    process_all(tmp_path)
+    database = build_pdf_project_database(
+        tmp_path, Path("projects/example"), tmp_path / "legacy-project.sqlite"
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute("DROP TABLE pdf_table_cell_spans")
+        connection.execute("DROP TABLE pdf_table_cells")
+        connection.execute("DROP TABLE pdf_tables")
+    assert validate_database(database)["schema_version"] == "2"
+    return source, database
+
+
+def test_legacy_without_table_capability_noop_is_byte_preserving(
+    tmp_path: Path,
+) -> None:
+    _source, database = _legacy_table_project(tmp_path)
+    original = database.read_bytes()
+    result = update_pdf_project_database(
+        tmp_path, Path("projects/example"), database
+    )
+    assert result.added == result.changed == result.removed == ()
+    assert result.unchanged == ("projects/example/source/a.pdf",)
+    assert database.read_bytes() == original
+    with sqlite3.connect(database) as connection:
+        names = {row[0] for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+    assert names.isdisjoint(
+        {"pdf_tables", "pdf_table_cells", "pdf_table_cell_spans"}
+    )
+
+
+@pytest.mark.parametrize("mutation", ["added", "removed"])
+def test_legacy_without_table_capability_mutation_requires_full_rebuild(
+    tmp_path: Path, mutation: str
+) -> None:
+    source, database = _legacy_table_project(tmp_path)
+    if mutation == "added":
+        _table_pdf(source / "b.pdf", "added-b")
+    else:
+        (source / "a.pdf").unlink()
+    process_all(tmp_path)
+    original = database.read_bytes()
+    with pytest.raises(QueryCoreError, match="FULL REBUILD REQUIRED") as error:
+        update_pdf_project_database(tmp_path, Path("projects/example"), database)
+    assert str(error.value) == (
+        "FULL REBUILD REQUIRED: mutating incremental updates require the "
+        "complete PDF table capability"
+    )
+    assert database.read_bytes() == original
+    with sqlite3.connect(database) as connection:
+        names = {row[0] for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+    assert names.isdisjoint(
+        {"pdf_tables", "pdf_table_cells", "pdf_table_cell_spans"}
+    )
+
+
 def test_real_tables_incremental_update_matches_full_rebuild(tmp_path: Path) -> None:
     source = tmp_path / "projects/example/source"
     for name, prefix in (("a.pdf", "old-a"), ("b.pdf", "stable-b"), ("d.pdf", "removed-d")):

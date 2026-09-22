@@ -39,6 +39,11 @@ _RELEVANT_REQUIRES_EMPTY = (
     "geometries",
     "geometry_rtree",
 )
+_PDF_TABLE_CAPABILITY = {
+    "pdf_tables",
+    "pdf_table_cells",
+    "pdf_table_cell_spans",
+}
 
 
 @dataclass(frozen=True)
@@ -272,6 +277,25 @@ def _previous_documents(
     finally:
         if connection is not None:
             connection.close()
+
+
+def _has_pdf_table_capability(database: Path) -> bool:
+    """Report the already-validated optional capability without migrating it."""
+    try:
+        with sqlite3.connect(
+            f"file:{database.resolve()}?mode=ro", uri=True
+        ) as connection:
+            present = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            } & _PDF_TABLE_CAPABILITY
+    except sqlite3.Error as exc:
+        raise QueryCoreError(f"invalid incremental base database: {exc}") from exc
+    if present and present != _PDF_TABLE_CAPABILITY:
+        raise QueryCoreError("incremental base has incomplete PDF table capability")
+    return present == _PDF_TABLE_CAPABILITY
 
 
 def _validate_current_entry(
@@ -552,6 +576,11 @@ def update_pdf_project_database(
     )
     if not (added or changed or removed):
         return result
+    if not _has_pdf_table_capability(database):
+        raise QueryCoreError(
+            "FULL REBUILD REQUIRED: mutating incremental updates require the "
+            "complete PDF table capability"
+        )
 
     database.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(
