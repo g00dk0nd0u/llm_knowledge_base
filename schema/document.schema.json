@@ -5,19 +5,44 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "document_id", "source_file", "source_sha256", "project_id",
-    "page_count", "pipeline_version", "pdf_metadata", "pages"
+    "document_id",
+    "source_file",
+    "source_sha256",
+    "project_id",
+    "page_count",
+    "pipeline_version",
+    "pdf_metadata",
+    "pages"
   ],
   "properties": {
-    "document_id": { "type": "string", "pattern": "^doc-[a-f0-9]{24}$" },
-    "source_file": { "type": "string", "pattern": "^projects/[^/]+/source/.+\\.[Pp][Dd][Ff]$" },
-    "source_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-    "project_id": { "type": "string", "minLength": 1 },
-    "page_count": { "type": "integer", "minimum": 1 },
-    "pipeline_version": { "const": "1" },
+    "document_id": {
+      "type": "string",
+      "pattern": "^doc-[a-f0-9]{24}$"
+    },
+    "source_file": {
+      "type": "string",
+      "pattern": "^projects/[^/]+/source/.+\\.[Pp][Dd][Ff]$"
+    },
+    "source_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "page_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "pipeline_version": {
+      "const": "2"
+    },
     "pdf_metadata": {
       "type": "object",
-      "additionalProperties": { "type": "string" }
+      "additionalProperties": {
+        "type": "string"
+      }
     },
     "pages": {
       "type": "array",
@@ -26,24 +51,76 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "page", "width_points", "height_points", "rotation", "media_box",
-          "crop_box", "coordinate_space", "structured_page", "extraction_status",
-          "text_char_count", "image_count", "drawing_count", "vision_recommended"
+          "page",
+          "width_points",
+          "height_points",
+          "rotation",
+          "media_box",
+          "crop_box",
+          "coordinate_space",
+          "structured_page",
+          "extraction_status",
+          "text_char_count",
+          "image_count",
+          "drawing_count",
+          "vision_recommended"
         ],
         "properties": {
-          "page": { "type": "integer", "minimum": 1 },
-          "width_points": { "type": "number", "exclusiveMinimum": 0 },
-          "height_points": { "type": "number", "exclusiveMinimum": 0 },
-          "rotation": { "enum": [0, 90, 180, 270] },
-          "media_box": { "$ref": "#/$defs/bbox" },
-          "crop_box": { "$ref": "#/$defs/bbox" },
-          "coordinate_space": { "const": "pdf_points_top_left" },
-          "structured_page": { "type": "string", "pattern": "^pages/p[0-9]{4,}\\.json$" },
-          "extraction_status": { "enum": ["extracted", "minimal_text", "no_text"] },
-          "text_char_count": { "type": "integer", "minimum": 0 },
-          "image_count": { "type": "integer", "minimum": 0 },
-          "drawing_count": { "type": "integer", "minimum": 0 },
-          "vision_recommended": { "type": "boolean" }
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "width_points": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "height_points": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "rotation": {
+            "enum": [
+              0,
+              90,
+              180,
+              270
+            ]
+          },
+          "media_box": {
+            "$ref": "#/$defs/bbox"
+          },
+          "crop_box": {
+            "$ref": "#/$defs/bbox"
+          },
+          "coordinate_space": {
+            "const": "pdf_points_top_left"
+          },
+          "structured_page": {
+            "type": "string",
+            "pattern": "^pages/p[0-9]{4,}\\.json$"
+          },
+          "extraction_status": {
+            "enum": [
+              "extracted",
+              "minimal_text",
+              "no_text"
+            ]
+          },
+          "text_char_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "image_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "drawing_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "vision_recommended": {
+            "type": "boolean"
+          }
         }
       }
     }
@@ -52,8 +129,18 @@
     "bbox": {
       "type": "array",
       "prefixItems": [
-        { "type": "number" }, { "type": "number" },
-        { "type": "number" }, { "type": "number" }
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
       ],
       "items": false,
       "minItems": 4

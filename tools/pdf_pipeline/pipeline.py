@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import tempfile
+import math
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -18,7 +19,10 @@ from . import PIPELINE_VERSION
 
 LOW_TEXT_THRESHOLD = 40
 MANY_DRAWINGS_THRESHOLD = 200
-MANAGED_MARKER = ".pdf-pipeline-v1"
+MANAGED_MARKER = ".pdf-pipeline-v2"
+LEGACY_MANAGED_MARKER = ".pdf-pipeline-v1"
+MANAGED_MARKERS = {"1": LEGACY_MANAGED_MARKER, "2": MANAGED_MARKER}
+TABLE_EPSILON = 0.25
 RENDER_ROOTS = frozenset({".tmp", ".cache", "artifacts", "vision", "renders", "tiles"})
 
 
@@ -128,7 +132,7 @@ def _structured_page(
     source_sha256: str,
     extraction_status: str,
     image_count: int,
-    drawing_count: int,
+    drawings: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Preserve embedded text primitives without adding semantic interpretation."""
     extracted = page.get_text("dict", sort=True)
@@ -174,6 +178,8 @@ def _structured_page(
             }
         )
 
+    tables, table_extraction = _extract_tables(page, drawings, blocks)
+
     # get_text("dict") dimensions and text bboxes share PyMuPDF's unrotated,
     # top-left page coordinate system. Rotation is retained separately.
     return {
@@ -189,9 +195,127 @@ def _structured_page(
         "coordinate_space": "pdf_points_top_left",
         "extraction_status": extraction_status,
         "image_count": image_count,
-        "drawing_count": drawing_count,
+        "drawing_count": len(drawings),
         "text_blocks": blocks,
+        "table_extraction": table_extraction,
+        "tables": tables,
     }
+
+
+def _table_metadata(status: str, candidates: int, accepted: int, reasons: dict[str, int]) -> dict[str, Any]:
+    return {
+        "status": status,
+        "algorithm": "pymupdf_lines_strict",
+        "algorithm_version": "1",
+        "library": "PyMuPDF",
+        "library_version": fitz.__version__,
+        "candidate_count": candidates,
+        "accepted_count": accepted,
+        "rejected_count": candidates - accepted,
+        "rejection_counts": dict(sorted(reasons.items())),
+    }
+
+
+def _valid_rect(value: Any) -> bool:
+    return (
+        isinstance(value, (tuple, list))
+        and len(value) == 4
+        and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in value)
+        and value[2] - value[0] > TABLE_EPSILON
+        and value[3] - value[1] > TABLE_EPSILON
+    )
+
+
+def _contains(outer: Any, inner: Any) -> bool:
+    return all((inner[i] >= outer[i] - TABLE_EPSILON if i < 2 else inner[i] <= outer[i] + TABLE_EPSILON) for i in range(4))
+
+
+def _intersects(a: Any, b: Any) -> bool:
+    return min(a[2], b[2]) - max(a[0], b[0]) > TABLE_EPSILON and min(a[3], b[3]) - max(a[1], b[1]) > TABLE_EPSILON
+
+
+def _extract_tables(page: fitz.Page, drawings: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Persist only complete ruled grids; text always comes from existing spans."""
+    usable = any(any(item and item[0] in {"l", "re"} for item in path.get("items", [])) for path in drawings)
+    if not usable:
+        return [], _table_metadata("no_candidates", 0, 0, {})
+    try:
+        rotation = page.rotation
+        try:
+            # Text primitives, drawings, and persisted geometry use unrotated page
+            # coordinates. find_tables() must run in that same space on rotated pages.
+            if rotation:
+                page.set_rotation(0)
+            candidates = sorted(
+                page.find_tables(strategy="lines_strict", use_layout=False, paths=drawings).tables,
+                key=lambda candidate: tuple(candidate.bbox),
+            )
+        finally:
+            if rotation:
+                page.set_rotation(rotation)
+        accepted: list[dict[str, Any]] = []
+        reasons: dict[str, int] = {}
+        spans = [
+            (block["order_index"], line["order_index"], span["order_index"], span)
+            for block in blocks for line in block["lines"] for span in line["spans"]
+            if span["text"]
+        ]
+        for candidate in candidates:
+            reason = None
+            bbox = candidate.bbox
+            rows = candidate.rows
+            if candidate.row_count < 2 or candidate.col_count < 2:
+                reason = "insufficient_dimensions"
+            elif not _valid_rect(bbox) or len(rows) != candidate.row_count or any(len(row.cells) != candidate.col_count for row in rows):
+                reason = "invalid_shape"
+            else:
+                raw_cells = [cell for row in rows for cell in row.cells]
+                if any(cell is None for cell in raw_cells):
+                    reason = "merged_or_missing_cell"
+                elif any(not _valid_rect(cell) or not _contains(bbox, cell) for cell in raw_cells):
+                    reason = "invalid_cell_geometry"
+            if reason is None and any(_intersects(bbox, table["bbox"]) for table in accepted):
+                reason = "overlapping_candidate"
+            cells: list[dict[str, Any]] = []
+            if reason is None:
+                for row_index, row in enumerate(rows):
+                    for column_index, cell_bbox in enumerate(row.cells):
+                        assigned = []
+                        for block_index, line_index, span_index, span in spans:
+                            span_bbox = span["bbox"]
+                            if _intersects(bbox, span_bbox):
+                                containing = [c for r in rows for c in r.cells if c is not None and _contains(c, span_bbox)]
+                                if len(containing) != 1:
+                                    reason = "ambiguous_span_mapping"
+                                    break
+                                if containing[0] == cell_bbox:
+                                    assigned.append((block_index, line_index, span_index, span["text"]))
+                        if reason:
+                            break
+                        line_groups: list[list[str]] = []
+                        previous_line = None
+                        refs = []
+                        for bi, li, si, text in assigned:
+                            key = (bi, li)
+                            if key != previous_line:
+                                line_groups.append([])
+                                previous_line = key
+                            line_groups[-1].append(text)
+                            refs.append({"block_index": bi, "line_index": li, "span_index": si})
+                        cells.append({"row_index": row_index, "column_index": column_index, "row_span": 1, "column_span": 1, "bbox": _bbox(cell_bbox), "text": "\n".join("".join(group) for group in line_groups), "span_refs": refs})
+                    if reason:
+                        break
+            if reason:
+                reasons[reason] = reasons.get(reason, 0) + 1
+            else:
+                accepted.append({"order_index": 0, "bbox": _bbox(bbox), "row_count": candidate.row_count, "column_count": candidate.col_count, "provenance": "derived_pdf_table", "cells": cells})
+        accepted.sort(key=lambda table: tuple(table["bbox"]))
+        for index, table in enumerate(accepted):
+            table["order_index"] = index
+        status = "completed" if candidates else "no_candidates"
+        return accepted, _table_metadata(status, len(candidates), len(accepted), reasons)
+    except Exception:
+        return [], _table_metadata("extraction_error", 0, 0, {"extraction_error": 1})
 
 
 def _build_document(root: Path, project: Path, pdf: Path, destination: Path) -> dict[str, Any]:
@@ -217,9 +341,10 @@ def _build_document(root: Path, project: Path, pdf: Path, destination: Path) -> 
             char_count = len(text)
             image_count = len(page.get_images(full=True))
             try:
-                drawing_count = len(page.get_drawings())
+                drawings = page.get_drawings()
             except Exception:
-                drawing_count = 0
+                drawings = []
+            drawing_count = len(drawings)
             status = _status(char_count)
             vision = (
                 char_count < LOW_TEXT_THRESHOLD
@@ -234,7 +359,7 @@ def _build_document(root: Path, project: Path, pdf: Path, destination: Path) -> 
                 source_sha256=source_hash,
                 extraction_status=status,
                 image_count=image_count,
-                drawing_count=drawing_count,
+                drawings=drawings,
             )
             page_data = {
                 "page": number,
@@ -309,7 +434,7 @@ def _build_document(root: Path, project: Path, pdf: Path, destination: Path) -> 
         for p in pages
     )
     (destination / "index.md").write_text("\n".join(index_lines) + "\n", encoding="utf-8")
-    (destination / MANAGED_MARKER).write_text("managed by pdf pipeline v1\n", encoding="utf-8")
+    (destination / MANAGED_MARKER).write_text("managed by pdf pipeline v2\n", encoding="utf-8")
     return data
 
 
@@ -344,9 +469,11 @@ def _generated_tree_is_valid(
     document_id: str,
     source_file: str,
     source_sha256: str,
+    version: str = PIPELINE_VERSION,
 ) -> bool:
     """Check that a pipeline-owned retrieval tree is complete and internally consistent."""
-    if not (output / MANAGED_MARKER).is_file():
+    marker = MANAGED_MARKERS.get(version)
+    if marker is None or not (output / marker).is_file():
         return False
     document_path = output / "document.json"
     try:
@@ -357,7 +484,7 @@ def _generated_tree_is_valid(
         "document_id": document_id,
         "source_file": source_file,
         "source_sha256": source_sha256,
-        "pipeline_version": PIPELINE_VERSION,
+        "pipeline_version": version,
     }
     if any(data.get(key) != value for key, value in expected.items()):
         return False
@@ -402,6 +529,14 @@ def _generated_tree_is_valid(
         return all(path.is_file() and path.stat().st_size > 0 for path in required)
     except OSError:
         return False
+
+
+def _ownership_version(output: Path) -> str | None:
+    """Return the sole declared owner, rejecting ambiguous marker state."""
+    present = [version for version, marker in MANAGED_MARKERS.items() if (output / marker).is_file()]
+    if len(present) > 1:
+        raise PipelineError(f"ambiguous PDF pipeline ownership markers: {output}")
+    return present[0] if present else None
 
 
 def _rollback_project(
@@ -453,10 +588,18 @@ def process_all(root: Path) -> ProcessResult:
                 doc_id = document_id(source_file)
                 output_rel = f"projects/{project.name}/knowledge/{_slug(pdf, doc_id)}"
                 output = root / output_rel
-                if output.exists() and not (output / MANAGED_MARKER).is_file():
-                    raise PipelineError(
-                        f"refusing to replace unmanaged knowledge directory: {output_rel}"
-                    )
+                if output.exists():
+                    owner = _ownership_version(output)
+                    if owner is None:
+                        raise PipelineError(f"refusing to replace unmanaged knowledge directory: {output_rel}")
+                    try:
+                        owned_document = json.loads((output / "document.json").read_text(encoding="utf-8"))
+                    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                        if owner == "1":
+                            raise PipelineError(f"invalid legacy pipeline-owned knowledge directory: {output_rel}") from exc
+                        owned_document = None
+                    if owned_document is not None and (owned_document.get("pipeline_version") != owner or owned_document.get("document_id") != doc_id or owned_document.get("source_file") != source_file):
+                        raise PipelineError(f"invalid pipeline-owned knowledge directory: {output_rel}")
                 source_hash = _sha256(pdf)
                 previous = old_by_id.get(doc_id)
                 entry = {
@@ -496,7 +639,16 @@ def process_all(root: Path) -> ProcessResult:
                     continue
                 stale = root / stale_rel
                 expected = project / "knowledge"
-                if _inside(stale, expected) and (stale / MANAGED_MARKER).is_file():
+                if _inside(stale, expected) and stale.exists():
+                    owner = _ownership_version(stale)
+                    if owner is None:
+                        continue
+                    try:
+                        stale_document = json.loads((stale / "document.json").read_text(encoding="utf-8"))
+                    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                        raise PipelineError(f"invalid pipeline-owned stale directory: {stale}") from exc
+                    if stale_document.get("pipeline_version") != owner or stale_document.get("document_id") != previous.get("document_id"):
+                        raise PipelineError(f"invalid pipeline-owned stale directory: {stale}")
                     stale_directories.append(stale)
 
             updated = {key: value for key, value in manifest.items() if key != "documents"}

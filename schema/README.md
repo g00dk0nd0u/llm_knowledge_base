@@ -25,7 +25,8 @@ Minimum derived Markdown metadata:
 Unknown values must remain null/empty rather than being inferred without evidence.
 
 `document.schema.json` validates each generated `document.json` file,
-`pdf_page.schema.json` validates PDF Pipeline v1 embedded-text-only page primitives, and
+`pdf_page.schema.json` validates PDF Pipeline v2 embedded-text primitives and conservative
+ruled-table sidecars, and
 `manifest.schema.json` validates reconciled project manifests. The page schema contains
 no OCR, LLM inference, or semantic document classification. All use JSON Schema draft
 2020-12. `python -m pytest` validates synthetic generated examples without real documents.

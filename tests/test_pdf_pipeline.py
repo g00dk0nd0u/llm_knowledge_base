@@ -25,6 +25,26 @@ def make_pdf(path: Path, texts: list[str]) -> None:
     document.close()
 
 
+def make_ruled_table(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    document = fitz.open()
+    page = document.new_page()
+    shape = page.new_shape()
+    for x in (50, 150, 250, 350):
+        shape.draw_line((x, 50), (x, 200))
+    for y in (50, 100, 150, 200):
+        shape.draw_line((50, y), (350, y))
+    shape.finish()
+    shape.commit()
+    values = (("Header", "日本語", ""), ("A", "line one\nline two", "C"), ("D", "E", "F"))
+    for row, cells in enumerate(values):
+        for column, value in enumerate(cells):
+            if value:
+                page.insert_text((60 + column * 100, 75 + row * 50), value, fontname="japan" if value == "日本語" else "helv")
+    document.save(path)
+    document.close()
+
+
 @pytest.fixture
 def repository(tmp_path: Path) -> Path:
     (tmp_path / "projects" / "example" / "source").mkdir(parents=True)
@@ -63,6 +83,95 @@ def test_process_extracts_pages_identity_hash_and_valid_schema(repository: Path)
     page = json.loads((knowledge / "pages/p0001.json").read_text())
     jsonschema.validate(page, json.loads((repository / "schema/pdf_page.schema.json").read_text()))
     jsonschema.validate(manifest, json.loads((repository / "schema/manifest.schema.json").read_text()))
+
+
+def test_ruled_table_uses_source_spans_and_is_deterministic(repository: Path) -> None:
+    pdf = repository / "projects/example/source/table.pdf"
+    make_ruled_table(pdf)
+    process_all(repository)
+    manifest, _document, knowledge = load_outputs(repository)
+    first = (knowledge / "pages/p0001.json").read_bytes()
+    page = json.loads(first)
+
+    assert manifest["pipeline_version"] == "2"
+    assert page["table_extraction"] == {
+        "accepted_count": 1, "algorithm": "pymupdf_lines_strict", "algorithm_version": "1",
+        "candidate_count": 1, "library": "PyMuPDF", "library_version": "1.28.2",
+        "rejected_count": 0, "rejection_counts": {}, "status": "completed",
+    }
+    table = page["tables"][0]
+    assert (table["row_count"], table["column_count"], table["provenance"]) == (3, 3, "derived_pdf_table")
+    assert [cell["text"] for cell in table["cells"]] == [
+        "Header", "日本語", "", "A", "line one\nline two", "C", "D", "E", "F"
+    ]
+    assert all(cell["row_span"] == cell["column_span"] == 1 for cell in table["cells"])
+    assert table["cells"][0]["span_refs"] == [{"block_index": 0, "line_index": 0, "span_index": 0}]
+    assert process_all(repository).unchanged == 1
+    assert (knowledge / "pages/p0001.json").read_bytes() == first
+
+
+def test_aligned_text_without_drawings_has_no_table(repository: Path) -> None:
+    make_pdf(repository / "projects/example/source/prose.pdf", ["A       B       C\nD       E       F"])
+    process_all(repository)
+    _manifest, _document, knowledge = load_outputs(repository)
+    page = json.loads((knowledge / "pages/p0001.json").read_text())
+    assert page["tables"] == []
+    assert page["table_extraction"]["status"] == "no_candidates"
+
+
+def test_rotated_ruled_table_stays_in_page_evidence_coordinates(repository: Path) -> None:
+    pdf = repository / "projects/example/source/rotated-table.pdf"
+    make_ruled_table(pdf)
+    with fitz.open(pdf) as source:
+        source[0].set_rotation(90)
+        source.save(pdf.with_suffix(".rotated.pdf"))
+    pdf.with_suffix(".rotated.pdf").replace(pdf)
+    process_all(repository)
+    _manifest, _document, knowledge = load_outputs(repository)
+    page = json.loads((knowledge / "pages/p0001.json").read_text())
+    assert page["rotation"] == 90
+    assert page["coordinate_space"] == "pdf_points_top_left"
+    assert page["table_extraction"]["accepted_count"] == 1
+    assert page["tables"][0]["bbox"] == [50.0, 50.0, 350.0, 200.0]
+
+
+def test_table_extractor_exception_is_non_fatal(
+    repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pdf = repository / "projects/example/source/table.pdf"
+    make_ruled_table(pdf)
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("environment-dependent details must not be persisted")
+
+    monkeypatch.setattr(fitz.Page, "find_tables", fail)
+    process_all(repository)
+    _manifest, _document, knowledge = load_outputs(repository)
+    page = json.loads((knowledge / "pages/p0001.json").read_text())
+    assert page["text_blocks"]
+    assert page["tables"] == []
+    assert page["table_extraction"]["status"] == "extraction_error"
+    assert page["table_extraction"]["rejection_counts"] == {"extraction_error": 1}
+    assert "environment-dependent" not in (knowledge / "pages/p0001.json").read_text()
+
+
+def test_v1_tree_migrates_to_v2(repository: Path) -> None:
+    pdf = repository / "projects/example/source/sample.pdf"
+    make_pdf(pdf, ["Legacy source text"])
+    process_all(repository)
+    manifest, document, knowledge = load_outputs(repository)
+    (knowledge / ".pdf-pipeline-v2").rename(knowledge / ".pdf-pipeline-v1")
+    document["pipeline_version"] = "1"
+    (knowledge / "document.json").write_text(json.dumps(document), encoding="utf-8")
+    manifest["pipeline_version"] = "1"
+    manifest["documents"][0]["pipeline_version"] = "1"
+    (repository / "projects/example/manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert process_all(repository).processed == 1
+    migrated_manifest, migrated_document, migrated = load_outputs(repository)
+    assert migrated_manifest["pipeline_version"] == migrated_document["pipeline_version"] == "2"
+    assert (migrated / ".pdf-pipeline-v2").is_file()
+    assert not (migrated / ".pdf-pipeline-v1").exists()
 
 
 def test_idempotency_update_and_stale_cleanup(repository: Path) -> None:

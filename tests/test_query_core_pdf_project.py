@@ -69,7 +69,7 @@ def test_project_build_search_hierarchy_determinism_and_package_boundary(
     )
     metadata = validate_database(output)
     assert metadata == {
-        "binding_mode": "project", "created_from": "pdf-pipeline/1",
+        "binding_mode": "project", "created_from": "pdf-pipeline/2",
         "generator_version": "query-core/2.0", "project_id": "example",
         "schema_version": "2",
     }
@@ -102,18 +102,18 @@ def test_project_build_search_hierarchy_determinism_and_package_boundary(
         package_pdf(project / "projects/example/source/a.pdf", output, project / "bad.pdf")
 
 
-def test_synthetic_v2_project_build_and_mixed_version_rejection(project: Path) -> None:
-    _set_project_pipeline_contract(project, "2")
+def test_synthetic_legacy_v1_project_build_and_mixed_version_rejection(project: Path) -> None:
+    _set_project_pipeline_contract(project, "1")
     output = build_pdf_project_database(
         project, Path("projects/example"), project / "v2.sqlite"
     )
-    assert validate_database(output)["created_from"] == "pdf-pipeline/2"
+    assert validate_database(output)["created_from"] == "pdf-pipeline/1"
     with QueryCore(output) as core:
         assert core.search_pdf_text("日本語")
 
     manifest_path = project / "projects/example/manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    manifest["documents"][0]["pipeline_version"] = "1"
+    manifest["documents"][0]["pipeline_version"] = "2"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(QueryCoreError, match="must match project"):
         build_pdf_project_database(project, Path("projects/example"), project / "mixed.sqlite")
@@ -178,7 +178,7 @@ def test_rejects_missing_and_unowned_knowledge_directories(project: Path) -> Non
 
     manifest_path.write_text(json.dumps(original), encoding="utf-8")
     knowledge = project / original["documents"][0]["knowledge_path"]
-    (knowledge / ".pdf-pipeline-v1").unlink()
+    (knowledge / ".pdf-pipeline-v2").unlink()
     with pytest.raises(QueryCoreError, match="knowledge directory is unowned"):
         build_pdf_project_database(
             project, Path("projects/example"), project / "unowned.sqlite"

@@ -1,3 +1,3 @@
 """Deterministic PDF-to-Markdown knowledge pipeline."""
 
-PIPELINE_VERSION = "1"
+PIPELINE_VERSION = "2"

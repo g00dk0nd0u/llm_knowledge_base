@@ -247,9 +247,9 @@ python -m tools.query_core build-pdf --repo-root . \
   projects/example/knowledge/example--0123456789ab artifacts/example.sqlite
 ```
 
-Pipeline v1 remains the current producer. Pipeline v2 consumption is enabled only as
-consumer-first compatibility preparation: additive table fields are ignored and are
-not persisted. Marker, declared version, and `created_from` generation must agree.
+Pipeline v2 is the current producer; Pipeline v1 remains supported for legacy inputs.
+Additive table fields are ignored and are not persisted. Marker, declared version, and
+`created_from` generation must agree.
 
 The additive `pdf_text_blocks`, `pdf_text_lines`, and `pdf_text_spans` tables retain
 pipeline order, text, bboxes, provenance, and `pdf_points_top_left` coordinates.
