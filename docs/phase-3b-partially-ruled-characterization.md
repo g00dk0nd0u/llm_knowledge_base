@@ -111,3 +111,88 @@ Query Core v2 can continue storing the effective method in
 projection or an explicit later contract migration. Incremental updates, Enhanced PDF
 `/1`, Project Query Bundle `/1`, and table query APIs are unchanged. Source spans remain
 authoritative; table structure remains derived evidence.
+
+## Phase 3B-1 Guard Characterization
+
+### Prototype contract and matching
+
+The test-only `evaluate_guarded_repair` runs P0 and one explicit P1 tolerance against
+the same page, cached drawings, and production-order text hierarchy. It does not feed
+the production extractor. Matching uses geometric intersection, never persistence IDs
+or list position: a widened bbox must intersect exactly one P0 candidate. Zero anchors
+is `no_baseline_anchor`; more than one is `multiple_baseline_anchors`. With one anchor,
+the bboxes must agree within the production `TABLE_EPSILON` (0.25 pt), dimensions must
+agree, P0 must have failed specifically with `merged_or_missing_cell`, P0 must contain
+one or more `None` cells, and P1 must pass the complete Phase 3A evaluator with zero
+`None` cells. An already accepted P0 candidate is never replaced.
+
+Because P0 and P1 use the same text hierarchy, equal outer bboxes select the identical
+set of intersecting authoritative source spans. Full Phase 3A acceptance then requires
+each such span to map uniquely to exactly one widened cell. Thus the guard permits no
+text invention, movement, splitting, or semantic inference. Each decision is a plain
+JSON-compatible record containing profile/counts, anchor count, both bboxes and
+dimensions, both missing-cell counts, source-evidence stability, eligibility, and one
+canonical reason. Repeated serialized results are byte-identical.
+
+### Focused matrix
+
+`3x3/1N` means a 3x3 candidate containing one `None` cell; `2x2 + 2x2` means two
+independent candidates. All rows use the matching tolerance shown.
+
+| Fixture | Tolerance | P0 topology | naive P1 topology | anchors | same bbox? | same dimensions? | guard | reason |
+|---|---:|---|---|---:|:---:|:---:|:---:|---|
+| horizontal gap 4 | 4 | 3x3/1N rejected | 3x3 accepted | 1 | yes | yes | accept | `eligible_monotonic_completion` |
+| vertical gap 4 | 4 | 3x3/1N rejected | 3x3 accepted | 1 | yes | yes | accept | `eligible_monotonic_completion` |
+| horizontal / vertical gap 6 | 6 | 3x3/1N rejected | 3x3 accepted | 1 | yes | yes | accept | `eligible_monotonic_completion` |
+| horizontal / vertical gap 9 | 9 | 3x3/1N rejected | 3x3 accepted | 1 | yes | yes | accept | `eligible_monotonic_completion` |
+| horizontal / vertical gap 12 | 12 | 3x3/1N rejected | 3x3 accepted | 1 | yes | yes | accept | `eligible_monotonic_completion` |
+| side-by-side 4 / 6 / 9 / 12 | matching | 2x2 + 2x2 accepted | one 2x5 accepted | 2 | n/a | no | reject | `multiple_baseline_anchors` |
+| stacked 4 / 6 / 9 / 12 | matching | 2x2 + 2x2 accepted | one 5x2 accepted | 2 | n/a | no | reject | `multiple_baseline_anchors` |
+| broken beside intact | 4 | rejected 3x3/1N + accepted 3x3 | two 3x3 accepted | 1 each | yes | yes | repair broken only | `eligible_monotonic_completion`; intact is `baseline_already_accepted` |
+| two tables plus broken rule, aligned at 4 pt | 4 | rejected 3x3/1N + accepted 3x3 | one 3x7 candidate | 2 | n/a | no | reject | `multiple_baseline_anchors` |
+| two 4 pt gaps on one separator | 4 | 3x3/2N rejected | 3x3 accepted | 1 | yes | yes | accept | `eligible_monotonic_completion` |
+| 4 pt gaps on two separators | 4 | 3x3/4N rejected | 3x3 accepted | 1 | yes | yes | accept | `eligible_monotonic_completion` |
+| nested/overlapping rectangles | 4 / 6 / 9 / 12 | 3x3 accepted | unchanged 3x3 | 1 | yes | yes | reject replacement | `baseline_already_accepted` |
+| close double side borders | 4 / 6 / 9 / 12 | 3x3 accepted | unchanged 3x3 | 1 | yes | yes | reject replacement | `baseline_already_accepted` |
+| mixed page broken table | 4 | 3x3/1N rejected | 3x3 accepted | 1 | yes | yes | accept locally | `eligible_monotonic_completion` |
+| mixed page intact table | 4 | 3x3 accepted | unchanged 3x3 | 1 | yes | yes | reject replacement | `baseline_already_accepted` |
+| merged-looking H / V | 4 / 6 / 9 / 12 | 3x3/1N rejected | still 3x3/1N rejected | 1 | yes | yes | reject | `widened_not_accepted_merged_or_missing_cell` |
+| fully missing internal / top / left | 12 | reduced visible topology accepted | unchanged | 1 | yes | yes | reject replacement | `baseline_already_accepted` |
+
+The broken-beside-intact case also remains separated through tolerance 12. The mixed
+page additionally contains prose and unrelated orthogonal geometry; decisions remain
+candidate-local. The close parallel borders are not treated as evidence of a second
+table, avoiding an unsupported double-line heuristic. Japanese/multiline/empty,
+rotated, large 20x12, fragmented-large 20x12, and broad negative controls remain
+deterministic.
+
+### Conclusions and recommendation
+
+1. The guard recovers both horizontal and vertical 4 pt fragmented separators, and the
+   corresponding 6, 9, and 12 pt cases at matching tolerances.
+2. It rejects every matching 4/6/9/12 pt independent side-by-side and stacked merge
+   because the widened candidate has two P0 anchors.
+3. It repairs only the broken candidate beside a sufficiently separated intact table;
+   with aligned tables close enough to merge, it rejects the combined candidate.
+4. It repairs both tested multiple-fragment patterns while retaining one bbox and 3x3
+   dimensions.
+5. It does not convert the two merged-looking controls into span semantics: widened
+   candidates still fail Phase 3A. This is observed behavior, not proof that all
+   intentional merged-cell drawings are distinguishable from broken separators.
+6. Tested nested, surrounding, adjacent, and mixed-page orthogonal linework is not
+   absorbed. Double borders remain intact and are not heuristically rejected.
+7. Fully absent separators are not inferred. Their reduced visible topology is already
+   accepted by P0, so the guard correctly does nothing.
+8. Independent tables only 1–3 pt apart remain a **pre-existing P0 adjacency
+   limitation**: P0 already merges them, leaving no two-anchor baseline for this guard.
+   The prototype prevents new widening-induced merges; it does not repair that baseline
+   false positive.
+
+The focused synthetic evidence supports the monotonic anchor as a useful bound, but is
+not yet sufficient to production-enable recovery. Most importantly, observable geometry
+cannot universally distinguish an intentional merged-looking cell from a fragmented
+separator if some future tolerance makes both pass. Real technical-document sampling,
+more boundary/overlap perturbations, and an explicit policy for that ambiguity are
+needed. Recommendation for the next phase is therefore **further characterization,
+not production Phase 3B-2 enablement**. Production remains unchanged at P0/default;
+there is no persisted profile, algorithm/version, schema, package, or API change.

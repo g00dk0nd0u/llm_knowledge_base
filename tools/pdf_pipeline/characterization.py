@@ -9,7 +9,7 @@ from typing import Any, Iterable
 
 import fitz
 
-from .pipeline import _bbox, _evaluate_table_candidates, _geometry_key, _intersects
+from .pipeline import TABLE_EPSILON, _bbox, _evaluate_table_candidates, _geometry_key, _intersects
 
 GAPS = (1, 2, 3, 4, 6, 9, 12)
 JOIN_TOLERANCES = (1, 2, 3, 4, 6, 9, 12)
@@ -137,6 +137,39 @@ def generate_fixture(path: Path, name: str) -> None:
                 y = 50 + row * 36
                 page.draw_line((320 + gap, y), (380 + gap, y))
             prebuilt = True
+        elif name == "broken_beside_intact":
+            _grid(page, rows=3, columns=3, left=30, top=50, cell_width=45,
+                  h_gaps={1: [(95.5, 99.5)]})
+            _grid(page, rows=3, columns=3, left=190, top=50, cell_width=45)
+            prebuilt = True
+        elif name == "two_tables_broken_separator":
+            _grid(page, rows=3, columns=3, left=30, top=50, cell_width=45,
+                  h_gaps={1: [(95.5, 99.5)]})
+            _grid(page, rows=3, columns=3, left=169, top=50, cell_width=45)
+            prebuilt = True
+        elif name == "nested_linework":
+            _grid(page, rows=3, columns=3, left=50, top=50)
+            page.draw_rect((70, 64, 105, 76))
+            page.draw_rect((45, 45, 325, 163))
+            prebuilt = True
+        elif name == "double_line_border":
+            _grid(page, rows=3, columns=3, left=50, top=50)
+            page.draw_line((51.5, 50), (51.5, 158))
+            page.draw_line((318.5, 50), (318.5, 158))
+            prebuilt = True
+        elif name == "multiple_gaps_one_separator":
+            kwargs["h_gaps"] = {1: [(95, 99), (181, 185)]}
+        elif name == "gaps_two_separators":
+            kwargs["h_gaps"] = {1: [(181, 185)]}
+            kwargs["v_gaps"] = {1: [(102, 106)]}
+        elif name == "mixed_page":
+            _grid(page, rows=3, columns=3, left=30, top=40, cell_width=45)
+            _grid(page, rows=3, columns=3, left=230, top=40, cell_width=45,
+                  h_gaps={1: [(295.5, 299.5)]})
+            page.insert_text((30, 220), "Prose outside table geometry.")
+            page.draw_rect((400, 190, 480, 250))
+            page.draw_line((400, 220), (480, 220))
+            prebuilt = True
         elif name.startswith("horizontal_gap_"):
             gap = float(name.rsplit("_", 1)[1]); mid = 185.0
             kwargs["h_gaps"] = {1: [(mid - gap / 2, mid + gap / 2)]}
@@ -172,6 +205,9 @@ def fixture_names() -> tuple[str, ...]:
             "vertical_only", "horizontal_only", "merged_horizontal", "merged_vertical",
             *(f"side_by_side_{g}" for g in GAPS), *(f"stacked_{g}" for g in GAPS),
             *(f"adjacent_linework_{g}" for g in GAPS),
+            "broken_beside_intact", "two_tables_broken_separator", "nested_linework",
+            "double_line_border", "multiple_gaps_one_separator", "gaps_two_separators",
+            "mixed_page",
             "empty_multiline_japanese", "rotated_partial", "large_schedule", "fragmented_large_schedule", "aligned_prose",
             "background_rectangles", "unrelated_rectangles", "floor_plan", "sparse_diagram")
 
@@ -225,6 +261,95 @@ def characterize(path: Path, fixture: str, profile: Profile) -> dict[str, Any]:
         page = doc[0]; rotation = page.rotation
         if rotation: page.set_rotation(0)
         return _characterize_page(page, fixture, profile, page.get_drawings(), _production_blocks(page))
+
+
+def _same_bbox(first: Any, second: Any) -> bool:
+    return all(abs(float(a) - float(b)) <= TABLE_EPSILON for a, b in zip(first, second, strict=True))
+
+
+def _missing_count(evaluation: dict[str, Any]) -> int:
+    return sum(cell is None for cell in evaluation["raw_cells"])
+
+
+def _guard_decision(
+    widened: dict[str, Any], baseline: list[dict[str, Any]], profile: str,
+    baseline_candidate_count: int, widened_candidate_count: int,
+) -> dict[str, Any]:
+    """Match by bbox intersection and characterize one widened candidate conservatively.
+
+    Intersection is deterministic pre-persistence geometry. Zero or multiple intersecting
+    P0 candidates is deliberately ambiguous and can never be repaired.
+    """
+    candidate = widened["candidate"]
+    anchors = [item for item in baseline if _intersects(candidate.bbox, item["candidate"].bbox)]
+    anchor = anchors[0] if len(anchors) == 1 else None
+    result = {
+        "profile": profile,
+        "baseline_candidate_count": baseline_candidate_count,
+        "widened_candidate_count": widened_candidate_count,
+        "baseline_anchor_count": len(anchors),
+        "baseline_bbox": None if anchor is None else list(anchor["candidate"].bbox),
+        "widened_bbox": list(candidate.bbox),
+        "baseline_row_count": None if anchor is None else anchor["candidate"].row_count,
+        "baseline_column_count": None if anchor is None else anchor["candidate"].col_count,
+        "widened_row_count": candidate.row_count,
+        "widened_column_count": candidate.col_count,
+        "baseline_missing_cell_count": None if anchor is None else _missing_count(anchor),
+        "widened_missing_cell_count": _missing_count(widened),
+        "source_span_evidence_unchanged": False,
+        "guard_eligible": False,
+        "guard_reason": "multiple_baseline_anchors" if len(anchors) > 1 else "no_baseline_anchor",
+    }
+    if anchor is None:
+        return result
+    baseline_candidate = anchor["candidate"]
+    if not _same_bbox(baseline_candidate.bbox, candidate.bbox):
+        result["guard_reason"] = "outer_bbox_changed"
+    elif (baseline_candidate.row_count, baseline_candidate.col_count) != (candidate.row_count, candidate.col_count):
+        result["guard_reason"] = "dimensions_changed"
+    elif anchor["accepted"]:
+        result["guard_reason"] = "baseline_already_accepted"
+    elif anchor["rejection_reason"] != "merged_or_missing_cell":
+        result["guard_reason"] = f"baseline_not_repairable_{anchor['rejection_reason']}"
+    elif _missing_count(anchor) == 0:
+        result["guard_reason"] = "baseline_has_no_missing_cells"
+    elif not widened["accepted"]:
+        result["guard_reason"] = f"widened_not_accepted_{widened['rejection_reason']}"
+    elif _missing_count(widened) != 0:
+        result["guard_reason"] = "widened_still_has_missing_cells"
+    else:
+        result["guard_eligible"] = True
+        result["guard_reason"] = "eligible_monotonic_completion"
+    result["source_span_evidence_unchanged"] = _same_bbox(baseline_candidate.bbox, candidate.bbox)
+    return result
+
+
+def evaluate_guarded_repair(path: Path, fixture: str, join_tolerance: int) -> dict[str, Any]:
+    """Evaluate, but never production-enable, a P0-anchored widened profile."""
+    with fitz.open(path) as doc:
+        page = doc[0]
+        if page.rotation:
+            page.set_rotation(0)
+        drawings, blocks = page.get_drawings(), _production_blocks(page)
+        baseline_candidates = sorted(page.find_tables(strategy="lines_strict", use_layout=False,
+                                                       paths=drawings).tables,
+                                     key=lambda item: _geometry_key(item.bbox))
+        widened_candidates = sorted(page.find_tables(strategy="lines_strict", use_layout=False,
+                                                      join_tolerance=join_tolerance,
+                                                      paths=drawings).tables,
+                                    key=lambda item: _geometry_key(item.bbox))
+        baseline_evaluations = _evaluate_table_candidates(baseline_candidates, blocks)[2]
+        widened_evaluations = _evaluate_table_candidates(widened_candidates, blocks)[2]
+        profile = f"P1-join-{join_tolerance}"
+        return {
+            "fixture": fixture,
+            "profile": profile,
+            "baseline_candidate_count": len(baseline_candidates),
+            "widened_candidate_count": len(widened_candidates),
+            "decisions": [_guard_decision(item, baseline_evaluations, profile,
+                                           len(baseline_candidates), len(widened_candidates))
+                          for item in widened_evaluations],
+        }
 
 
 def run_corpus(directory: Path) -> list[dict[str, Any]]:
