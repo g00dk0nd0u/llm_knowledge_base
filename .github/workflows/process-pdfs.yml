@@ -34,6 +34,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  windows-query-runtime:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Standard-library-only Query Core smoke
+        run: python -S -m tests.stdlib_runtime_smoke
+
   validate:
     runs-on: ubuntu-latest
     permissions:
@@ -68,7 +80,7 @@ jobs:
 
   process-and-commit:
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
-    needs: validate
+    needs: [validate, windows-query-runtime]
     runs-on: ubuntu-latest
     permissions:
       contents: write

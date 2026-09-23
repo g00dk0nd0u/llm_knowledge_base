@@ -50,3 +50,9 @@ projects/<project-id>/
 - Run `python -m pytest` after pipeline or schema changes.
 - Run `python -m tools.pdf_pipeline process --all` from the repository root; a second run
   should produce no tracked diff.
+
+## Query Core runtime boundary
+
+- SQLite-only Query Core imports and searches must run from a repository checkout
+  under Python 3.12 with `-S`, using only the standard library. Keep PDF, fixture,
+  project-packaging, and Revit-finalization imports command-local or lazily loaded.
