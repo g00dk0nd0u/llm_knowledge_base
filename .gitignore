@@ -20,6 +20,7 @@ artifacts/
 vision/
 renders/
 tiles/
+projects/_local_validation/
 
 # Local indexes / embeddings
 *.sqlite
