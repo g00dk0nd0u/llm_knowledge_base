@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -66,6 +67,8 @@ def test_cli_sqlite_search_with_spaces_and_japanese_is_stdlib_only(
     database = _runtime_database(
         tmp_path / "query runtime smoke" / "project.sqlite"
     )
+    environment = os.environ.copy()
+    environment["PYTHONIOENCODING"] = "cp1252"
     for query in ("Loading Dock", "データホール"):
         result = subprocess.run(
             [
@@ -81,6 +84,7 @@ def test_cli_sqlite_search_with_spaces_and_japanese_is_stdlib_only(
             capture_output=True,
             text=True,
             encoding="utf-8",
+            env=environment,
         )
         assert result.returncode == 0, result.stderr
         payload = json.loads(result.stdout)

@@ -10,6 +10,20 @@ from pathlib import Path
 from tools.query_core.build import build_database
 
 
+def run(command: list[str]) -> subprocess.CompletedProcess[bytes]:
+    """Run a smoke child and preserve all diagnostics on failure."""
+    result = subprocess.run(command, check=False, capture_output=True)
+    if result.returncode != 0:
+        raise AssertionError(
+            "child process failed\n"
+            f"return code: {result.returncode}\n"
+            f"command arguments: {command!r}\n"
+            f"stdout:\n{result.stdout.decode('utf-8', errors='replace')}\n"
+            f"stderr:\n{result.stderr.decode('utf-8', errors='replace')}"
+        )
+    return result
+
+
 root = Path("artifacts") / "query runtime smoke"
 database = build_database(
     {
@@ -36,19 +50,15 @@ database = build_database(
     root / "project.sqlite",
 )
 
-direct = subprocess.run(
+direct = run(
     [
         sys.executable,
         "-S",
         "-c",
         "from tools.query_core import QueryCore, QueryCoreError; print('ok')",
     ],
-    check=True,
-    capture_output=True,
-    text=True,
-    encoding="utf-8",
 )
-assert direct.stdout == "ok\n"
+assert direct.stdout.decode("utf-8") == "ok\n"
 
 expected = [
     {
@@ -58,7 +68,7 @@ expected = [
     }
 ]
 for query in ("Loading Dock", "データホール"):
-    search = subprocess.run(
+    search = run(
         [
             sys.executable,
             "-S",
@@ -68,11 +78,7 @@ for query in ("Loading Dock", "データホール"):
             str(database),
             query,
         ],
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
     )
-    assert json.loads(search.stdout) == expected
+    assert json.loads(search.stdout.decode("utf-8")) == expected
 
 print("ok: direct import; path with spaces; English and Japanese SQLite search")

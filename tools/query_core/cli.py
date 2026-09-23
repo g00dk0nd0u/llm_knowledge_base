@@ -2,9 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from .query import QueryCore
+
+
+def _configure_utf8_output() -> None:
+    """Keep human-readable JSON portable across platform console encodings."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -71,6 +80,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_utf8_output()
     args = parser().parse_args(argv)
     if args.command == "build-fixture":
         from .fixtures import build_synthetic_fixture
