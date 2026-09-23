@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import fitz
@@ -11,9 +12,11 @@ from tools.pdf_pipeline.characterization import (
     PROFILES,
     canonical_json,
     characterize,
+    evaluate_guarded_repair,
     fixture_names,
     generate_fixture,
     run_corpus,
+    _guard_decision,
     _production_blocks,
 )
 from tools.pdf_pipeline.pipeline import _extract_tables
@@ -24,6 +27,35 @@ def _one(tmp_path: Path, fixture: str, profile_name: str = "P0") -> dict:
     generate_fixture(path, fixture)
     profile = next(profile for profile in PROFILES if profile.name == profile_name)
     return characterize(path, fixture, profile)
+
+
+def _guard(tmp_path: Path, fixture: str, tolerance: int) -> dict:
+    path = tmp_path / f"{fixture}.pdf"
+    generate_fixture(path, fixture)
+    return evaluate_guarded_repair(path, fixture, tolerance)
+
+
+def _candidate(cells: list[list[list[float] | None]]) -> SimpleNamespace:
+    return SimpleNamespace(
+        bbox=[0.0, 0.0, 100.0, 100.0], row_count=2, col_count=2,
+        rows=[SimpleNamespace(cells=row) for row in cells],
+    )
+
+
+def _evaluation(candidate: SimpleNamespace, *, accepted: bool, reason: str | None) -> dict:
+    return {"candidate": candidate, "raw_cells": [cell for row in candidate.rows for cell in row.cells],
+            "accepted": accepted, "rejection_reason": reason}
+
+
+def _predicate_decision(
+    baseline_cells: list[list[list[float] | None]],
+    widened_cells: list[list[list[float] | None]],
+    spans: list[tuple[int, int, int, dict]] | None = None,
+) -> dict:
+    baseline = _evaluation(_candidate(baseline_cells), accepted=False,
+                           reason="merged_or_missing_cell")
+    widened = _evaluation(_candidate(widened_cells), accepted=True, reason=None)
+    return _guard_decision(widened, [baseline], "test", 1, 1, spans or [])
 
 
 def test_corpus_is_complete_and_byte_deterministic(tmp_path: Path) -> None:
@@ -170,3 +202,159 @@ def test_profiles_are_explicit_and_never_fully_text_based() -> None:
         assert parameters.get("strategy") != "text"
         assert not (parameters.get("vertical_strategy") == parameters.get("horizontal_strategy") == "text")
         assert parameters["use_layout"] is False
+
+
+@pytest.mark.parametrize("axis", ["horizontal", "vertical"])
+@pytest.mark.parametrize("tolerance", [4, 6, 9, 12])
+def test_guard_rejects_fragmented_separator_when_existing_cells_are_reshaped(
+    tmp_path: Path, axis: str, tolerance: int,
+) -> None:
+    result = _guard(tmp_path, f"{axis}_gap_{tolerance}", tolerance)
+    decision = result["decisions"][0]
+    assert decision["guard_eligible"] is False
+    assert decision["guard_reason"] == "existing_cell_geometry_changed"
+    assert decision["baseline_anchor_count"] == 1
+    assert decision["baseline_bbox"] == decision["widened_bbox"]
+    assert (decision["baseline_row_count"], decision["baseline_column_count"]) == (3, 3)
+    assert (decision["widened_row_count"], decision["widened_column_count"]) == (3, 3)
+    assert (decision["baseline_missing_cell_count"], decision["widened_missing_cell_count"]) == (1, 0)
+    assert decision["existing_cell_geometry_unchanged"] is False
+
+
+@pytest.mark.parametrize("kind", ["side_by_side", "stacked"])
+@pytest.mark.parametrize("tolerance", [4, 6, 9, 12])
+def test_guard_rejects_widened_independent_table_merge(
+    tmp_path: Path, kind: str, tolerance: int,
+) -> None:
+    decision = _guard(tmp_path, f"{kind}_{tolerance}", tolerance)["decisions"][0]
+    assert decision["guard_eligible"] is False
+    assert decision["guard_reason"] == "multiple_baseline_anchors"
+    assert decision["baseline_anchor_count"] == 2
+
+
+def test_guard_is_byte_deterministic_and_json_compatible(tmp_path: Path) -> None:
+    first = _guard(tmp_path / "first", "horizontal_gap_4", 4)
+    second = _guard(tmp_path / "second", "horizontal_gap_4", 4)
+    assert canonical_json(first) == canonical_json(second)
+    required = {
+        "profile", "baseline_candidate_count", "widened_candidate_count",
+        "baseline_anchor_count", "baseline_bbox", "widened_bbox", "baseline_row_count",
+        "baseline_column_count", "widened_row_count", "widened_column_count",
+        "baseline_missing_cell_count", "widened_missing_cell_count", "guard_eligible",
+        "baseline_missing_cell_coordinates", "widened_missing_cell_coordinates",
+        "repaired_cell_coordinates", "baseline_table_source_refs", "widened_table_source_refs",
+        "preserved_source_refs",
+        "newly_assigned_source_refs", "table_source_span_set_unchanged",
+        "existing_cell_geometry_unchanged", "preserved_source_assignments_unchanged",
+        "guard_reason", "source_span_evidence_unchanged",
+    }
+    assert set(first["decisions"][0]) == required
+
+
+def test_guard_rejects_changed_existing_cell_geometry() -> None:
+    baseline = [[[0, 0, 50, 50], None], [[0, 50, 50, 100], [50, 50, 100, 100]]]
+    widened = [[[0, 0, 49, 50], [49, 0, 100, 50]],
+               [[0, 50, 50, 100], [50, 50, 100, 100]]]
+    decision = _predicate_decision(baseline, widened)
+    assert decision["guard_eligible"] is False
+    assert decision["guard_reason"] == "existing_cell_geometry_changed"
+    assert decision["existing_cell_geometry_unchanged"] is False
+
+
+def test_guard_rejects_preserved_source_assignment_migration_by_exact_ref() -> None:
+    baseline = [[[0, 0, 50, 50], [50, 0, 100, 50]], [[0, 50, 50, 100], None]]
+    widened = [[[0, 0, 49.8, 50], [49.8, 0, 100, 50]],
+               [[0, 50, 50, 100], [50, 50, 100, 100]]]
+    spans = [(7, 8, 9, {"text": "same text is not identity", "bbox": [49.6, 10, 49.9, 20]})]
+    decision = _predicate_decision(baseline, widened, spans)
+    assert decision["existing_cell_geometry_unchanged"] is True
+    assert decision["baseline_table_source_refs"] == [[7, 8, 9]]
+    assert decision["widened_table_source_refs"] == [[7, 8, 9]]
+    assert decision["preserved_source_assignments_unchanged"] is False
+    assert decision["guard_eligible"] is False
+    assert decision["guard_reason"] == "preserved_source_assignment_changed"
+
+
+def test_guard_allows_evidence_newly_assigned_only_to_repaired_slot() -> None:
+    baseline = [[[0, 0, 50, 50], None], [[0, 50, 50, 100], [50, 50, 100, 100]]]
+    widened = [[[0, 0, 50, 50], [50, 0, 100, 50]],
+               [[0, 50, 50, 100], [50, 50, 100, 100]]]
+    spans = [(1, 2, 3, {"text": "new cell evidence", "bbox": [60, 10, 70, 20]})]
+    decision = _predicate_decision(baseline, widened, spans)
+    assert decision["baseline_missing_cell_coordinates"] == [[0, 1]]
+    assert decision["widened_missing_cell_coordinates"] == []
+    assert decision["repaired_cell_coordinates"] == [[0, 1]]
+    assert decision["newly_assigned_source_refs"] == [[1, 2, 3]]
+    assert decision["source_span_evidence_unchanged"] is True
+    assert decision["guard_eligible"] is True
+    assert decision["guard_reason"] == "eligible_monotonic_completion"
+
+
+def test_guard_is_candidate_local_beside_intact_table(tmp_path: Path) -> None:
+    decisions = _guard(tmp_path, "broken_beside_intact", 4)["decisions"]
+    assert [(item["guard_eligible"], item["guard_reason"]) for item in decisions] == [
+        (False, "existing_cell_geometry_changed"),
+        (False, "baseline_already_accepted"),
+    ]
+    merged = _guard(tmp_path, "two_tables_broken_separator", 4)["decisions"]
+    assert [(item["guard_eligible"], item["guard_reason"]) for item in merged] == [
+        (False, "multiple_baseline_anchors")
+    ]
+
+
+@pytest.mark.parametrize("fixture,missing,eligible,reason", [
+    ("multiple_gaps_one_separator", 2, False, "existing_cell_geometry_changed"),
+    ("gaps_two_separators", 4, True, "eligible_monotonic_completion"),
+])
+def test_guard_repairs_multiple_fragmented_separators(
+    tmp_path: Path, fixture: str, missing: int, eligible: bool, reason: str,
+) -> None:
+    decision = _guard(tmp_path, fixture, 4)["decisions"][0]
+    assert decision["guard_eligible"] is eligible
+    assert decision["guard_reason"] == reason
+    assert (decision["baseline_missing_cell_count"], decision["widened_missing_cell_count"]) == (missing, 0)
+
+
+@pytest.mark.parametrize("fixture", ["nested_linework", "double_line_border"])
+def test_guard_does_not_replace_intact_table_with_adversarial_linework(
+    tmp_path: Path, fixture: str,
+) -> None:
+    for tolerance in (4, 6, 9, 12):
+        decision = _guard(tmp_path, fixture, tolerance)["decisions"][0]
+        assert decision["guard_eligible"] is False
+        assert decision["guard_reason"] == "baseline_already_accepted"
+        assert decision["baseline_bbox"] == decision["widened_bbox"]
+
+
+def test_mixed_page_guard_decisions_are_candidate_local(tmp_path: Path) -> None:
+    decisions = _guard(tmp_path, "mixed_page", 4)["decisions"]
+    assert [(item["guard_eligible"], item["guard_reason"]) for item in decisions] == [
+        (False, "baseline_already_accepted"),
+        (False, "existing_cell_geometry_changed"),
+    ]
+
+
+@pytest.mark.parametrize("fixture", ["merged_horizontal", "merged_vertical"])
+def test_guard_does_not_infer_merged_cell_semantics(tmp_path: Path, fixture: str) -> None:
+    for tolerance in (4, 6, 9, 12):
+        decision = _guard(tmp_path, fixture, tolerance)["decisions"][0]
+        assert decision["guard_eligible"] is False
+        assert decision["guard_reason"] == "widened_not_accepted_merged_or_missing_cell"
+
+
+@pytest.mark.parametrize("fixture", [
+    "missing_internal_horizontal", "missing_internal_vertical", "missing_top", "missing_left",
+])
+def test_guard_does_not_infer_fully_absent_separators(tmp_path: Path, fixture: str) -> None:
+    decision = _guard(tmp_path, fixture, 12)["decisions"][0]
+    assert decision["guard_eligible"] is False
+    assert decision["guard_reason"] == "baseline_already_accepted"
+
+
+@pytest.mark.parametrize("fixture", [
+    "empty_multiline_japanese", "rotated_partial", "large_schedule", "fragmented_large_schedule",
+])
+def test_guard_special_and_large_controls_are_deterministic(tmp_path: Path, fixture: str) -> None:
+    first = _guard(tmp_path / "first", fixture, 12)
+    second = _guard(tmp_path / "second", fixture, 12)
+    assert canonical_json(first) == canonical_json(second)
