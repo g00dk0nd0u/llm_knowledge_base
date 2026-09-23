@@ -5,6 +5,31 @@ export time: a future adapter writes `revit_snapshot_v1` JSON, Python validates 
 imports it into SQLite v2, and the existing packager embeds `project.sqlite` in the
 Enhanced Drawing PDF. Query time requires neither JSON nor Revit/RVT/API assemblies.
 
+## Query existing SQLite — zero-install runtime
+
+Querying an existing `project.sqlite` requires only a repository checkout and a
+normal Python 3.12 installation. It uses the Python standard library only: do **not**
+create or activate a virtual environment, run `pip`, or install this repository or
+any package.
+
+From the repository root on Windows:
+
+```powershell
+py -3.12 -S -m tools.query_core search project.sqlite "query"
+```
+
+If `python` resolves to Python 3.12, `python -S -m tools.query_core ...` is also
+supported. From the repository root on macOS:
+
+```bash
+python3 -S -m tools.query_core search project.sqlite "query"
+```
+
+This zero-install boundary applies specifically to SQLite query time. Building or
+extracting Enhanced PDFs, packaging PDFs, generating PDF fixtures, processing PDF
+Pipeline input, and finalizing Revit exports may require the dependencies declared
+by the project, including PyMuPDF or jsonschema.
+
 ## Identity and parameters
 
 `source_models` separates stable model identity (`model_identity_kind` plus
