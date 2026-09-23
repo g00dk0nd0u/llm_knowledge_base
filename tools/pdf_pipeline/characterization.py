@@ -9,7 +9,7 @@ from typing import Any, Iterable
 
 import fitz
 
-from .pipeline import _contains, _intersects, _valid_rect
+from .pipeline import _bbox, _evaluate_table_candidates, _geometry_key, _intersects
 
 GAPS = (1, 2, 3, 4, 6, 9, 12)
 JOIN_TOLERANCES = (1, 2, 3, 4, 6, 9, 12)
@@ -48,24 +48,33 @@ def _grid(page: fitz.Page, *, rows: int = 3, columns: int = 3,
           h_gaps: dict[int, list[tuple[float, float]]] | None = None,
           v_gaps: dict[int, list[tuple[float, float]]] | None = None,
           text: bool = True, empty_cells: set[tuple[int, int]] | None = None,
-          values: dict[tuple[int, int], str] | None = None) -> None:
-    left, top = 50.0, 50.0
-    width, height = 90.0, 36.0
+          values: dict[tuple[int, int], str] | None = None,
+          left: float = 50.0, top: float = 50.0,
+          cell_width: float = 90.0, cell_height: float = 36.0,
+          separate_paths: bool = False) -> None:
+    width, height = cell_width, cell_height
     omit_h, omit_v, h_gaps, v_gaps = omit_h or set(), omit_v or set(), h_gaps or {}, v_gaps or {}
-    shape = page.new_shape()
+    lines: list[tuple[tuple[float, float], tuple[float, float]]] = []
     for row in range(rows + 1):
         if row in omit_h:
             continue
         y = top + row * height
         for x0, x1 in _segments(left, left + columns * width, h_gaps.get(row, [])):
-            shape.draw_line((x0, y), (x1, y))
+            lines.append(((x0, y), (x1, y)))
     for column in range(columns + 1):
         if column in omit_v:
             continue
         x = left + column * width
         for y0, y1 in _segments(top, top + rows * height, v_gaps.get(column, [])):
-            shape.draw_line((x, y0), (x, y1))
-    shape.finish(); shape.commit()
+            lines.append(((x, y0), (x, y1)))
+    if separate_paths:
+        for start, end in lines:
+            page.draw_line(start, end)
+    else:
+        shape = page.new_shape()
+        for start, end in lines:
+            shape.draw_line(start, end)
+        shape.finish(); shape.commit()
     empty_cells, values = empty_cells or set(), values or {}
     if text:
         for row in range(rows):
@@ -84,7 +93,7 @@ def generate_fixture(path: Path, name: str) -> None:
     """Generate one born-digital fixture. The name completely defines its geometry."""
     path.parent.mkdir(parents=True, exist_ok=True)
     doc = fitz.open()
-    large = name == "large_schedule"
+    large = name in {"large_schedule", "fragmented_large_schedule"}
     page = doc.new_page(width=1191 if large else 595, height=842)
     if name == "aligned_prose":
         for row in range(3):
@@ -106,10 +115,29 @@ def generate_fixture(path: Path, name: str) -> None:
         page.draw_rect((50, 50, 130, 100)); page.draw_rect((260, 160, 340, 210))
         page.draw_line((130, 75), (260, 185))
     elif large:
-        _grid(page, rows=20, columns=12)
+        _grid(page, rows=20, columns=12, separate_paths=name == "fragmented_large_schedule")
     else:
         kwargs: dict[str, Any] = {}
-        if name.startswith("horizontal_gap_"):
+        prebuilt = False
+        if name.startswith("side_by_side_"):
+            gap = float(name.rsplit("_", 1)[1])
+            _grid(page, rows=2, columns=2, left=30, top=50, cell_width=55)
+            _grid(page, rows=2, columns=2, left=140 + gap, top=50, cell_width=55)
+            prebuilt = True
+        elif name.startswith("stacked_"):
+            gap = float(name.rsplit("_", 1)[1])
+            _grid(page, rows=2, columns=2, left=50, top=40, cell_width=70, cell_height=36)
+            _grid(page, rows=2, columns=2, left=50, top=112 + gap, cell_width=70, cell_height=36)
+            prebuilt = True
+        elif name.startswith("adjacent_linework_"):
+            gap = float(name.rsplit("_", 1)[1])
+            _grid(page, rows=3, columns=3, left=50, top=50)
+            # Collinear segments outside the right border challenge geometry joining.
+            for row in range(4):
+                y = 50 + row * 36
+                page.draw_line((320 + gap, y), (380 + gap, y))
+            prebuilt = True
+        elif name.startswith("horizontal_gap_"):
             gap = float(name.rsplit("_", 1)[1]); mid = 185.0
             kwargs["h_gaps"] = {1: [(mid - gap / 2, mid + gap / 2)]}
         elif name.startswith("vertical_gap_"):
@@ -130,7 +158,8 @@ def generate_fixture(path: Path, name: str) -> None:
             kwargs["values"] = {(0, 1): "一行目\n二行目"}
         elif name == "rotated_partial":
             kwargs["h_gaps"] = {1: [(183, 187)]}
-        _grid(page, **kwargs)
+        if not prebuilt:
+            _grid(page, **kwargs)
         if name == "rotated_partial":
             page.set_rotation(90)
     doc.save(path); doc.close()
@@ -141,51 +170,74 @@ def fixture_names() -> tuple[str, ...]:
             *(f"vertical_gap_{g}" for g in GAPS), "multiple_gaps",
             "missing_internal_horizontal", "missing_internal_vertical", "missing_top", "missing_left",
             "vertical_only", "horizontal_only", "merged_horizontal", "merged_vertical",
-            "empty_multiline_japanese", "rotated_partial", "large_schedule", "aligned_prose",
+            *(f"side_by_side_{g}" for g in GAPS), *(f"stacked_{g}" for g in GAPS),
+            *(f"adjacent_linework_{g}" for g in GAPS),
+            "empty_multiline_japanese", "rotated_partial", "large_schedule", "fragmented_large_schedule", "aligned_prose",
             "background_rectangles", "unrelated_rectangles", "floor_plan", "sparse_diagram")
+
+
+def _production_blocks(page: fitz.Page) -> list[dict[str, Any]]:
+    blocks = []
+    for source_block in page.get_text("dict", sort=True).get("blocks", []):
+        if source_block.get("type") != 0:
+            continue
+        lines = []
+        for line_index, source_line in enumerate(source_block.get("lines", [])):
+            spans = [{"order_index": span_index, "text": source_span.get("text", ""),
+                      "bbox": _bbox(source_span["bbox"])}
+                     for span_index, source_span in enumerate(source_line.get("spans", []))]
+            lines.append({"order_index": line_index, "spans": spans})
+        blocks.append({"order_index": len(blocks), "lines": lines})
+    return blocks
+
+
+def _characterize_page(page: fitz.Page, fixture: str, profile: Profile,
+                       drawings: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> dict[str, Any]:
+    kwargs = dict(profile.parameters); kwargs["paths"] = drawings
+    candidates = sorted(page.find_tables(**kwargs).tables, key=lambda item: _geometry_key(item.bbox))
+    accepted, reasons, evaluations = _evaluate_table_candidates(candidates, blocks)
+    spans = [span for block in blocks for line in block["lines"] for span in line["spans"] if span["text"]]
+    tables = []
+    for evaluation in evaluations:
+        candidate = evaluation["candidate"]
+        raw = evaluation["raw_cells"]
+        linked = [span for span in spans if _intersects(candidate.bbox, span["bbox"])]
+        tables.append({"bbox": list(candidate.bbox), "row_count": candidate.row_count,
+                       "column_count": candidate.col_count, "total_cell_slots": len(raw),
+                       "missing_cell_count": sum(cell is None for cell in raw),
+                       "cell_bboxes": [None if cell is None else list(cell) for cell in raw],
+                       "phase_3a_accepted": evaluation["accepted"],
+                       "rejection_reason": evaluation["rejection_reason"],
+                       "source_spans_map_uniquely": evaluation["accepted"],
+                       "linked_source_span_count": len(linked),
+                       "extracted_text": candidate.extract()})
+    return {"fixture": fixture, "profile": profile.name, "parameters": profile.parameters,
+            "drawing_path_count": len(drawings), "candidate_count": len(candidates),
+            "table_count": len(tables), "accepted_count": len(accepted),
+            "rejection_counts": dict(sorted(reasons.items())), "tables": tables,
+            "accepted_tables": [{key: table[key] for key in ("bbox", "row_count", "column_count")}
+                                for table in accepted],
+            "coordinate_space": "pdf_points_top_left"}
 
 
 def characterize(path: Path, fixture: str, profile: Profile) -> dict[str, Any]:
     with fitz.open(path) as doc:
         page = doc[0]; rotation = page.rotation
         if rotation: page.set_rotation(0)
-        drawings = page.get_drawings()
-        kwargs = dict(profile.parameters); kwargs["paths"] = drawings
-        candidates = page.find_tables(**kwargs).tables
-        spans = [s for b in page.get_text("dict").get("blocks", []) if b.get("type") == 0
-                 for line in b.get("lines", []) for s in line.get("spans", []) if s.get("text")]
-        tables = []
-        for candidate in candidates:
-            raw = [cell for row in candidate.rows for cell in row.cells]
-            linked_spans = [span for span in spans if _intersects(candidate.bbox, span["bbox"])]
-            reason = None
-            if candidate.row_count < 2 or candidate.col_count < 2: reason = "insufficient_dimensions"
-            elif any(cell is None for cell in raw): reason = "merged_or_missing_cell"
-            elif not _valid_rect(candidate.bbox) or any(not _valid_rect(cell) for cell in raw): reason = "invalid_shape"
-            unique = reason is None
-            if unique:
-                for span in linked_spans:
-                    if sum(_contains(cell, span["bbox"]) for cell in raw) != 1:
-                        unique = False; reason = "ambiguous_span_mapping"; break
-            tables.append({"bbox": list(candidate.bbox), "row_count": candidate.row_count,
-                           "column_count": candidate.col_count, "total_cell_slots": len(raw),
-                           "missing_cell_count": sum(cell is None for cell in raw),
-                           "cell_bboxes": [None if cell is None else list(cell) for cell in raw],
-                           "phase_3a_accepted": reason is None, "rejection_reason": reason,
-                           "source_spans_map_uniquely": unique,
-                           "linked_source_span_count": len(linked_spans),
-                           "extracted_text": candidate.extract()})
-        return {"fixture": fixture, "profile": profile.name, "parameters": profile.parameters,
-                "drawing_path_count": len(drawings), "candidate_count": len(candidates),
-                "table_count": len(tables), "tables": tables,
-                "coordinate_space": "pdf_points_top_left"}
+        return _characterize_page(page, fixture, profile, page.get_drawings(), _production_blocks(page))
 
 
 def run_corpus(directory: Path) -> list[dict[str, Any]]:
     observations = []
     for name in fixture_names():
         path = directory / f"{name}.pdf"; generate_fixture(path, name)
-        observations.extend(characterize(path, name, profile) for profile in PROFILES)
+        with fitz.open(path) as doc:
+            page = doc[0]
+            if page.rotation: page.set_rotation(0)
+            drawings = page.get_drawings()
+            blocks = _production_blocks(page)
+            observations.extend(_characterize_page(page, name, profile, drawings, blocks)
+                                for profile in PROFILES)
     return observations
 
 

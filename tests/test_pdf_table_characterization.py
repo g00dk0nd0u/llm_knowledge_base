@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+import fitz
 
 from tools.pdf_pipeline.characterization import (
     GAPS,
@@ -13,7 +14,9 @@ from tools.pdf_pipeline.characterization import (
     fixture_names,
     generate_fixture,
     run_corpus,
+    _production_blocks,
 )
+from tools.pdf_pipeline.pipeline import _extract_tables
 
 
 def _one(tmp_path: Path, fixture: str, profile_name: str = "P0") -> dict:
@@ -30,7 +33,8 @@ def test_corpus_is_complete_and_byte_deterministic(tmp_path: Path) -> None:
     decoded = json.loads(first)
     assert len(decoded) == len(fixture_names()) * len(PROFILES)
     assert all(set(item) == {"fixture", "profile", "parameters", "drawing_path_count",
-                             "candidate_count", "table_count", "tables", "coordinate_space"}
+                             "candidate_count", "table_count", "accepted_count", "rejection_counts",
+                             "tables", "accepted_tables", "coordinate_space"}
                for item in decoded)
 
 
@@ -41,6 +45,31 @@ def test_fully_ruled_p0_is_phase_3a_control(tmp_path: Path) -> None:
     assert result["tables"][0]["row_count"] == 3
     assert result["tables"][0]["column_count"] == 3
     assert result["tables"][0]["phase_3a_accepted"] is True
+
+
+@pytest.mark.parametrize("fixture", ["fully_ruled", "horizontal_gap_4", "merged_horizontal",
+                                      "empty_multiline_japanese", "rotated_partial",
+                                      "unrelated_rectangles", "side_by_side_4"])
+def test_p0_matches_actual_production_acceptance(tmp_path: Path, fixture: str) -> None:
+    path = tmp_path / f"{fixture}.pdf"
+    generate_fixture(path, fixture)
+    result = _one(tmp_path, fixture)
+    with fitz.open(path) as document:
+        page = document[0]
+        drawings = page.get_drawings()
+        rotation = page.rotation
+        if rotation:
+            page.set_rotation(0)
+        blocks = _production_blocks(page)
+        if rotation:
+            page.set_rotation(rotation)
+        tables, metadata = _extract_tables(page, drawings, blocks)
+    assert result["candidate_count"] == metadata["candidate_count"]
+    assert result["accepted_count"] == metadata["accepted_count"]
+    assert result["rejection_counts"] == metadata["rejection_counts"]
+    assert result["accepted_tables"] == [
+        {key: table[key] for key in ("bbox", "row_count", "column_count")} for table in tables
+    ]
 
 
 @pytest.mark.parametrize("axis", ["horizontal", "vertical"])
@@ -91,6 +120,48 @@ def test_large_schedule_has_bounded_structural_work(tmp_path: Path) -> None:
     assert (table["row_count"], table["column_count"], table["total_cell_slots"]) == (20, 12, 240)
     assert table["linked_source_span_count"] == 240
     assert table["phase_3a_accepted"] is True
+
+
+def test_fragmented_large_schedule_has_realistic_path_count(tmp_path: Path) -> None:
+    result = _one(tmp_path, "fragmented_large_schedule")
+    table = result["tables"][0]
+    assert result["drawing_path_count"] == 34
+    assert (result["candidate_count"], result["accepted_count"]) == (1, 1)
+    assert (table["row_count"], table["column_count"], table["total_cell_slots"]) == (20, 12, 240)
+    assert table["linked_source_span_count"] == 240
+
+
+@pytest.mark.parametrize("kind", ["side_by_side", "stacked"])
+def test_adjacent_tables_change_topology_at_explicit_tolerance(tmp_path: Path, kind: str) -> None:
+    baseline = _one(tmp_path, f"{kind}_4", "P1-join-3")
+    changed = _one(tmp_path, f"{kind}_4", "P1-join-4")
+    assert [(table["row_count"], table["column_count"]) for table in baseline["tables"]] == [(2, 2), (2, 2)]
+    assert changed["candidate_count"] == 1
+    expected = (2, 5) if kind == "side_by_side" else (5, 2)
+    assert (changed["tables"][0]["row_count"], changed["tables"][0]["column_count"]) == expected
+
+
+def test_adjacent_linework_sweep_does_not_change_table_bbox(tmp_path: Path) -> None:
+    for gap in GAPS:
+        for tolerance in GAPS:
+            result = _one(tmp_path, f"adjacent_linework_{gap}", f"P1-join-{tolerance}")
+            assert result["candidate_count"] == result["accepted_count"] == 1
+            assert result["accepted_tables"] == [{"bbox": [50.0, 50.0, 320.0, 158.0],
+                                                  "row_count": 3, "column_count": 3}]
+
+
+def test_run_corpus_extracts_drawings_once_per_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+    original = fitz.Page.get_drawings
+
+    def counted(page: fitz.Page, *args: object, **kwargs: object) -> list[dict]:
+        nonlocal calls
+        calls += 1
+        return original(page, *args, **kwargs)
+
+    monkeypatch.setattr(fitz.Page, "get_drawings", counted)
+    run_corpus(tmp_path)
+    assert calls == len(fixture_names())
 
 
 def test_profiles_are_explicit_and_never_fully_text_based() -> None:

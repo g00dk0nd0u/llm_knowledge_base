@@ -1,85 +1,113 @@
 # Phase 3B-0: partially ruled table characterization
 
-This report records observations produced by `tools.pdf_pipeline.characterization` with
-PyMuPDF 1.28.2. Fixtures are generated born-digital PDFs; they are not evidence sources
-and are created in temporary test directories. Coordinates are unrotated
-`pdf_points_top_left`. Production `_extract_tables()` is not called or changed by this
-harness.
+## Scope and method
 
-## Method
+This report records measured PyMuPDF 1.28.2 observations from generated born-digital
+PDFs. Fixture names encode synthetic ground truth; the extractor sees only observable
+PDF geometry and text. Temporary fixtures are not source evidence. Coordinates are
+unrotated `pdf_points_top_left`.
 
-P0 is `lines_strict`, `use_layout=False`, cached `paths`; P1 adds explicit
-`join_tolerance` values 1, 2, 3, 4, 6, 9, and 12 pt. P2 uses strict vertical rules plus
-text horizontal structure (`min_words_horizontal=2`); P3 is the inverse
-(`min_words_vertical=2`). Both-text detection is deliberately absent. Every observation
-contains fixture/profile/parameters, supplied drawing-path count, candidate count, bbox,
-rows, columns, cell slots, `None` count and bboxes, extracted text, Phase 3A acceptance
-and rejection reason, and unique source-span mapping status. Canonical JSON comparison
-proves repeatability without committing generated PDFs or bulky output.
+P0 is the unchanged production call (`lines_strict`, `use_layout=False`, cached
+`paths`). P1 uses explicit `join_tolerance` values 1, 2, 3, 4, 6, 9, and 12 pt. P2 uses
+strict vertical rules plus text-derived horizontal structure; P3 is the inverse. There
+is no both-text profile. A fixture is opened once and its drawings and production-order
+text hierarchy (`get_text("dict", sort=True)`) are reused by every profile.
 
-## Observed matrix
+Characterization and production share the same Phase 3A candidate evaluator: reading
+order, dimension and shape checks, contained valid cells, `None` rejection, accepted
+candidate overlap rejection, and block/line/span ordered unique mapping. P0 parity tests
+compare the real production extraction path for fully ruled, 4 pt broken, merged,
+Japanese/multiline/empty, rotated, negative drawing, and two-table fixtures. Candidate
+counts, accepted counts, rejection reasons, bboxes, rows, and columns agree.
 
-| Case | P0 | P1 result | P2 | P3 |
-|---|---|---|---|---|
-| fully ruled 3x3 | 1 accepted 3x3 | unchanged at 1–12 | 0 | 1 candidate, rejected 1x3 |
-| horizontal/vertical gaps 1–3 pt | accepted 3x3 | accepted | 0 | H: rejected 1x3; V: rejected 1x3 |
-| gaps 4/6 pt | 1 candidate with one `None`, rejected | recovered at tolerance 4/6 respectively | 0 | not useful |
-| gaps 9/12 pt | one `None`, rejected | recovered only at 9/12 respectively | 0 | not useful |
-| three 2 pt gaps | accepted 3x3 | accepted | 0 | rejected 1x3 |
-| fully missing internal H/V | accepted as 2x3 / 3x2 (lost logical boundary) | no recovery through 12 | 0 | H: 0; V: rejected 1x3 |
-| missing top/left border | accepted as truncated 2x3 / 3x2 | unchanged | 0 | rejected 1x3 |
-| vertical-only / horizontal-only | 0 / 0 | 0 / 0 | 0 / 0 | 0 / rejected 1x3 |
-| merged-looking H/V | 3x3 with one `None`, rejected | unchanged | 0 | rejected malformed candidates |
-| empty + multiline Japanese | accepted 3x3; empty bbox remains real | unchanged | 0 | rejected 1x3 |
-| rotated 4 pt partial | one `None`, rejected | recovered at tolerance 4; bbox `[50,50,320,158]` | 0 | 0 |
-| A3-like 20x12 | 1 path, 1 candidate, 1 accepted, 240 cells/spans | unchanged | 1 malformed 39x10 | 1 18x12 candidate |
-| five negative controls | 0 candidates | 0 through tolerance 12 | 0 | 0 |
+## Measured facts
 
-The controls are aligned prose, text on background rectangles, unrelated rectangles,
-floor-plan-like linework, and a sparse connected-box diagram. No P1 false positive was
-observed through 12 pt. Thus this corpus establishes **no observed false-positive
-boundary**, rather than claiming that 12 pt is safe generally.
+### Gap and profile matrix
 
-## Decisions and Phase 3B-1 recommendation
+| Input | P0 observation | P1 observation | P2 / P3 observation |
+|---|---|---|---|
+| fully ruled 3x3 | one accepted 3x3 | unchanged through 12 | P2 none; P3 rejected 1x3 |
+| H/V gaps 1–3 pt | accepted 3x3 | accepted | not useful |
+| H/V gaps 4/6 pt | candidate has one `None`, rejected | recovered at 4/6 respectively | not useful |
+| H/V gaps 9/12 pt | candidate has one `None`, rejected | recovered at 9/12 respectively | not useful |
+| three 2 pt fragments | accepted 3x3 | accepted | not useful |
+| merged-looking H/V | 3x3 with one `None`, rejected | unchanged | malformed or absent |
+| Japanese empty/multiline | accepted 3x3; empty cell retains geometry | unchanged | P3 rejected 1x3 |
+| rotated 4 pt gap | one `None`, rejected | recovered at 4 | absent |
 
-* **Short gaps:** P0 already joins through 3 pt. An explicit 6 pt tolerance adds recovery
-  for 4–6 pt gaps and all negative controls remain negative. Use **6 pt as the sole
-  Phase 3B-1 candidate**, gated by real-document validation; do not adopt 9 or 12 pt
-  merely because these synthetic controls pass. The first false-positive boundary was
-  not observed, so this is deliberately conservative.
-* **Fully missing separators:** geometry joining cannot recreate absent geometry. The
-  detector silently collapses 3x3 intent to 2x3/3x2, which current topology checks cannot
-  recognize. Keep these out of the first rollout and do not infer the missing rule.
-* **Hybrid profiles:** P2 recovered none of this corpus and produced a malformed 39x10
-  large-schedule candidate; P3 frequently returned one-row or dimension-altered
-  candidates. Neither is conservative enough for rollout. Study each separately with a
-  broader corpus rather than combining it with gap joining.
-* **Merged cells:** PyMuPDF reports a 3x3 grid with one `None`; surrounding geometry does
-  not uniquely distinguish an intentional span from a broken separator. Continue
-  rejection. `row_span`/`column_span` cannot be populated without guessing.
-* **Resources:** the A3-like schedule is one drawing path, one P0 candidate, one accepted
-  20x12 table, 240 cells, and 240 uniquely mapped non-empty source spans. Profiles reuse
-  the single cached drawings list per invocation; no timing threshold is used and no
-  candidate explosion appeared under P0.
+The current PyMuPDF default behaves like a 3 pt joining boundary in this corpus. An
+explicit tolerance of 4 is the first setting that recovers a 4 pt broken separator.
+
+### Targeted adjacency controls
+
+Each independent table is 2x2. “Merged” means PyMuPDF returned one accepted candidate
+with altered topology, not merely an expanded decoration bbox.
+
+| Separation | Side-by-side | Vertically stacked |
+|---:|---|---|
+| 1–3 pt | already merged by P0 into 2x4 / 4x2 | already merged by P0 into 2x4 / 4x2 |
+| 4 pt | two 2x2 through tolerance 3; **2x5 at tolerance 4** | two 2x2 through tolerance 3; **5x2 at tolerance 4** |
+| 6 pt | first merge at tolerance 6 | first merge at tolerance 6 |
+| 9 pt | first merge at tolerance 9 | first merge at tolerance 9 |
+| 12 pt | first merge at tolerance 12 | first merge at tolerance 12 |
+
+Thus the first topology-change boundary beyond current/default behavior is **4 pt** for
+both orientations. This directly contradicts treating 6 pt as safe solely because broad
+negative controls remain at zero.
+
+For a valid 3x3 table plus collinear line segments outside its right border, candidate
+count, `[50,50,320,158]` bbox, and 3x3 topology remain unchanged for every combination
+of 1/2/3/4/6/9/12 pt separation and P1 tolerance. The adjacent-linework boundary was
+**not observed in this corpus**. The five broad controls (aligned prose, background
+rectangles, unrelated rectangles, floor-plan linework, sparse connected boxes) also
+remain at zero candidates through 12 pt.
+
+### Missing geometry: observation versus fixture intent
+
+The fully missing internal-rule fixture has known synthetic intent of 3x3. Observable
+geometry contains only a 2x3 or 3x2 partition, and P0 accepts that reduced topology. It
+is **not a successful rejection**. Geometry-only extraction cannot know that an absent
+separator was intended and must not invent it; correcting this under-segmentation needs
+a separately justified signal/profile later.
+
+Likewise, missing top or left outer borders are accepted as truncated 2x3 or 3x2 visible
+topology. Phase 3B-1 has no deterministic basis to reconstruct the absent outer extent.
+
+### Merged-looking and resource observations
+
+Merged-looking fixtures produce a 3x3 candidate with one `None`. Broken-rule versus
+intentional span is not unambiguous, so `row_span` / `column_span` must not be inferred.
+
+The single-shape A3-like schedule has 1 drawing path, 1 candidate, 1 accepted 20x12
+table, 240 cells, and 240 linked source spans. The same schedule with each of 34 grid
+lines committed separately has 34 drawing paths and the identical 1 candidate, accepted
+20x12 topology, 240 cells, and 240 linked spans. Neither P0 case shows candidate
+explosion; no timing assertion is used.
+
+## Interpretation and Phase 3B-1 recommendation
+
+Do **not** widen production join tolerance in Phase 3B-1 on this evidence. Although 4
+and 6 pt recover matching broken separators, 4 pt is also the first explicit tolerance
+that merges independent tables separated by 4 pt and changes topology. Retain current
+/default production behavior while collecting representative real-document evidence or
+developing a deterministic guard that distinguishes fragmentation from adjacency.
+Do not enable hybrids, absent-rule inference, outer-border inference, or merged cells.
+
+P2 recovered none of the focused small corpus and creates a malformed 39x10 candidate
+on the large schedule. P3 frequently creates one-row or dimension-altered candidates.
+Neither hybrid is sufficiently conservative for rollout.
 
 ## Future contract and Query Core compatibility
 
-Option 1 (keep `pymupdf_lines_strict`, bump algorithm version) is minimally sufficient
-only while every table uses the same geometry-only profile. Option 2 (a combined ruled
-identifier) describes a family but cannot audit which method produced an individual
-table. If multiple profiles can run on one page, **Option 3 is required**: retain a
-page-level algorithm/version and add canonical per-table detection-profile metadata
-(method plus explicit tolerances/axis strategies). Phase 3B-1 should initially use
-Option 1 with an algorithm-version bump when the production change is made; migrate to
-Option 3 before any hybrid fallback. Do not use a combined identifier as a substitute
-for profile provenance.
+If a later geometry-only profile is validated globally, keeping
+`pymupdf_lines_strict` and bumping algorithm version is the minimal option. A combined
+ruled identifier alone is not auditable when multiple profiles run on one page. Before
+hybrid fallback, canonical per-table detection-profile metadata (method plus explicit
+axis strategies and tolerances) is required.
 
-Existing Pipeline v2 sidecars remain readable under the current schema and should not
-be regenerated by this characterization task. A future algorithm-version change should
-make incremental processing regenerate owned derived sidecars while leaving source PDFs
-untouched. Query Core v2 can continue storing the effective method in
-`pdf_tables.detection_method` and algorithm version using its existing validation; a
-future per-table profile must be deterministically projected there or require an
-explicit later contract migration. Incremental updates, Enhanced PDF `/1`, Project Query
-Bundle `/1`, and existing table APIs need no change for geometry-only Phase 3B-1.
-Source spans remain authoritative and table structure remains derived evidence.
+Existing Pipeline v2 sidecars remain readable and are not regenerated by this work.
+Query Core v2 can continue storing the effective method in
+`pdf_tables.detection_method`; any richer future profile requires deterministic
+projection or an explicit later contract migration. Incremental updates, Enhanced PDF
+`/1`, Project Query Bundle `/1`, and table query APIs are unchanged. Source spans remain
+authoritative; table structure remains derived evidence.
