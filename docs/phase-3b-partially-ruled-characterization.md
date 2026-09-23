@@ -124,15 +124,19 @@ is `no_baseline_anchor`; more than one is `multiple_baseline_anchors`. With one 
 the bboxes must agree within the production `TABLE_EPSILON` (0.25 pt), dimensions must
 agree, P0 must have failed specifically with `merged_or_missing_cell`, P0 must contain
 one or more `None` cells, and P1 must pass the complete Phase 3A evaluator with zero
-`None` cells. An already accepted P0 candidate is never replaced.
+`None` cells. Every pre-existing cell must also retain its bbox within the same epsilon;
+only a formerly `None` coordinate may gain geometry. An already accepted P0 candidate
+is never replaced.
 
-Because P0 and P1 use the same text hierarchy, equal outer bboxes select the identical
-set of intersecting authoritative source spans. Full Phase 3A acceptance then requires
-each such span to map uniquely to exactly one widened cell. Thus the guard permits no
-text invention, movement, splitting, or semantic inference. Each decision is a plain
-JSON-compatible record containing profile/counts, anchor count, both bboxes and
-dimensions, both missing-cell counts, source-evidence stability, eligibility, and one
-canonical reason. Repeated serialized results are byte-identical.
+Equal outer bboxes alone are not treated as evidence preservation. The evaluator
+explicitly constructs ordered `(block_index, line_index, span_index)` identities for
+non-empty spans intersecting each table, compares the table-level source-ref lists, and
+then compares refs geometrically contained in every preserved cell. A repaired cell may
+receive only refs that were not assigned to an existing P0 cell. The record separately
+reports table-level span-set stability, existing-cell geometry stability,
+preserved-cell assignment stability, repaired coordinates, preserved refs, and newly
+assigned refs. Full Phase 3A acceptance still requires unique widened-cell mapping.
+Repeated serialized results are byte-identical.
 
 ### Focused matrix
 
@@ -141,20 +145,20 @@ independent candidates. All rows use the matching tolerance shown.
 
 | Fixture | Tolerance | P0 topology | naive P1 topology | anchors | same bbox? | same dimensions? | guard | reason |
 |---|---:|---|---|---:|:---:|:---:|:---:|---|
-| horizontal gap 4 | 4 | 3x3/1N rejected | 3x3 accepted | 1 | yes | yes | accept | `eligible_monotonic_completion` |
-| vertical gap 4 | 4 | 3x3/1N rejected | 3x3 accepted | 1 | yes | yes | accept | `eligible_monotonic_completion` |
-| horizontal / vertical gap 6 | 6 | 3x3/1N rejected | 3x3 accepted | 1 | yes | yes | accept | `eligible_monotonic_completion` |
-| horizontal / vertical gap 9 | 9 | 3x3/1N rejected | 3x3 accepted | 1 | yes | yes | accept | `eligible_monotonic_completion` |
-| horizontal / vertical gap 12 | 12 | 3x3/1N rejected | 3x3 accepted | 1 | yes | yes | accept | `eligible_monotonic_completion` |
+| horizontal gap 4 | 4 | 3x3/1N rejected | 3x3 accepted | 1 | yes | yes | reject | `existing_cell_geometry_changed` |
+| vertical gap 4 | 4 | 3x3/1N rejected | 3x3 accepted | 1 | yes | yes | reject | `existing_cell_geometry_changed` |
+| horizontal / vertical gap 6 | 6 | 3x3/1N rejected | 3x3 accepted | 1 | yes | yes | reject | `existing_cell_geometry_changed` |
+| horizontal / vertical gap 9 | 9 | 3x3/1N rejected | 3x3 accepted | 1 | yes | yes | reject | `existing_cell_geometry_changed` |
+| horizontal / vertical gap 12 | 12 | 3x3/1N rejected | 3x3 accepted | 1 | yes | yes | reject | `existing_cell_geometry_changed` |
 | side-by-side 4 / 6 / 9 / 12 | matching | 2x2 + 2x2 accepted | one 2x5 accepted | 2 | n/a | no | reject | `multiple_baseline_anchors` |
 | stacked 4 / 6 / 9 / 12 | matching | 2x2 + 2x2 accepted | one 5x2 accepted | 2 | n/a | no | reject | `multiple_baseline_anchors` |
-| broken beside intact | 4 | rejected 3x3/1N + accepted 3x3 | two 3x3 accepted | 1 each | yes | yes | repair broken only | `eligible_monotonic_completion`; intact is `baseline_already_accepted` |
+| broken beside intact | 4 | rejected 3x3/1N + accepted 3x3 | two 3x3 accepted | 1 each | yes | yes | reject both replacements | broken is `existing_cell_geometry_changed`; intact is `baseline_already_accepted` |
 | two tables plus broken rule, aligned at 4 pt | 4 | rejected 3x3/1N + accepted 3x3 | one 3x7 candidate | 2 | n/a | no | reject | `multiple_baseline_anchors` |
-| two 4 pt gaps on one separator | 4 | 3x3/2N rejected | 3x3 accepted | 1 | yes | yes | accept | `eligible_monotonic_completion` |
+| two 4 pt gaps on one separator | 4 | 3x3/2N rejected | 3x3 accepted | 1 | yes | yes | reject | `existing_cell_geometry_changed` |
 | 4 pt gaps on two separators | 4 | 3x3/4N rejected | 3x3 accepted | 1 | yes | yes | accept | `eligible_monotonic_completion` |
 | nested/overlapping rectangles | 4 / 6 / 9 / 12 | 3x3 accepted | unchanged 3x3 | 1 | yes | yes | reject replacement | `baseline_already_accepted` |
 | close double side borders | 4 / 6 / 9 / 12 | 3x3 accepted | unchanged 3x3 | 1 | yes | yes | reject replacement | `baseline_already_accepted` |
-| mixed page broken table | 4 | 3x3/1N rejected | 3x3 accepted | 1 | yes | yes | accept locally | `eligible_monotonic_completion` |
+| mixed page broken table | 4 | 3x3/1N rejected | 3x3 accepted | 1 | yes | yes | reject | `existing_cell_geometry_changed` |
 | mixed page intact table | 4 | 3x3 accepted | unchanged 3x3 | 1 | yes | yes | reject replacement | `baseline_already_accepted` |
 | merged-looking H / V | 4 / 6 / 9 / 12 | 3x3/1N rejected | still 3x3/1N rejected | 1 | yes | yes | reject | `widened_not_accepted_merged_or_missing_cell` |
 | fully missing internal / top / left | 12 | reduced visible topology accepted | unchanged | 1 | yes | yes | reject replacement | `baseline_already_accepted` |
@@ -168,14 +172,17 @@ deterministic.
 
 ### Conclusions and recommendation
 
-1. The guard recovers both horizontal and vertical 4 pt fragmented separators, and the
-   corresponding 6, 9, and 12 pt cases at matching tolerances.
+1. The strengthened guard rejects both horizontal and vertical 4 pt fragmented
+   separators, and the corresponding 6, 9, and 12 pt cases: PyMuPDF's widened result
+   reshapes at least one previously observable cell despite retaining the same outer
+   bbox and dimensions.
 2. It rejects every matching 4/6/9/12 pt independent side-by-side and stacked merge
    because the widened candidate has two P0 anchors.
-3. It repairs only the broken candidate beside a sufficiently separated intact table;
-   with aligned tables close enough to merge, it rejects the combined candidate.
-4. It repairs both tested multiple-fragment patterns while retaining one bbox and 3x3
-   dimensions.
+3. It keeps the broken-beside-intact decisions candidate-local, but rejects the broken
+   candidate for internal reshaping. With aligned tables close enough to merge, it
+   rejects the combined candidate for multiple anchors.
+4. The two-separator fragmented pattern is a genuine monotonic completion and remains
+   eligible. The two-gap single-separator pattern reshapes existing cells and is rejected.
 5. It does not convert the two merged-looking controls into span semantics: widened
    candidates still fail Phase 3A. This is observed behavior, not proof that all
    intentional merged-cell drawings are distinguishable from broken separators.
@@ -188,11 +195,11 @@ deterministic.
    The prototype prevents new widening-induced merges; it does not repair that baseline
    false positive.
 
-The focused synthetic evidence supports the monotonic anchor as a useful bound, but is
-not yet sufficient to production-enable recovery. Most importantly, observable geometry
-cannot universally distinguish an intentional merged-looking cell from a fragmented
-separator if some future tolerance makes both pass. Real technical-document sampling,
-more boundary/overlap perturbations, and an explicit policy for that ambiguity are
-needed. Recommendation for the next phase is therefore **further characterization,
-not production Phase 3B-2 enablement**. Production remains unchanged at P0/default;
-there is no persisted profile, algorithm/version, schema, package, or API change.
+The hardened predicates expose a material false-negative tradeoff: all simple one-gap
+recovery controls alter other cell geometry internally and are therefore unsafe under
+the required monotonic definition. The focused evidence is not sufficient to
+production-enable recovery. Real technical-document sampling, more boundary/overlap
+perturbations, and an explicit policy for merged-cell ambiguity are needed.
+Recommendation remains **further characterization, not production Phase 3B-2
+enablement**. Production remains unchanged at P0/default; there is no persisted profile,
+algorithm/version, schema, package, or API change.

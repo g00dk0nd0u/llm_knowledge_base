@@ -9,7 +9,14 @@ from typing import Any, Iterable
 
 import fitz
 
-from .pipeline import TABLE_EPSILON, _bbox, _evaluate_table_candidates, _geometry_key, _intersects
+from .pipeline import (
+    TABLE_EPSILON,
+    _bbox,
+    _contains,
+    _evaluate_table_candidates,
+    _geometry_key,
+    _intersects,
+)
 
 GAPS = (1, 2, 3, 4, 6, 9, 12)
 JOIN_TOLERANCES = (1, 2, 3, 4, 6, 9, 12)
@@ -271,9 +278,34 @@ def _missing_count(evaluation: dict[str, Any]) -> int:
     return sum(cell is None for cell in evaluation["raw_cells"])
 
 
+def _missing_coordinates(evaluation: dict[str, Any]) -> list[list[int]]:
+    columns = evaluation["candidate"].col_count
+    return [[index // columns, index % columns]
+            for index, cell in enumerate(evaluation["raw_cells"]) if cell is None]
+
+
+def _source_evidence(candidate: Any, spans: list[tuple[int, int, int, dict[str, Any]]]) -> tuple[
+    list[list[int]], dict[tuple[int, int], list[list[int]]]
+]:
+    """Return ordered source identities for the table and each observable cell."""
+    table_refs = [[bi, li, si] for bi, li, si, span in spans
+                  if _intersects(candidate.bbox, span["bbox"])]
+    assignments: dict[tuple[int, int], list[list[int]]] = {}
+    for row_index, row in enumerate(candidate.rows):
+        for column_index, cell in enumerate(row.cells):
+            if cell is not None:
+                assignments[(row_index, column_index)] = [
+                    [bi, li, si] for bi, li, si, span in spans
+                    if _intersects(candidate.bbox, span["bbox"])
+                    and _contains(cell, span["bbox"])
+                ]
+    return table_refs, assignments
+
+
 def _guard_decision(
     widened: dict[str, Any], baseline: list[dict[str, Any]], profile: str,
     baseline_candidate_count: int, widened_candidate_count: int,
+    spans: list[tuple[int, int, int, dict[str, Any]]],
 ) -> dict[str, Any]:
     """Match by bbox intersection and characterize one widened candidate conservatively.
 
@@ -283,6 +315,7 @@ def _guard_decision(
     candidate = widened["candidate"]
     anchors = [item for item in baseline if _intersects(candidate.bbox, item["candidate"].bbox)]
     anchor = anchors[0] if len(anchors) == 1 else None
+    widened_missing = _missing_coordinates(widened)
     result = {
         "profile": profile,
         "baseline_candidate_count": baseline_candidate_count,
@@ -296,6 +329,16 @@ def _guard_decision(
         "widened_column_count": candidate.col_count,
         "baseline_missing_cell_count": None if anchor is None else _missing_count(anchor),
         "widened_missing_cell_count": _missing_count(widened),
+        "baseline_missing_cell_coordinates": None if anchor is None else _missing_coordinates(anchor),
+        "widened_missing_cell_coordinates": widened_missing,
+        "repaired_cell_coordinates": [],
+        "baseline_table_source_refs": [],
+        "widened_table_source_refs": [],
+        "preserved_source_refs": [],
+        "newly_assigned_source_refs": [],
+        "table_source_span_set_unchanged": False,
+        "existing_cell_geometry_unchanged": False,
+        "preserved_source_assignments_unchanged": False,
         "source_span_evidence_unchanged": False,
         "guard_eligible": False,
         "guard_reason": "multiple_baseline_anchors" if len(anchors) > 1 else "no_baseline_anchor",
@@ -303,6 +346,45 @@ def _guard_decision(
     if anchor is None:
         return result
     baseline_candidate = anchor["candidate"]
+    baseline_missing = _missing_coordinates(anchor)
+    result["repaired_cell_coordinates"] = [coordinate for coordinate in baseline_missing
+                                            if coordinate not in widened_missing]
+    baseline_table_refs, baseline_assignments = _source_evidence(baseline_candidate, spans)
+    widened_table_refs, widened_assignments = _source_evidence(candidate, spans)
+    result["baseline_table_source_refs"] = baseline_table_refs
+    result["widened_table_source_refs"] = widened_table_refs
+    result["table_source_span_set_unchanged"] = baseline_table_refs == widened_table_refs
+    preserved_coordinates = sorted(baseline_assignments)
+    geometry_unchanged = all(
+        coordinate in widened_assignments
+        and _same_bbox(baseline_candidate.rows[coordinate[0]].cells[coordinate[1]],
+                       candidate.rows[coordinate[0]].cells[coordinate[1]])
+        for coordinate in preserved_coordinates
+    )
+    result["existing_cell_geometry_unchanged"] = geometry_unchanged
+    assignments_unchanged = all(
+        baseline_assignments[coordinate] == widened_assignments.get(coordinate)
+        for coordinate in preserved_coordinates
+    )
+    result["preserved_source_assignments_unchanged"] = assignments_unchanged
+    result["preserved_source_refs"] = [
+        ref for coordinate in preserved_coordinates for ref in baseline_assignments[coordinate]
+    ]
+    repaired_coordinates = {tuple(coordinate) for coordinate in result["repaired_cell_coordinates"]}
+    result["newly_assigned_source_refs"] = [
+        ref for coordinate in sorted(repaired_coordinates)
+        for ref in widened_assignments.get(coordinate, [])
+        if ref not in result["preserved_source_refs"]
+    ]
+    evidence_unchanged = (
+        result["table_source_span_set_unchanged"]
+        and geometry_unchanged
+        and assignments_unchanged
+        and all(ref not in result["preserved_source_refs"]
+                for coordinate in repaired_coordinates
+                for ref in widened_assignments.get(coordinate, []))
+    )
+    result["source_span_evidence_unchanged"] = evidence_unchanged
     if not _same_bbox(baseline_candidate.bbox, candidate.bbox):
         result["guard_reason"] = "outer_bbox_changed"
     elif (baseline_candidate.row_count, baseline_candidate.col_count) != (candidate.row_count, candidate.col_count):
@@ -317,10 +399,17 @@ def _guard_decision(
         result["guard_reason"] = f"widened_not_accepted_{widened['rejection_reason']}"
     elif _missing_count(widened) != 0:
         result["guard_reason"] = "widened_still_has_missing_cells"
+    elif not geometry_unchanged:
+        result["guard_reason"] = "existing_cell_geometry_changed"
+    elif result["repaired_cell_coordinates"] != baseline_missing:
+        result["guard_reason"] = "repaired_cell_coordinates_changed"
+    elif not result["table_source_span_set_unchanged"]:
+        result["guard_reason"] = "table_source_span_set_changed"
+    elif not assignments_unchanged or not evidence_unchanged:
+        result["guard_reason"] = "preserved_source_assignment_changed"
     else:
         result["guard_eligible"] = True
         result["guard_reason"] = "eligible_monotonic_completion"
-    result["source_span_evidence_unchanged"] = _same_bbox(baseline_candidate.bbox, candidate.bbox)
     return result
 
 
@@ -340,6 +429,11 @@ def evaluate_guarded_repair(path: Path, fixture: str, join_tolerance: int) -> di
                                     key=lambda item: _geometry_key(item.bbox))
         baseline_evaluations = _evaluate_table_candidates(baseline_candidates, blocks)[2]
         widened_evaluations = _evaluate_table_candidates(widened_candidates, blocks)[2]
+        spans = [
+            (block["order_index"], line["order_index"], span["order_index"], span)
+            for block in blocks for line in block["lines"] for span in line["spans"]
+            if span["text"]
+        ]
         profile = f"P1-join-{join_tolerance}"
         return {
             "fixture": fixture,
@@ -347,7 +441,7 @@ def evaluate_guarded_repair(path: Path, fixture: str, join_tolerance: int) -> di
             "baseline_candidate_count": len(baseline_candidates),
             "widened_candidate_count": len(widened_candidates),
             "decisions": [_guard_decision(item, baseline_evaluations, profile,
-                                           len(baseline_candidates), len(widened_candidates))
+                                           len(baseline_candidates), len(widened_candidates), spans)
                           for item in widened_evaluations],
         }
 
