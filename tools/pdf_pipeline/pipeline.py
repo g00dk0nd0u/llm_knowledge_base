@@ -239,6 +239,94 @@ def _geometry_key(bbox: Any) -> tuple[float, float, float, float]:
     return (bbox[1], bbox[0], bbox[3], bbox[2])
 
 
+def _evaluate_table_candidates(
+    candidates: list[Any], blocks: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], dict[str, int], list[dict[str, Any]]]:
+    """Apply the Phase 3A contract to already deterministically ordered candidates."""
+    accepted: list[dict[str, Any]] = []
+    reasons: dict[str, int] = {}
+    evaluations: list[dict[str, Any]] = []
+    spans = [
+        (block["order_index"], line["order_index"], span["order_index"], span)
+        for block in blocks for line in block["lines"] for span in line["spans"]
+        if span["text"]
+    ]
+    for candidate in candidates:
+        reason = None
+        bbox = candidate.bbox
+        rows = candidate.rows
+        raw_cells: list[Any] = []
+        if candidate.row_count < 2 or candidate.col_count < 2:
+            reason = "insufficient_dimensions"
+        elif not _valid_rect(bbox) or len(rows) != candidate.row_count or any(len(row.cells) != candidate.col_count for row in rows):
+            reason = "invalid_shape"
+        else:
+            raw_cells = [cell for row in rows for cell in row.cells]
+            if any(cell is None for cell in raw_cells):
+                reason = "merged_or_missing_cell"
+            elif any(not _valid_rect(cell) or not _contains(bbox, cell) for cell in raw_cells):
+                reason = "invalid_cell_geometry"
+        if reason is None and any(_intersects(bbox, table["bbox"]) for table in accepted):
+            reason = "overlapping_candidate"
+        cells: list[dict[str, Any]] = []
+        linked_span_count = 0
+        if reason is None:
+            row_major_cells = [
+                (row_index, column_index, cell_bbox)
+                for row_index, row in enumerate(rows)
+                for column_index, cell_bbox in enumerate(row.cells)
+            ]
+            assignments: list[list[tuple[int, int, int, str]]] = [
+                [] for _cell in row_major_cells
+            ]
+            for block_index, line_index, span_index, span in spans:
+                span_bbox = span["bbox"]
+                if not _intersects(bbox, span_bbox):
+                    continue
+                linked_span_count += 1
+                containing = [
+                    index
+                    for index, (_row, _column, cell_bbox) in enumerate(row_major_cells)
+                    if _contains(cell_bbox, span_bbox)
+                ]
+                if len(containing) != 1:
+                    reason = "ambiguous_span_mapping"
+                    break
+                assignments[containing[0]].append(
+                    (block_index, line_index, span_index, span["text"])
+                )
+            if reason is None:
+                for (row_index, column_index, cell_bbox), assigned in zip(
+                    row_major_cells, assignments, strict=True
+                ):
+                    line_groups: list[list[str]] = []
+                    previous_line = None
+                    refs = []
+                    for bi, li, si, text in assigned:
+                        key = (bi, li)
+                        if key != previous_line:
+                            line_groups.append([])
+                            previous_line = key
+                        line_groups[-1].append(text)
+                        refs.append({"block_index": bi, "line_index": li, "span_index": si})
+                    cells.append({"row_index": row_index, "column_index": column_index, "row_span": 1, "column_span": 1, "bbox": _bbox(cell_bbox), "text": "\n".join("".join(group) for group in line_groups), "span_refs": refs})
+        if reason:
+            reasons[reason] = reasons.get(reason, 0) + 1
+        else:
+            accepted.append({"order_index": 0, "bbox": _bbox(bbox), "row_count": candidate.row_count, "column_count": candidate.col_count, "provenance": "derived_pdf_table", "cells": cells})
+        evaluations.append({
+            "candidate": candidate,
+            "raw_cells": raw_cells,
+            "accepted": reason is None,
+            "rejection_reason": reason,
+            "linked_source_span_count": linked_span_count,
+        })
+    accepted.sort(key=lambda table: _geometry_key(table["bbox"]))
+    for index, table in enumerate(accepted):
+        table["order_index"] = index
+    return accepted, reasons, evaluations
+
+
 def _extract_tables(page: fitz.Page, drawings: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Persist only complete ruled grids; text always comes from existing spans."""
     usable = any(any(item and item[0] in {"l", "re"} for item in path.get("items", [])) for path in drawings)
@@ -258,76 +346,7 @@ def _extract_tables(page: fitz.Page, drawings: list[dict[str, Any]], blocks: lis
         finally:
             if rotation:
                 page.set_rotation(rotation)
-        accepted: list[dict[str, Any]] = []
-        reasons: dict[str, int] = {}
-        spans = [
-            (block["order_index"], line["order_index"], span["order_index"], span)
-            for block in blocks for line in block["lines"] for span in line["spans"]
-            if span["text"]
-        ]
-        for candidate in candidates:
-            reason = None
-            bbox = candidate.bbox
-            rows = candidate.rows
-            if candidate.row_count < 2 or candidate.col_count < 2:
-                reason = "insufficient_dimensions"
-            elif not _valid_rect(bbox) or len(rows) != candidate.row_count or any(len(row.cells) != candidate.col_count for row in rows):
-                reason = "invalid_shape"
-            else:
-                raw_cells = [cell for row in rows for cell in row.cells]
-                if any(cell is None for cell in raw_cells):
-                    reason = "merged_or_missing_cell"
-                elif any(not _valid_rect(cell) or not _contains(bbox, cell) for cell in raw_cells):
-                    reason = "invalid_cell_geometry"
-            if reason is None and any(_intersects(bbox, table["bbox"]) for table in accepted):
-                reason = "overlapping_candidate"
-            cells: list[dict[str, Any]] = []
-            if reason is None:
-                row_major_cells = [
-                    (row_index, column_index, cell_bbox)
-                    for row_index, row in enumerate(rows)
-                    for column_index, cell_bbox in enumerate(row.cells)
-                ]
-                assignments: list[list[tuple[int, int, int, str]]] = [
-                    [] for _cell in row_major_cells
-                ]
-                for block_index, line_index, span_index, span in spans:
-                    span_bbox = span["bbox"]
-                    if not _intersects(bbox, span_bbox):
-                        continue
-                    containing = [
-                        index
-                        for index, (_row, _column, cell_bbox) in enumerate(row_major_cells)
-                        if _contains(cell_bbox, span_bbox)
-                    ]
-                    if len(containing) != 1:
-                        reason = "ambiguous_span_mapping"
-                        break
-                    assignments[containing[0]].append(
-                        (block_index, line_index, span_index, span["text"])
-                    )
-                if reason is None:
-                    for (row_index, column_index, cell_bbox), assigned in zip(
-                        row_major_cells, assignments, strict=True
-                    ):
-                        line_groups: list[list[str]] = []
-                        previous_line = None
-                        refs = []
-                        for bi, li, si, text in assigned:
-                            key = (bi, li)
-                            if key != previous_line:
-                                line_groups.append([])
-                                previous_line = key
-                            line_groups[-1].append(text)
-                            refs.append({"block_index": bi, "line_index": li, "span_index": si})
-                        cells.append({"row_index": row_index, "column_index": column_index, "row_span": 1, "column_span": 1, "bbox": _bbox(cell_bbox), "text": "\n".join("".join(group) for group in line_groups), "span_refs": refs})
-            if reason:
-                reasons[reason] = reasons.get(reason, 0) + 1
-            else:
-                accepted.append({"order_index": 0, "bbox": _bbox(bbox), "row_count": candidate.row_count, "column_count": candidate.col_count, "provenance": "derived_pdf_table", "cells": cells})
-        accepted.sort(key=lambda table: _geometry_key(table["bbox"]))
-        for index, table in enumerate(accepted):
-            table["order_index"] = index
+        accepted, reasons, _evaluations = _evaluate_table_candidates(candidates, blocks)
         status = "completed" if candidates else "no_candidates"
         return accepted, _table_metadata(status, len(candidates), len(accepted), reasons)
     except Exception:
