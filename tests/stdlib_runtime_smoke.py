@@ -58,7 +58,7 @@ direct = run(
         "from tools.query_core import QueryCore, QueryCoreError; print('ok')",
     ],
 )
-assert direct.stdout.decode("utf-8") == "ok\n"
+assert direct.stdout.decode("utf-8").splitlines() == ["ok"]
 
 expected = [
     {
