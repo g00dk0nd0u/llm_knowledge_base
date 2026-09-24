@@ -11,6 +11,7 @@ import pytest
 
 from tools.pdf_pipeline import pipeline
 from tools.pdf_pipeline.pipeline import PipelineError, document_id, process_all, render_pages
+from tools.pdf_pipeline.report import build_report
 
 
 def make_pdf(path: Path, texts: list[str]) -> None:
@@ -112,6 +113,25 @@ def load_outputs(repository: Path) -> tuple[dict, dict, Path]:
     knowledge = repository / manifest["documents"][0]["knowledge_path"]
     document = json.loads((knowledge / "document.json").read_text())
     return manifest, document, knowledge
+
+
+def test_intake_report_reads_processed_text_and_table_outputs(repository: Path) -> None:
+    make_pdf(
+        repository / "projects/example/source/text.pdf",
+        ["Normal embedded text with enough characters to be classified as extracted.", "tiny", ""],
+    )
+    make_ruled_table(repository / "projects/example/source/table.pdf")
+    process_all(repository)
+
+    report = build_report(repository / "projects/example")
+
+    assert report["document_count"] == 2
+    assert report["page_count"] == 4
+    assert report["extracted"] >= 1
+    assert report["minimal_text"] >= 1
+    assert report["no_text"] == 1
+    assert report["accepted_table_count"] == 1
+    assert report["pages_with_accepted_tables"] == 1
 
 
 def test_process_extracts_pages_identity_hash_and_valid_schema(repository: Path) -> None:
