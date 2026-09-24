@@ -5,7 +5,15 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .pipeline import PipelineError, process_all, render_pages
+
+def _configure_utf8_output() -> None:
+    """Keep human-readable report output portable across console encodings."""
+    import sys
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -25,12 +33,38 @@ def _parser() -> argparse.ArgumentParser:
     selection.add_argument("--all", action="store_true", dest="all_pages")
     render.add_argument("--dpi", type=int, default=300)
     render.add_argument("--output", type=Path, required=True)
+    report = commands.add_parser("report", help="summarize existing Pipeline v2 knowledge")
+    report.add_argument("project_directory", type=Path)
+    report.add_argument("--format", choices=("text", "json"), default="text")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     root = args.repo_root.resolve()
+    if args.command == "report":
+        _configure_utf8_output()
+        from .report import ReportError, build_report, format_text
+
+        try:
+            project_directory = (
+                args.project_directory
+                if args.project_directory.is_absolute()
+                else root / args.project_directory
+            )
+            report = build_report(project_directory)
+            if args.format == "json":
+                import json
+
+                print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+            else:
+                print(format_text(report))
+        except ReportError as exc:
+            print(f"error: {exc}", file=__import__("sys").stderr)
+            return 1
+        return 0
+    from .pipeline import PipelineError, process_all, render_pages
+
     try:
         if args.command == "process":
             result = process_all(root)
@@ -38,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"processed={result.processed} unchanged={result.unchanged} "
                 f"removed={result.removed}"
             )
-        else:
+        elif args.command == "render":
             outputs = render_pages(
                 root,
                 args.pdf,

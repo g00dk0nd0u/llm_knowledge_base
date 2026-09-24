@@ -57,6 +57,28 @@ management marker. Changed documents are fully staged before replacement; a corr
 password-protected PDF fails clearly before existing generated output or the manifest is
 changed. Manifests are written through an atomic file replacement.
 
+## Report existing project knowledge
+
+After processing, generate a deterministic project-level intake and readiness report:
+
+```bash
+python -S -m tools.pdf_pipeline report projects/my-project
+python -S -m tools.pdf_pipeline report projects/my-project --format json
+```
+
+The report reads only the manifest, `document.json` summaries, and structured page
+sidecars. It never opens source PDF bytes, so Python 3.12's standard library is enough
+and no virtual environment or pip install is required once Pipeline v2 knowledge exists.
+Raw ingestion and rendering still require the project dependencies, including PyMuPDF.
+
+For permitted third-party or legacy PDFs: place files in `source/`, process them on a
+dependency-enabled ingestion machine, run the report, and inspect `review_pages`. Then
+build the project Query Core and query normally. Searching an existing `project.sqlite`
+is likewise standard-library-only. Return to the authoritative source PDF whenever
+layout or visual evidence is ambiguous. Generated knowledge is only an index;
+`vision_recommended` is only a processing hint, and a review entry does not mean OCR or
+Vision is required. Do not commit confidential client or consultant PDFs for testing.
+
 ## Render selected pages
 
 ```bash

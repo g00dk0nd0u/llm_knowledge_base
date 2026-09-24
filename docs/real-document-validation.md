@@ -64,6 +64,19 @@ python -m pip install -e '.[test]'
 python -m tools.pdf_pipeline process --all
 ```
 
+Prepare manual review with the metadata-only intake report:
+
+```bash
+python -S -m tools.pdf_pipeline report projects/_local_validation
+python -S -m tools.pdf_pipeline report projects/_local_validation --format json
+```
+
+The report uses already-generated knowledge only and needs neither PyMuPDF nor installed
+site packages. Its `review_pages` identifies factual no/minimal-text, raster-containing,
+vector-heavy, rejected-table-candidate, and table-extraction-error pages. It is a triage
+aid, not a replacement for the manual validation below: `vision_recommended` is only a
+hint, and report inclusion does not assert that OCR or Vision is required.
+
 Build a project Query Core outside tracked project content:
 
 ```bash
@@ -72,6 +85,12 @@ python -m tools.query_core build-pdf-project --repo-root . \
 ```
 
 Use the existing Query Core search / table APIs for representative queries. Do not add a new evaluator merely to automate this step unless manual review demonstrates a recurring need.
+
+The complete legacy-PDF workflow is: place permitted PDFs in the project `source/`, run
+the dependency-enabled Pipeline v2 ingestion, review the intake report, build the project
+Query Core, query it normally, and return to the authoritative source PDF for visual
+ambiguity. Raw ingestion requires PyMuPDF/project dependencies; reporting generated
+knowledge and querying an existing SQLite Query Core are Python 3.12 standard-library-only.
 
 ## What to evaluate
 
