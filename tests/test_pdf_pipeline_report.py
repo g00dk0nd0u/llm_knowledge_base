@@ -24,7 +24,7 @@ def _fixture(root: Path) -> Path:
     specifications = [
         ("extracted", 80, 0, 0, False, "completed", 1, 1, {}),
         ("minimal_text", 12, 0, 0, True, "completed", 2, 0, {"invalid_shape": 1, "overlapping_candidate": 1}),
-        ("no_text", 0, 1, 200, True, "extraction_error", 1, 0, {"extraction_error": 1}),
+        ("no_text", 0, 1, 200, True, "extraction_error", 0, 0, {"extraction_error": 1}),
     ]
     pages = []
     for number, spec in enumerate(specifications, 1):
@@ -69,14 +69,14 @@ def test_report_aggregates_factual_page_and_table_metadata(tmp_path: Path) -> No
     assert report["vision_recommended_pages"] == 2
     assert report["pages_with_accepted_tables"] == 1
     assert report["accepted_table_count"] == 1
-    assert report["table_candidate_count"] == 4
-    assert report["rejected_table_candidate_count"] == 3
+    assert report["table_candidate_count"] == 3
+    assert report["rejected_table_candidate_count"] == 2
     assert report["table_extraction_error_pages"] == 1
     assert report["table_rejection_counts"]["invalid_shape"] == 1
     assert report["table_rejection_counts"]["overlapping_candidate"] == 1
     assert report["table_rejection_counts"]["extraction_error"] == 1
     assert [page["page"] for page in report["review_pages"]] == [2, 3]
-    assert report["review_pages"][1]["reasons"] == ["no_text", "contains_raster_image", "many_vector_drawings", "vision_recommended", "table_candidates_rejected", "table_extraction_error"]
+    assert report["review_pages"][1]["reasons"] == ["no_text", "contains_raster_image", "many_vector_drawings", "vision_recommended", "table_extraction_error"]
 
 
 def test_report_cli_is_deterministic_and_stdlib_only_under_dash_s(tmp_path: Path) -> None:
@@ -104,4 +104,30 @@ def test_report_fails_with_affected_path_for_bad_generated_json(tmp_path: Path, 
     }
     paths[target].write_text("{broken", encoding="utf-8")
     with pytest.raises(ReportError, match=paths[target].name):
+        build_report(project)
+
+
+@pytest.mark.parametrize(
+    ("page_number", "changes"),
+    [
+        (3, {"candidate_count": 1}),
+        (3, {"rejected_count": 1}),
+        (3, {"rejection_counts": {}}),
+        (3, {"rejection_counts": {"extraction_error": 2}}),
+        (1, {"status": "no_candidates"}),
+        (2, {"candidate_count": 3}),
+        (1, {"accepted_count": 0}),
+        (2, {"rejection_counts": {"unknown_reason": 2}}),
+    ],
+)
+def test_report_rejects_invalid_table_contract(
+    tmp_path: Path, page_number: int, changes: dict[str, object]
+) -> None:
+    project = _fixture(tmp_path)
+    sidecar_path = project / f"knowledge/legacy/pages/p{page_number:04d}.json"
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    sidecar["table_extraction"].update(changes)
+    sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+
+    with pytest.raises(ReportError, match=sidecar_path.name):
         build_report(project)

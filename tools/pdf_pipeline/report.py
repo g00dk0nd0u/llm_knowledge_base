@@ -102,11 +102,28 @@ def _validate_page(
     if not isinstance(reasons, dict) or not set(reasons).issubset(REJECTION_REASONS):
         raise ReportError(f"invalid table rejection_counts: {path}")
     checked_reasons = {key: _integer(value, f"rejection_counts.{key}", path) for key, value in reasons.items()}
+    if any(count < 1 for count in checked_reasons.values()):
+        raise ReportError(f"invalid table rejection_counts: {path}")
     tables = sidecar.get("tables")
-    if not isinstance(tables, list) or counts["candidate_count"] != counts["accepted_count"] + counts["rejected_count"] or len(tables) != counts["accepted_count"] or sum(checked_reasons.values()) != counts["rejected_count"]:
+    if not isinstance(tables, list):
+        raise ReportError(f"inconsistent table extraction counts: {path}")
+    table_status = table["status"]
+    if table_status == "no_candidates":
+        valid = counts == {"candidate_count": 0, "accepted_count": 0, "rejected_count": 0} and checked_reasons == {} and tables == []
+    elif table_status == "extraction_error":
+        valid = counts == {"candidate_count": 0, "accepted_count": 0, "rejected_count": 0} and checked_reasons == {"extraction_error": 1} and tables == []
+    else:
+        valid = (
+            counts["candidate_count"] >= 1
+            and counts["candidate_count"] == counts["accepted_count"] + counts["rejected_count"]
+            and len(tables) == counts["accepted_count"]
+            and "extraction_error" not in checked_reasons
+            and sum(checked_reasons.values()) == counts["rejected_count"]
+        )
+    if not valid:
         raise ReportError(f"inconsistent table extraction counts: {path}")
     normalized_page = {**values, "extraction_status": status, "vision_recommended": page["vision_recommended"]}
-    return normalized_page, {"status": table["status"], **counts, "rejection_counts": checked_reasons}
+    return normalized_page, {"status": table_status, **counts, "rejection_counts": checked_reasons}
 
 
 def build_report(project_directory: Path) -> dict[str, Any]:

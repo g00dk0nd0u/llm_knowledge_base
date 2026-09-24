@@ -5,6 +5,17 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+
+def _configure_utf8_output() -> None:
+    """Keep human-readable report output portable across console encodings."""
+    import sys
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m tools.pdf_pipeline")
     parser.add_argument(
@@ -32,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     root = args.repo_root.resolve()
     if args.command == "report":
+        _configure_utf8_output()
         from .report import ReportError, build_report, format_text
 
         try:

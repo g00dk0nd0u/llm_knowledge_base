@@ -362,8 +362,15 @@ def test_table_extractor_exception_is_non_fatal(
     assert page["text_blocks"]
     assert page["tables"] == []
     assert page["table_extraction"]["status"] == "extraction_error"
+    assert page["table_extraction"]["candidate_count"] == 0
+    assert page["table_extraction"]["accepted_count"] == 0
+    assert page["table_extraction"]["rejected_count"] == 0
     assert page["table_extraction"]["rejection_counts"] == {"extraction_error": 1}
     assert "environment-dependent" not in (knowledge / "pages/p0001.json").read_text()
+    report = build_report(repository / "projects/example")
+    assert report["table_extraction_error_pages"] == 1
+    assert report["table_rejection_counts"]["extraction_error"] == 1
+    assert report["rejected_table_candidate_count"] == 0
 
 
 def test_v1_tree_migrates_to_v2(repository: Path) -> None:
