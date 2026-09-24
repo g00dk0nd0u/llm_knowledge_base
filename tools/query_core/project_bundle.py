@@ -8,19 +8,44 @@ import os
 import shutil
 import sqlite3
 import tempfile
+from contextlib import closing
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .build import GENERATOR_VERSION, SCHEMA_VERSION
 from .errors import QueryCoreError
-from .pdf_adapter import _project_id, _sha256, _validate_output_location
 from .pdf_pipeline_contract import created_from, require_created_from, require_pipeline_version
-from .project_pdf_adapter import _manifest
-from .project_pdf_update import compare_pdf_project_database
 from .query import validate_database
 
 BUNDLE_FORMAT = "query-core-project-bundle/1"
 _DATABASE_PATH = "project.sqlite"
+
+
+def _sha256(path: Path) -> str:
+    """Hash a runtime bundle member without importing the PDF ingestion adapter."""
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _project_id(source_file: Any) -> str:
+    """Validate the persisted project source identity using only the stdlib."""
+    if not isinstance(source_file, str):
+        raise QueryCoreError("source_file must be a canonical repository-relative path")
+    logical = PurePosixPath(source_file)
+    parts = logical.parts
+    if (
+        logical.is_absolute() or logical.as_posix() != source_file or len(parts) < 4
+        or parts[0] != "projects" or not parts[1] or parts[2] != "source"
+        or any(part in {".", ".."} for part in parts)
+        or logical.suffix.lower() != ".pdf"
+    ):
+        raise QueryCoreError(
+            "source_file must match projects/<project-id>/source/<path>.pdf"
+        )
+    return parts[1]
 
 
 def _load_manifest(directory: Path) -> dict[str, Any]:
@@ -189,7 +214,9 @@ def project_bundle_database(bundle_directory: Path) -> Path:
 
 def _database_documents(database: Path) -> dict[str, tuple[str, str, int]]:
     try:
-        with sqlite3.connect(f"file:{database.resolve()}?mode=ro", uri=True) as connection:
+        with closing(
+            sqlite3.connect(f"file:{database.resolve()}?mode=ro", uri=True)
+        ) as connection:
             return {
                 identity: (document_id, source_sha, page_count)
                 for document_id, identity, source_sha, page_count in connection.execute(
@@ -207,7 +234,9 @@ def _database_document(
 ) -> tuple[str, str, int] | None:
     """Read one document tuple and require its PDF pages to be one-based contiguous."""
     try:
-        with sqlite3.connect(f"file:{database.resolve()}?mode=ro", uri=True) as connection:
+        with closing(
+            sqlite3.connect(f"file:{database.resolve()}?mode=ro", uri=True)
+        ) as connection:
             row = connection.execute(
                 "SELECT d.id,d.source_sha256,count(p.id) "
                 "FROM documents d LEFT JOIN pdf_pages p ON p.document_id=d.id "
@@ -288,6 +317,11 @@ def package_pdf_project_bundle(
     output: Path,
 ) -> Path:
     """Atomically package a current project snapshot as a portable directory."""
+    # Creation dependencies stay outside the read-only, zero-install bundle path.
+    from .pdf_adapter import _validate_output_location
+    from .project_pdf_adapter import _manifest
+    from .project_pdf_update import compare_pdf_project_database
+
     root = Path(repo_root).resolve()
     project_id, pipeline_version, entries = _manifest(root, project_directory)
     project = (root / "projects" / project_id).resolve()

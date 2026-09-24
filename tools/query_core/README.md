@@ -331,6 +331,34 @@ or generate a project bundle.
 
 ## Package a portable PDF project
 
+There are three distinct dependency boundaries:
+
+1. **Existing SQLite query runtime:** an existing `project.sqlite` can be searched
+   from a repository checkout with Python 3.12, `-S`, and only the standard library.
+2. **Existing Project Query Bundle runtime:** an already-created bundle can likewise
+   be inspected and searched with Python 3.12, `-S`, and only the standard library.
+3. **Creation and ingestion:** PDF Pipeline processing, intake, Query Core building,
+   and bundle packaging run on the ingestion machine and may require the project's
+   installed dependencies. Raw PDF ingestion is not a zero-install operation.
+
+The third-party PDF handoff is deliberately split as follows:
+
+```text
+Ingestion machine:
+source PDFs -> PDF Pipeline -> intake report -> project Query Core -> Project Query Bundle
+
+Receiving/query machine:
+Project Query Bundle -> inspect -> search
+```
+
+The receiving/query machine needs only Python 3.12's standard library and a repository
+checkout. For example:
+
+```bash
+python3 -S -m tools.query_core inspect-pdf-project-bundle path/to/bundle
+python3 -S -m tools.query_core search path/to/bundle "fire resistance"
+```
+
 Single-document packaging is unchanged: an original `source.pdf` and a
 `binding_mode=single_document` Query Core become one Enhanced PDF. It never accepts a
 project-bound payload.
