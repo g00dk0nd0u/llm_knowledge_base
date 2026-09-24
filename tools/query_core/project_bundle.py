@@ -13,14 +13,38 @@ from typing import Any
 
 from .build import GENERATOR_VERSION, SCHEMA_VERSION
 from .errors import QueryCoreError
-from .pdf_adapter import _project_id, _sha256, _validate_output_location
 from .pdf_pipeline_contract import created_from, require_created_from, require_pipeline_version
-from .project_pdf_adapter import _manifest
-from .project_pdf_update import compare_pdf_project_database
 from .query import validate_database
 
 BUNDLE_FORMAT = "query-core-project-bundle/1"
 _DATABASE_PATH = "project.sqlite"
+
+
+def _sha256(path: Path) -> str:
+    """Hash a runtime bundle member without importing the PDF ingestion adapter."""
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _project_id(source_file: Any) -> str:
+    """Validate the persisted project source identity using only the stdlib."""
+    if not isinstance(source_file, str):
+        raise QueryCoreError("source_file must be a canonical repository-relative path")
+    logical = PurePosixPath(source_file)
+    parts = logical.parts
+    if (
+        logical.is_absolute() or logical.as_posix() != source_file or len(parts) < 4
+        or parts[0] != "projects" or not parts[1] or parts[2] != "source"
+        or any(part in {".", ".."} for part in parts)
+        or logical.suffix.lower() != ".pdf"
+    ):
+        raise QueryCoreError(
+            "source_file must match projects/<project-id>/source/<path>.pdf"
+        )
+    return parts[1]
 
 
 def _load_manifest(directory: Path) -> dict[str, Any]:
@@ -288,6 +312,11 @@ def package_pdf_project_bundle(
     output: Path,
 ) -> Path:
     """Atomically package a current project snapshot as a portable directory."""
+    # Creation dependencies stay outside the read-only, zero-install bundle path.
+    from .pdf_adapter import _validate_output_location
+    from .project_pdf_adapter import _manifest
+    from .project_pdf_update import compare_pdf_project_database
+
     root = Path(repo_root).resolve()
     project_id, pipeline_version, entries = _manifest(root, project_directory)
     project = (root / "projects" / project_id).resolve()

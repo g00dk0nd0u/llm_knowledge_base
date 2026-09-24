@@ -47,6 +47,8 @@ jobs:
         run: python -S -m tests.stdlib_runtime_smoke
       - name: Standard-library-only PDF report smoke
         run: python -S -m tests.pdf_report_stdlib_smoke
+      - name: Standard-library-only Project Query Bundle smoke
+        run: python -S -m tests.project_bundle_stdlib_smoke
 
   validate:
     runs-on: ubuntu-latest
