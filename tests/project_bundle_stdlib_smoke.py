@@ -87,5 +87,11 @@ with tempfile.TemporaryDirectory(prefix="query bundle smoke ") as temporary:
         assert json.loads(bundle_output.decode("utf-8"))[0]["record_id"] == document_id
     forbidden = {"fitz", "jsonschema", "pytest", "tzdata", "tools.query_core.package"}
     assert forbidden.isdisjoint(sys.modules)
+    released_database = database.with_name("released-project.sqlite")
+    database.rename(released_database)
+    released_database.rename(database)
 
-print("ok: Project Query Bundle inspect/search; spaces; Japanese UTF-8; stdlib-only")
+print(
+    "ok: Project Query Bundle inspect/search; spaces; Japanese UTF-8; "
+    "stdlib-only; database released"
+)

@@ -8,6 +8,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+from contextlib import closing
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -213,7 +214,9 @@ def project_bundle_database(bundle_directory: Path) -> Path:
 
 def _database_documents(database: Path) -> dict[str, tuple[str, str, int]]:
     try:
-        with sqlite3.connect(f"file:{database.resolve()}?mode=ro", uri=True) as connection:
+        with closing(
+            sqlite3.connect(f"file:{database.resolve()}?mode=ro", uri=True)
+        ) as connection:
             return {
                 identity: (document_id, source_sha, page_count)
                 for document_id, identity, source_sha, page_count in connection.execute(
@@ -231,7 +234,9 @@ def _database_document(
 ) -> tuple[str, str, int] | None:
     """Read one document tuple and require its PDF pages to be one-based contiguous."""
     try:
-        with sqlite3.connect(f"file:{database.resolve()}?mode=ro", uri=True) as connection:
+        with closing(
+            sqlite3.connect(f"file:{database.resolve()}?mode=ro", uri=True)
+        ) as connection:
             row = connection.execute(
                 "SELECT d.id,d.source_sha256,count(p.id) "
                 "FROM documents d LEFT JOIN pdf_pages p ON p.document_id=d.id "
