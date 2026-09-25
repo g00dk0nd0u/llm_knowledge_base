@@ -25,6 +25,17 @@ REQUIRED_METADATA = {
 REQUIRED_VIRTUAL_TABLES = {"geometry_rtree", "search_fts"}
 PDF_TEXT_TABLES = {"pdf_text_blocks", "pdf_text_lines", "pdf_text_spans"}
 PDF_TABLE_TABLES = {"pdf_tables", "pdf_table_cells", "pdf_table_cell_spans"}
+SEMANTIC_TABLES = {"semantic_entities", "semantic_bindings"}
+SEMANTIC_REQUIRED_COLUMNS = {
+    "semantic_entities": {
+        "id", "entity_class", "label", "number", "instance_or_type",
+        "resolution_state", "provenance", "evidence_id",
+    },
+    "semantic_bindings": {
+        "id", "semantic_entity_id", "source_kind", "source_id",
+        "resolution_state", "provenance", "evidence_id",
+    },
+}
 PDF_TABLE_REQUIRED_COLUMNS = {
     "pdf_tables": {"id", "page_id", "order_index", "row_count", "column_count",
         "x_min", "y_min", "x_max", "y_max", "coordinate_space", "provenance",
@@ -480,6 +491,25 @@ def validate_database(path: Path) -> dict[str, str]:
                         + ", ".join(missing_columns)
                     )
             _validate_pdf_table_rows(connection)
+        present_semantic_tables = SEMANTIC_TABLES & objects.keys()
+        if present_semantic_tables and present_semantic_tables != SEMANTIC_TABLES:
+            missing = sorted(SEMANTIC_TABLES - present_semantic_tables)
+            raise QueryCoreError(
+                "incomplete semantic capability; missing tables: " + ", ".join(missing)
+            )
+        for table in present_semantic_tables:
+            actual = {
+                row["name"]
+                for row in connection.execute(
+                    f"PRAGMA table_info({json.dumps(table)})"
+                )
+            }
+            missing_columns = sorted(SEMANTIC_REQUIRED_COLUMNS[table] - actual)
+            if missing_columns:
+                raise QueryCoreError(
+                    f"incompatible semantic capability; {table} missing columns: "
+                    + ", ".join(missing_columns)
+                )
         if "pdf_pages" in objects:
             required_pdf_page_columns = {
                 "id",
@@ -700,6 +730,81 @@ class QueryCore:
             )
         }
         return PDF_TABLE_TABLES <= tables
+
+    def has_semantic_capability(self) -> bool:
+        """Return whether this v2 payload includes the optional semantic schema."""
+        tables = {
+            row["name"]
+            for row in self.connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        return SEMANTIC_TABLES <= tables
+
+    def get_semantic_entity(self, entity_id: str) -> dict[str, Any] | None:
+        """Project one semantic identity over existing source facts, without copies."""
+        if not self.has_semantic_capability():
+            return None
+        entities = self._rows(
+            "SELECT * FROM semantic_entities WHERE id=?", (entity_id,)
+        )
+        if not entities:
+            return None
+        entity = entities[0]
+        bindings = self._rows(
+            "SELECT * FROM semantic_bindings WHERE semantic_entity_id=? ORDER BY id",
+            (entity_id,),
+        )
+        parameter_bindings = [
+            (row["source_kind"], row["source_id"])
+            for row in bindings
+            if row["source_kind"] in {"element", "element_type"}
+            and row["source_id"] is not None
+            and row["resolution_state"] in {"exact", "resolved_deterministically"}
+        ]
+        properties: list[dict[str, Any]] = []
+        for source_kind, source_id in parameter_bindings:
+            for row in self._rows(
+                "SELECT * FROM parameters WHERE entity_kind=? AND entity_id=? "
+                "ORDER BY definition_name,id",
+                (source_kind, source_id),
+            ):
+                properties.append({
+                    "parameter_id": row["id"],
+                    "source_entity": {"kind": source_kind, "id": source_id},
+                    "source_name": row["definition_name"],
+                    "source_value": row["value_text"] or row["raw_value_text"],
+                    "raw_numeric_value": row["raw_numeric_value"],
+                    "numeric_value": row["numeric_value"],
+                    "unit": row["unit"],
+                    "scope": row["scope"],
+                    "provenance": row["provenance"],
+                    "confidence": row["confidence"],
+                    "evidence_refs": [row["evidence_id"]] if row["evidence_id"] else [],
+                })
+        relationship_rows: dict[str, dict[str, Any]] = {}
+        for source_kind, source_id in parameter_bindings:
+            for row in self._rows(
+                "SELECT * FROM relationships WHERE "
+                "(source_kind=? AND source_id=?) OR (target_kind=? AND target_id=?) "
+                "ORDER BY id",
+                (source_kind, source_id, source_kind, source_id),
+            ):
+                relationship_rows[row["id"]] = row
+        evidence_refs = sorted({
+            ref for ref in (
+                [entity.get("evidence_id")]
+                + [row.get("evidence_id") for row in bindings]
+            ) if ref
+        })
+        return {
+            "capability": {"semantic_projection": True, "schema_version": 2},
+            "entity": entity,
+            "bindings": bindings,
+            "properties": properties,
+            "relationships": [relationship_rows[key] for key in sorted(relationship_rows)],
+            "evidence_refs": evidence_refs,
+        }
 
     @staticmethod
     def _pdf_table_navigation(

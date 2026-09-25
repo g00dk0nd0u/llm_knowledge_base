@@ -32,6 +32,30 @@ by the project, including PyMuPDF or jsonschema.
 
 ## Identity and parameters
 
+### Optional semantic projection
+
+Current v2 builds include optional `semantic_entities` and `semantic_bindings` tables.
+They give source-neutral project concepts a stable identity and explicit binding state
+(`exact`, `resolved_deterministically`, `ambiguous`, or `unresolved`) without changing
+the meaning of existing Query Core records. Bindings can name an `element`,
+`element_type`, `space`, `level`, `evidence`, or a future adapter's PDF table/cell/text
+record; Phase 1A does not infer PDF bindings.
+
+`QueryCore.has_semantic_capability()` detects the tables physically. A pre-semantic v2
+database without either table remains valid, returns `False`, and continues to support
+all existing queries. `QueryCore.get_semantic_entity(id)` returns a compact read-only
+view containing capability status, semantic identity, bindings, projected sparse
+properties, existing relationships, and evidence references. For resolved Revit
+element/type bindings, properties are read dynamically from the authoritative
+`parameters` rows and preserve `definition_name`, source value, scope, provenance, and
+evidence. Existing `relationships` are similarly exposed rather than copied. Absent
+properties are omitted; there are deliberately no `semantic_properties` or
+`semantic_relationships` tables in Phase 1A.
+
+This read path uses only `sqlite3` and the Python standard library. It therefore keeps
+the same Python 3.12 `-S` boundary as all other existing-SQLite and Project Query Bundle
+queries; semantic creation remains a build-time concern.
+
 `source_models` separates stable model identity (`model_identity_kind` plus
 `model_identity`) from changing `snapshot_version_guid`/`snapshot_save_number`.
 `DocumentVersion.VersionGUID` must never be used as permanent model identity.
