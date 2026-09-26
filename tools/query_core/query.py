@@ -26,6 +26,7 @@ REQUIRED_VIRTUAL_TABLES = {"geometry_rtree", "search_fts"}
 PDF_TEXT_TABLES = {"pdf_text_blocks", "pdf_text_lines", "pdf_text_spans"}
 PDF_TABLE_TABLES = {"pdf_tables", "pdf_table_cells", "pdf_table_cell_spans"}
 SEMANTIC_TABLES = {"semantic_entities", "semantic_bindings"}
+SEMANTIC_PROPERTY_TABLE = "semantic_properties"
 SEMANTIC_REQUIRED_COLUMNS = {
     "semantic_entities": {
         "id", "entity_class", "label", "number", "instance_or_type",
@@ -35,6 +36,11 @@ SEMANTIC_REQUIRED_COLUMNS = {
         "id", "semantic_entity_id", "source_kind", "source_id",
         "resolution_state", "provenance", "evidence_id",
     },
+}
+SEMANTIC_PROPERTY_REQUIRED_COLUMNS = {
+    "id", "semantic_entity_id", "source_name", "source_value", "value_type",
+    "raw_numeric_value", "numeric_value", "unit", "scope", "canonical_name",
+    "provenance", "source_binding_id", "evidence_id",
 }
 PDF_TABLE_REQUIRED_COLUMNS = {
     "pdf_tables": {"id", "page_id", "order_index", "row_count", "column_count",
@@ -510,6 +516,52 @@ def validate_database(path: Path) -> dict[str, str]:
                     f"incompatible semantic capability; {table} missing columns: "
                     + ", ".join(missing_columns)
                 )
+        if present_semantic_tables == SEMANTIC_TABLES:
+            known_binding_sources = {
+                "element": "elements",
+                "element_type": "element_types",
+                "space": "spaces",
+                "level": "levels",
+                "evidence": "evidence",
+                "pdf_table_cell": "pdf_table_cells",
+                "pdf_text_span": "pdf_text_spans",
+            }
+            for source_kind, source_table in known_binding_sources.items():
+                if source_table in objects:
+                    sql = (
+                        "SELECT b.id FROM semantic_bindings b "
+                        f"LEFT JOIN {source_table} s ON s.id=b.source_id "
+                        "WHERE b.source_kind=? AND b.resolution_state IN "
+                        "('exact','resolved_deterministically') AND s.id IS NULL LIMIT 1"
+                    )
+                else:
+                    sql = (
+                        "SELECT id FROM semantic_bindings WHERE source_kind=? "
+                        "AND resolution_state IN "
+                        "('exact','resolved_deterministically') LIMIT 1"
+                    )
+                missing_source = connection.execute(sql, (source_kind,)).fetchone()
+                if missing_source:
+                    raise QueryCoreError(
+                        f"semantic binding references nonexistent {source_kind} record: "
+                        f"{missing_source['id']}"
+                    )
+        if SEMANTIC_PROPERTY_TABLE in objects:
+            if present_semantic_tables != SEMANTIC_TABLES:
+                raise QueryCoreError(
+                    "semantic property capability requires semantic capability"
+                )
+            actual = {
+                row["name"] for row in connection.execute(
+                    "PRAGMA table_info(semantic_properties)"
+                )
+            }
+            missing_columns = sorted(SEMANTIC_PROPERTY_REQUIRED_COLUMNS - actual)
+            if missing_columns:
+                raise QueryCoreError(
+                    "incompatible semantic property capability; missing columns: "
+                    + ", ".join(missing_columns)
+                )
         if "pdf_pages" in objects:
             required_pdf_page_columns = {
                 "id",
@@ -741,6 +793,12 @@ class QueryCore:
         }
         return SEMANTIC_TABLES <= tables
 
+    def has_semantic_property_capability(self) -> bool:
+        """Return whether sparse non-Revit semantic properties are available."""
+        return self._has_columns(
+            SEMANTIC_PROPERTY_TABLE, *SEMANTIC_PROPERTY_REQUIRED_COLUMNS
+        )
+
     def get_semantic_entity(self, entity_id: str) -> dict[str, Any] | None:
         """Project one semantic identity over existing source facts, without copies."""
         if not self.has_semantic_capability():
@@ -774,6 +832,7 @@ class QueryCore:
                 (source_kind, source_id),
             ):
                 properties.append({
+                    "fact_kind": "query_core_parameter",
                     "parameter_id": row["id"],
                     "source_entity": {"kind": source_kind, "id": source_id},
                     "source_name": row["definition_name"],
@@ -784,6 +843,27 @@ class QueryCore:
                     "scope": row["scope"],
                     "provenance": row["provenance"],
                     "confidence": row["confidence"],
+                    "evidence_refs": [row["evidence_id"]] if row["evidence_id"] else [],
+                })
+        if self.has_semantic_property_capability():
+            for row in self._rows(
+                "SELECT * FROM semantic_properties WHERE semantic_entity_id=? "
+                "ORDER BY source_name,id",
+                (entity_id,),
+            ):
+                properties.append({
+                    "fact_kind": "semantic_property",
+                    "property_id": row["id"],
+                    "source_name": row["source_name"],
+                    "source_value": row["source_value"],
+                    "value_type": row["value_type"],
+                    "raw_numeric_value": row["raw_numeric_value"],
+                    "numeric_value": row["numeric_value"],
+                    "unit": row["unit"],
+                    "scope": row["scope"],
+                    "canonical_name": row["canonical_name"],
+                    "provenance": row["provenance"],
+                    "source_binding_ref": row["source_binding_id"],
                     "evidence_refs": [row["evidence_id"]] if row["evidence_id"] else [],
                 })
         relationship_rows: dict[str, dict[str, Any]] = {}

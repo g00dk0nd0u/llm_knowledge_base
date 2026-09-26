@@ -36,6 +36,7 @@ TABLES = (
     "relationships",
     "semantic_entities",
     "semantic_bindings",
+    "semantic_properties",
     "annotations",
     "annotation_segments",
     "annotation_references",
@@ -96,10 +97,49 @@ def _validate(records: dict[str, Any]) -> None:
     semantic_ids = {
         row.get("id") for row in records.get("semantic_entities", [])
     }
+    semantic_bindings = {
+        row.get("id"): row for row in records.get("semantic_bindings", [])
+    }
+    known_binding_sources = {
+        "element": "elements",
+        "element_type": "element_types",
+        "space": "spaces",
+        "level": "levels",
+        "evidence": "evidence",
+        "pdf_table_cell": "pdf_table_cells",
+        "pdf_text_span": "pdf_text_spans",
+    }
+    known_source_ids = {
+        kind: {row.get("id") for row in records.get(table, [])}
+        for kind, table in known_binding_sources.items()
+    }
     for binding in records.get("semantic_bindings", []):
         if binding.get("semantic_entity_id") not in semantic_ids:
             raise QueryCoreError(
                 "semantic binding references nonexistent semantic entity"
+            )
+        if binding.get("resolution_state") in {"exact", "resolved_deterministically"}:
+            source_kind = binding.get("source_kind")
+            if (source_kind in known_source_ids
+                    and binding.get("source_id") not in known_source_ids[source_kind]):
+                raise QueryCoreError(
+                    f"semantic binding references nonexistent {source_kind} record"
+                )
+    for prop in records.get("semantic_properties", []):
+        if prop.get("semantic_entity_id") not in semantic_ids:
+            raise QueryCoreError(
+                "semantic property references nonexistent semantic entity"
+            )
+        binding_id = prop.get("source_binding_id")
+        if binding_id is not None and binding_id not in semantic_bindings:
+            raise QueryCoreError(
+                "semantic property references nonexistent semantic binding"
+            )
+        if (binding_id is not None
+                and semantic_bindings[binding_id].get("semantic_entity_id")
+                != prop.get("semantic_entity_id")):
+            raise QueryCoreError(
+                "semantic property binding belongs to another semantic entity"
             )
     for table in (
         "levels",
@@ -186,7 +226,9 @@ def _validate(records: dict[str, Any]) -> None:
         expected = [(r, c) for r in range(table["row_count"]) for c in range(table["column_count"])]
         if [(row.get("row_index"), row.get("column_index")) for row in ordered] != expected:
             raise QueryCoreError("PDF table cells must form a complete row-major grid")
-    for table in ("parameters", "annotations", "annotation_segments"):
+    for table in (
+        "parameters", "semantic_properties", "annotations", "annotation_segments"
+    ):
         for row in records.get(table, []):
             if row.get("numeric_value") is not None and not row.get("unit"):
                 raise QueryCoreError(f"numeric record requires unit: {row.get('id')}")
