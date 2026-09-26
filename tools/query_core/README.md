@@ -69,6 +69,33 @@ This read path uses only `sqlite3` and the Python standard library. It therefore
 the same Python 3.12 `-S` boundary as all other existing-SQLite and Project Query Bundle
 queries; semantic creation remains a build-time concern.
 
+### Explicit PDF table semantic adapter
+
+`SemanticTableMapping` and `apply_semantic_table_mapping(records, mapping)` provide a
+build-time-only, opt-in adapter for one explicitly selected `pdf_tables.id`. The generic
+mapping names the header row(s), entity class, exact key header(s), instance/type value,
+property scope, optional label/number headers, and either exact property headers or
+`all_non_key`. `canonical_names` is an optional exact header-to-name dictionary. Header
+matching is exact: a missing requested header, a duplicate requested header, or a
+multi-valued configured header column is an error. No schedule discovery, fuzzy matching,
+domain synonym, OCR, or semantic guessing occurs, and normal PDF build/update commands do
+not invoke this adapter.
+
+An entity ID is the SHA-256 encoding of the JSON tuple `(mapping_id, source_namespace,
+entity_class, exact_key_values)`, prefixed by `semantic-pdf-`. Key text is neither trimmed
+nor normalized for identity (whitespace is examined only to decide whether a key is
+blank), so table row reordering does not affect identity. Blank keys are reported as
+errors and every occurrence of a duplicated key is reported as ambiguous; none of those
+rows is materialized.
+
+Each non-empty selected data cell creates one sparse `semantic_properties` row. Its
+`source_name` is the exact matched header, its `source_value` is the exact cell text, and
+`canonical_name` remains null unless the mapping explicitly supplies it. The property
+references a dedicated exact `semantic_bindings` row whose `source_kind` is
+`pdf_table_cell` and whose `source_id` is the actual cell ID. Entity key cells receive the
+same kind of exact binding. The adapter emits no `relationships`, performs no PDF/Revit
+entity fusion, and leaves source PDFs and PDF Pipeline output untouched.
+
 `source_models` separates stable model identity (`model_identity_kind` plus
 `model_identity`) from changing `snapshot_version_guid`/`snapshot_save_number`.
 `DocumentVersion.VersionGUID` must never be used as permanent model identity.

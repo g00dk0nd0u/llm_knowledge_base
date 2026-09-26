@@ -23,6 +23,9 @@ _LAZY_EXPORTS = {
     "ProjectUpdateResult": (".project_pdf_update", "ProjectUpdateResult"),
     "compare_pdf_project_database": (".project_pdf_update", "compare_pdf_project_database"),
     "update_pdf_project_database": (".project_pdf_update", "update_pdf_project_database"),
+    "SemanticTableAdapterReport": (".semantic_table_adapter", "SemanticTableAdapterReport"),
+    "SemanticTableMapping": (".semantic_table_adapter", "SemanticTableMapping"),
+    "apply_semantic_table_mapping": (".semantic_table_adapter", "apply_semantic_table_mapping"),
 }
 
 
@@ -44,10 +47,13 @@ __all__ = [
     "ProjectDocumentChange",
     "ProjectUpdateResult",
     "SCHEMA_VERSION",
+    "SemanticTableAdapterReport",
+    "SemanticTableMapping",
     "QueryCore",
     "QueryCoreError",
     "build_database",
     "build_pdf_project_database",
+    "apply_semantic_table_mapping",
     "inspect_pdf_project_bundle",
     "package_pdf_project_bundle",
     "project_bundle_database",
