@@ -361,6 +361,73 @@ def test_unknown_resolved_binding_kind_remains_extensible(tmp_path: Path) -> Non
     build_database(records, tmp_path / "future.sqlite")
 
 
+def test_project_scope_semantic_property_round_trip(tmp_path: Path) -> None:
+    records = {
+        "project_id": "project-property", "created_from": "fixture",
+        "binding_mode": "project",
+        "documents": [{
+            "id": "document-project-notes", "identity": "source/project-notes.pdf",
+            "title": "Project Notes", "source_filename": "project-notes.pdf",
+            "source_sha256": "b" * 64,
+        }],
+        "evidence": [{
+            "id": "evidence-project-note", "document_id": "document-project-notes",
+            "pdf_page": 1, "x_min": 20.0, "y_min": 30.0,
+            "x_max": 180.0, "y_max": 50.0,
+            "coordinate_space": "pdf_points_top_left",
+        }],
+        "semantic_entities": [{
+            "id": "semantic-project", "entity_class": "Project",
+            "label": "Project", "instance_or_type": "unknown",
+            "resolution_state": "exact", "provenance": "project_notes",
+            "evidence_id": "evidence-project-note",
+        }],
+        "semantic_properties": [{
+            "id": "property-project-hours",
+            "semantic_entity_id": "semantic-project",
+            "source_name": "作業時間", "source_value": "平日 8:00–18:00",
+            "scope": "project", "provenance": "project_notes",
+            "evidence_id": "evidence-project-note",
+        }],
+    }
+    database = build_database(records, tmp_path / "project-property.sqlite")
+    assert validate_database(database)["schema_version"] == "2"
+    with QueryCore(database) as query:
+        prop = query.get_semantic_entity("semantic-project")["properties"][0]
+        assert prop["scope"] == "project"
+        assert prop["source_name"] == "作業時間"
+        assert prop["source_value"] == "平日 8:00–18:00"
+        assert prop["provenance"] == "project_notes"
+        assert prop["evidence_refs"] == ["evidence-project-note"]
+
+
+def test_semantic_property_rejects_unsupported_scope(tmp_path: Path) -> None:
+    records = {
+        "project_id": "bad-property-scope", "created_from": "fixture",
+        "binding_mode": "project",
+        "documents": [{
+            "id": "document", "identity": "source/notes.pdf", "title": "Notes",
+            "source_filename": "notes.pdf", "source_sha256": "c" * 64,
+        }],
+        "evidence": [{
+            "id": "evidence", "document_id": "document", "pdf_page": 1,
+        }],
+        "semantic_entities": [{
+            "id": "entity", "entity_class": "Project",
+            "instance_or_type": "unknown", "resolution_state": "exact",
+            "provenance": "fixture",
+        }],
+        "semantic_properties": [{
+            "id": "property", "semantic_entity_id": "entity",
+            "source_name": "Name", "source_value": "Value",
+            "scope": "portfolio", "provenance": "fixture",
+            "evidence_id": "evidence",
+        }],
+    }
+    with pytest.raises(QueryCoreError, match="CHECK constraint failed"):
+        build_database(records, tmp_path / "bad-scope.sqlite")
+
+
 def test_semantic_projection_is_stdlib_only(
     tmp_path: Path, semantic_contract_records: dict
 ) -> None:

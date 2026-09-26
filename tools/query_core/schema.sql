@@ -152,7 +152,7 @@ CREATE TABLE semantic_properties (
   raw_numeric_value REAL,
   numeric_value REAL,
   unit TEXT,
-  scope TEXT NOT NULL CHECK(scope IN ('instance','type','sheet','schedule','unknown')),
+  scope TEXT NOT NULL CHECK(scope IN ('instance','type','sheet','schedule','project','unknown')),
   canonical_name TEXT,
   provenance TEXT NOT NULL,
   source_binding_id TEXT REFERENCES semantic_bindings(id),
