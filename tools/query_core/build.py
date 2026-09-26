@@ -34,6 +34,8 @@ TABLES = (
     "pdf_table_cell_spans",
     "parameters",
     "relationships",
+    "semantic_entities",
+    "semantic_bindings",
     "annotations",
     "annotation_segments",
     "annotation_references",
@@ -76,10 +78,14 @@ def _validate(records: dict[str, Any]) -> None:
     model_rows = records.get("source_models", [])
     source_models = {row.get("id"): row for row in model_rows}
     spaces = {row.get("id"): row for row in records.get("spaces", [])}
-    revit_tables = set(TABLES) - {
-        "documents", "pdf_pages", "pdf_text_blocks", "pdf_text_lines",
-        "pdf_text_spans", "pdf_tables", "pdf_table_cells",
-        "pdf_table_cell_spans", "evidence", "search_content"
+    # Keep this allow-list explicit: optional source-neutral capabilities must not
+    # make a PDF-only/project-only build look like a Revit snapshot.
+    revit_tables = {
+        "link_instances", "levels", "spaces", "element_types", "elements",
+        "views", "sheets", "viewports", "parameters", "relationships",
+        "annotations", "annotation_segments", "annotation_references",
+        "entity_appearances", "spatial_boundaries",
+        "spatial_boundary_segments", "geometries",
     }
     uses_revit = bool(model_rows) or any(
         records.get(table, []) for table in revit_tables
@@ -87,6 +93,14 @@ def _validate(records: dict[str, Any]) -> None:
     hosts = [row for row in model_rows if row.get("role") == "host"]
     if uses_revit and len(hosts) != 1:
         raise QueryCoreError("snapshot must contain exactly one host source model")
+    semantic_ids = {
+        row.get("id") for row in records.get("semantic_entities", [])
+    }
+    for binding in records.get("semantic_bindings", []):
+        if binding.get("semantic_entity_id") not in semantic_ids:
+            raise QueryCoreError(
+                "semantic binding references nonexistent semantic entity"
+            )
     for table in (
         "levels",
         "spaces",
