@@ -24,6 +24,19 @@ def semantic_contract_records() -> dict:
             "revit_version": "2026", "model_identity_kind": "path",
             "model_identity": "contract.rvt",
         }],
+        "levels": [{
+            "id": "level-01", "name": "Level 01", "elevation": 0.0,
+            "unit": "mm", "source_model_id": "model-host",
+            "source_unique_id": "level-01", "provenance": "revit_snapshot",
+            "confidence": 1.0,
+        }],
+        "spaces": [{
+            "id": "space-101", "kind": "Room", "name": "Office 101",
+            "number": "101", "level_id": "level-01",
+            "source_model_id": "model-host", "source_unique_id": "space-101",
+            "phase_source_unique_id": None, "provenance": "revit_snapshot",
+            "confidence": 1.0,
+        }],
         "element_types": [{
             "id": "type-door-a", "family_name": "Single Door",
             "type_name": "D-A", "category": "Door",
@@ -70,12 +83,26 @@ def semantic_contract_records() -> dict:
                 "value_text": "60 min", "provenance": "revit_snapshot",
             },
         ],
-        "relationships": [{
-            "id": "relationship-instance-of", "source_kind": "element",
-            "source_id": "door-101", "relation_type": "instance_of",
-            "target_kind": "element_type", "target_id": "type-door-a",
-            "provenance": "revit_snapshot",
-        }],
+        "relationships": [
+            {
+                "id": "relationship-instance-of", "source_kind": "element",
+                "source_id": "door-101", "relation_type": "instance_of",
+                "target_kind": "element_type", "target_id": "type-door-a",
+                "provenance": "revit_snapshot",
+            },
+            {
+                "id": "relationship-space-level", "source_kind": "space",
+                "source_id": "space-101", "relation_type": "belongs_to_level",
+                "target_kind": "level", "target_id": "level-01",
+                "provenance": "revit_snapshot",
+            },
+            {
+                "id": "relationship-door-space", "source_kind": "element",
+                "source_id": "door-101", "relation_type": "to_space",
+                "target_kind": "space", "target_id": "space-101",
+                "provenance": "revit_snapshot",
+            },
+        ],
         "semantic_entities": [
             {
                 "id": "semantic-door-101", "entity_class": "Door",
@@ -87,6 +114,12 @@ def semantic_contract_records() -> dict:
                 "id": "semantic-door-102", "entity_class": "Door",
                 "label": None, "number": "D-102", "instance_or_type": "instance",
                 "resolution_state": "ambiguous",
+                "provenance": "semantic_contract_fixture",
+            },
+            {
+                "id": "semantic-space-101", "entity_class": "Space",
+                "label": "Office 101", "number": "101",
+                "instance_or_type": "instance", "resolution_state": "exact",
                 "provenance": "semantic_contract_fixture",
             },
         ],
@@ -108,6 +141,12 @@ def semantic_contract_records() -> dict:
                 "source_kind": "pdf_table_cell", "source_id": None,
                 "resolution_state": "ambiguous", "provenance": "fixture_only",
             },
+            {
+                "id": "binding-space-101",
+                "semantic_entity_id": "semantic-space-101",
+                "source_kind": "space", "source_id": "space-101",
+                "resolution_state": "exact", "provenance": "stable_source_identity",
+            },
         ],
     }
 
@@ -127,7 +166,7 @@ def test_semantic_projection_round_trip_without_duplicate_facts(
             ("Fire Rating", "60 min", "type"),
         ]
         assert [row["id"] for row in view["relationships"]] == [
-            "relationship-instance-of"
+            "relationship-door-space", "relationship-instance-of"
         ]
         ambiguous = query.get_semantic_entity("semantic-door-102")
         assert ambiguous is not None
@@ -136,10 +175,27 @@ def test_semantic_projection_round_trip_without_duplicate_facts(
         assert ambiguous["properties"] == []
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT count(*) FROM parameters").fetchone()[0] == 4
-        assert connection.execute("SELECT count(*) FROM relationships").fetchone()[0] == 1
+        assert connection.execute("SELECT count(*) FROM relationships").fetchone()[0] == 3
         assert not connection.execute(
             "SELECT 1 FROM sqlite_master WHERE name='semantic_properties'"
         ).fetchone()
+
+
+def test_space_binding_projects_source_and_target_relationships_without_parameters(
+    tmp_path: Path, semantic_contract_records: dict
+) -> None:
+    database = build_database(semantic_contract_records, tmp_path / "space.sqlite")
+    with QueryCore(database) as query:
+        view = query.get_semantic_entity("semantic-space-101")
+        assert view is not None
+        assert view["properties"] == []
+        assert [row["id"] for row in view["relationships"]] == [
+            "relationship-door-space", "relationship-space-level"
+        ]
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM parameters WHERE entity_kind='space'"
+        ).fetchone()[0] == 0
         assert not connection.execute(
             "SELECT 1 FROM sqlite_master WHERE name='semantic_relationships'"
         ).fetchone()

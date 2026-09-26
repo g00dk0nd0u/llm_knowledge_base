@@ -755,12 +755,16 @@ class QueryCore:
             "SELECT * FROM semantic_bindings WHERE semantic_entity_id=? ORDER BY id",
             (entity_id,),
         )
-        parameter_bindings = [
+        resolved_bindings = [
             (row["source_kind"], row["source_id"])
             for row in bindings
-            if row["source_kind"] in {"element", "element_type"}
-            and row["source_id"] is not None
+            if row["source_id"] is not None
             and row["resolution_state"] in {"exact", "resolved_deterministically"}
+        ]
+        parameter_bindings = [
+            binding
+            for binding in resolved_bindings
+            if binding[0] in {"element", "element_type"}
         ]
         properties: list[dict[str, Any]] = []
         for source_kind, source_id in parameter_bindings:
@@ -783,7 +787,7 @@ class QueryCore:
                     "evidence_refs": [row["evidence_id"]] if row["evidence_id"] else [],
                 })
         relationship_rows: dict[str, dict[str, Any]] = {}
-        for source_kind, source_id in parameter_bindings:
+        for source_kind, source_id in resolved_bindings:
             for row in self._rows(
                 "SELECT * FROM relationships WHERE "
                 "(source_kind=? AND source_id=?) OR (target_kind=? AND target_id=?) "
