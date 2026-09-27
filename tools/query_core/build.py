@@ -37,6 +37,7 @@ TABLES = (
     "semantic_entities",
     "semantic_bindings",
     "semantic_properties",
+    "semantic_relationships",
     "annotations",
     "annotation_segments",
     "annotation_references",
@@ -140,6 +141,29 @@ def _validate(records: dict[str, Any]) -> None:
                 != prop.get("semantic_entity_id")):
             raise QueryCoreError(
                 "semantic property binding belongs to another semantic entity"
+            )
+    evidence_ids = {row.get("id") for row in records.get("evidence", [])}
+    for relationship in records.get("semantic_relationships", []):
+        if relationship.get("subject_semantic_entity_id") not in semantic_ids:
+            raise QueryCoreError(
+                "semantic relationship references nonexistent subject semantic entity"
+            )
+        if relationship.get("object_semantic_entity_id") not in semantic_ids:
+            raise QueryCoreError(
+                "semantic relationship references nonexistent object semantic entity"
+            )
+        relation_type = relationship.get("relation_type")
+        if not isinstance(relation_type, str) or not relation_type.strip():
+            raise QueryCoreError("semantic relationship relation_type must be non-empty")
+        evidence_id = relationship.get("evidence_id")
+        if evidence_id is not None and evidence_id not in evidence_ids:
+            raise QueryCoreError(
+                "semantic relationship references nonexistent evidence"
+            )
+        binding_id = relationship.get("source_binding_id")
+        if binding_id is not None and binding_id not in semantic_bindings:
+            raise QueryCoreError(
+                "semantic relationship references nonexistent semantic binding"
             )
     for table in (
         "levels",

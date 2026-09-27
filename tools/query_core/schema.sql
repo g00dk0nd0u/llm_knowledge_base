@@ -160,6 +160,15 @@ CREATE TABLE semantic_properties (
   CHECK(source_binding_id IS NOT NULL OR evidence_id IS NOT NULL),
   CHECK(numeric_value IS NULL OR unit IS NOT NULL)
 ) WITHOUT ROWID;
+CREATE TABLE semantic_relationships (
+  id TEXT PRIMARY KEY,
+  subject_semantic_entity_id TEXT NOT NULL REFERENCES semantic_entities(id) ON DELETE CASCADE,
+  relation_type TEXT NOT NULL CHECK(length(trim(relation_type))>0),
+  object_semantic_entity_id TEXT NOT NULL REFERENCES semantic_entities(id) ON DELETE CASCADE,
+  provenance TEXT NOT NULL,
+  evidence_id TEXT REFERENCES evidence(id),
+  source_binding_id TEXT REFERENCES semantic_bindings(id)
+) WITHOUT ROWID;
 CREATE TABLE annotations (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('dimension','spot_elevation','spot_coordinate','text_annotation','tag','grid_reference')), semantic_type TEXT, display_text TEXT NOT NULL, numeric_value REAL, unit TEXT, related_entity_kind TEXT, related_entity_id TEXT, source_model_id TEXT REFERENCES source_models(id), source_unique_id TEXT, view_id TEXT REFERENCES views(id), provenance TEXT NOT NULL, confidence REAL CHECK(confidence IS NULL OR confidence BETWEEN 0 AND 1), evidence_id TEXT REFERENCES evidence(id), CHECK(numeric_value IS NULL OR unit IS NOT NULL), UNIQUE(source_model_id,source_unique_id)) WITHOUT ROWID;
 CREATE TABLE annotation_segments (id TEXT PRIMARY KEY, annotation_id TEXT NOT NULL REFERENCES annotations(id) ON DELETE CASCADE, segment_index INTEGER NOT NULL CHECK(segment_index>=0), numeric_value REAL, unit TEXT, display_text TEXT, value_override TEXT, prefix TEXT, suffix TEXT, above TEXT, below TEXT, origin_json TEXT, text_position_json TEXT, UNIQUE(annotation_id,segment_index), CHECK(numeric_value IS NULL OR unit IS NOT NULL)) WITHOUT ROWID;
 CREATE TABLE annotation_references (id TEXT PRIMARY KEY, annotation_id TEXT NOT NULL REFERENCES annotations(id) ON DELETE CASCADE, reference_index INTEGER NOT NULL CHECK(reference_index>=0), target_source_model_id TEXT REFERENCES source_models(id), target_source_unique_id TEXT, target_link_instance_id TEXT REFERENCES link_instances(id), stable_reference TEXT, reference_type TEXT, is_linked INTEGER NOT NULL CHECK(is_linked IN (0,1)), resolution_state TEXT NOT NULL CHECK(resolution_state IN ('resolved','unresolved','orphan')), UNIQUE(annotation_id,reference_index)) WITHOUT ROWID;
