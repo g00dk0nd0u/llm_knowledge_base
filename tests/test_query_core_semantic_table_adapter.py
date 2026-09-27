@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -138,7 +139,7 @@ def test_duplicate_and_missing_keys_are_reported_and_not_materialized() -> None:
     assert report.imported == 0 and report.skipped == 3
     assert [(issue.row_index, issue.code) for issue in report.ambiguous] == [(1, "duplicate_key"), (2, "duplicate_key")]
     assert [(issue.row_index, issue.code) for issue in report.errors] == [(3, "missing_key")]
-    assert records["semantic_entities"] == []
+    assert records.get("semantic_entities", []) == []
 
 
 def test_duplicate_requested_header_is_an_explicit_error() -> None:
@@ -149,3 +150,37 @@ def test_duplicate_requested_header_is_an_explicit_error() -> None:
             property_columns=("備考",),
         ))
     assert "semantic_entities" not in records
+
+
+def test_fatal_later_row_collision_leaves_records_exactly_unchanged() -> None:
+    rows = [["D-105", "A", "", "", ""], ["D-106", "B", "", "", ""]]
+    generated = _records(["建具番号", "電気錠", "防火", "ガラス厚", "靴ずり"], rows)
+    apply_semantic_table_mapping(generated, _mapping())
+    later_entity_id = next(
+        entity["id"] for entity in generated["semantic_entities"]
+        if entity["number"] == "D-106"
+    )
+
+    records = _records(["建具番号", "電気錠", "防火", "ガラス厚", "靴ずり"], rows)
+    records["semantic_entities"] = [{"id": "existing-entity"}]
+    records["semantic_bindings"] = [{"id": "existing-binding"}]
+    records["semantic_properties"] = [{"id": later_entity_id}]
+    before = deepcopy(records)
+
+    with pytest.raises(QueryCoreError, match="duplicate record ID"):
+        apply_semantic_table_mapping(records, _mapping())
+
+    assert records == before
+
+
+def test_fatal_contract_error_does_not_create_empty_semantic_collections() -> None:
+    records = _records(["機器番号", "備考", "備考"], [["E-1", "A", "B"]])
+    before = deepcopy(records)
+
+    with pytest.raises(QueryCoreError, match="header is ambiguous"):
+        apply_semantic_table_mapping(records, _mapping(
+            entity_class="Equipment", key_columns=("機器番号",),
+            number_column="機器番号", property_columns=("備考",),
+        ))
+
+    assert records == before

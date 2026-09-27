@@ -145,10 +145,18 @@ def apply_semantic_table_mapping(
             row, "duplicate_key", "configured key values occur in more than one data row"
         ))
 
-    entities = records.setdefault("semantic_entities", [])
-    bindings = records.setdefault("semantic_bindings", [])
-    properties = records.setdefault("semantic_properties", [])
-    existing_ids = {row["id"] for collection in (entities, bindings, properties) for row in collection}
+    existing_collections = (
+        records.get("semantic_entities", []),
+        records.get("semantic_bindings", []),
+        records.get("semantic_properties", []),
+    )
+    existing_ids = {
+        item["id"] for collection in existing_collections for item in collection
+    }
+    staged_entities: list[dict[str, Any]] = []
+    staged_bindings: list[dict[str, Any]] = []
+    staged_properties: list[dict[str, Any]] = []
+    staged_ids: set[str] = set()
     imported = 0
     for row in data_rows:
         if row not in keys_by_row or row in duplicate_rows:
@@ -194,13 +202,21 @@ def apply_semantic_table_mapping(
             row_properties.append(prop)
             generated.extend((binding, prop))
         ids = [item["id"] for item in generated]
-        if len(ids) != len(set(ids)) or existing_ids.intersection(ids):
+        if (
+            len(ids) != len(set(ids))
+            or existing_ids.intersection(ids)
+            or staged_ids.intersection(ids)
+        ):
             raise QueryCoreError("semantic table mapping would create a duplicate record ID")
-        existing_ids.update(ids)
-        entities.append(entity)
-        bindings.extend(row_bindings)
-        properties.extend(row_properties)
+        staged_ids.update(ids)
+        staged_entities.append(entity)
+        staged_bindings.extend(row_bindings)
+        staged_properties.extend(row_properties)
         imported += 1
+    if staged_entities:
+        records.setdefault("semantic_entities", []).extend(staged_entities)
+        records.setdefault("semantic_bindings", []).extend(staged_bindings)
+        records.setdefault("semantic_properties", []).extend(staged_properties)
     return SemanticTableAdapterReport(
         imported=imported,
         skipped=len(data_rows) - imported,
