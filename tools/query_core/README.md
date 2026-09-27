@@ -34,8 +34,8 @@ by the project, including PyMuPDF or jsonschema.
 
 ### Optional semantic projection
 
-Current v2 builds include optional `semantic_entities`, `semantic_bindings`, and
-`semantic_properties` tables.
+Current v2 builds include optional `semantic_entities`, `semantic_bindings`,
+`semantic_properties`, and `semantic_relationships` tables.
 They give source-neutral project concepts a stable identity and explicit binding state
 (`exact`, `resolved_deterministically`, `ambiguous`, or `unresolved`) without changing
 the meaning of existing Query Core records. Bindings can name an `element`,
@@ -45,7 +45,10 @@ actual source rows; unknown future adapter kinds remain valid and extensible.
 
 `QueryCore.has_semantic_capability()` detects the Phase 1A tables physically and does
 not require `semantic_properties`. `QueryCore.has_semantic_property_capability()`
-separately detects the Phase 1B sparse-property table. A pre-semantic v2
+separately detects the Phase 1B sparse-property table, while
+`QueryCore.has_semantic_relationship_capability()` detects the independent,
+source-neutral relationship table. Neither optional table is required by the base
+semantic capability. A pre-semantic v2
 database without either table remains valid, returns `False`, and continues to support
 all existing queries. `QueryCore.get_semantic_entity(id)` returns a compact read-only
 view containing capability status, semantic identity, bindings, projected sparse
@@ -56,14 +59,20 @@ evidence. Persisted project/PDF facts are added to the same `properties` list wi
 `fact_kind=semantic_property`, exact `source_name`/`source_value`, optional numeric and
 unit fields, scope, provenance, and binding/evidence references. Project facts and
 projected parameters with the same name are both returned; the API performs no winner
-selection or name normalization. Existing `relationships` are similarly exposed
-rather than copied. Absent properties are omitted, and Revit parameters are never
-copied into `semantic_properties`.
+selection or name normalization. Existing `relationships` are exposed dynamically with
+`fact_kind=query_core_relationship` rather than copied. Explicit project/PDF/source-
+backed relationships between semantic entities are stored separately and returned with
+`fact_kind=semantic_relationship`. Both shapes preserve stored fields and add a relative
+`direction` (`outgoing`, `incoming`, or `self`) plus `evidence_refs`; semantic rows retain
+`source_binding_id`. Results are ordered by fact kind and ID. The semantic relationship
+table is not a Revit table, does not require a host source model, and does not change or
+duplicate authoritative Revit relationship facts. Absent properties are omitted, and
+Revit parameters are never copied into `semantic_properties`.
 
-Legacy v2 databases without semantic tables, Phase 1A databases without
-`semantic_properties`, and Phase 1B databases are all readable. The first has no
-semantic API capability, the second continues to project parameters and relationships,
-and the third additionally exposes source-backed sparse project/PDF properties.
+Legacy v2 databases without semantic tables and Phase 1A/1B/1C databases without
+`semantic_relationships` remain readable. The first has no semantic API capability;
+the others retain their existing projections and report the relationship capability as
+unavailable. Unknown non-empty relationship types remain valid for future adapters.
 
 This read path uses only `sqlite3` and the Python standard library. It therefore keeps
 the same Python 3.12 `-S` boundary as all other existing-SQLite and Project Query Bundle

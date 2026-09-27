@@ -27,6 +27,7 @@ PDF_TEXT_TABLES = {"pdf_text_blocks", "pdf_text_lines", "pdf_text_spans"}
 PDF_TABLE_TABLES = {"pdf_tables", "pdf_table_cells", "pdf_table_cell_spans"}
 SEMANTIC_TABLES = {"semantic_entities", "semantic_bindings"}
 SEMANTIC_PROPERTY_TABLE = "semantic_properties"
+SEMANTIC_RELATIONSHIP_TABLE = "semantic_relationships"
 SEMANTIC_REQUIRED_COLUMNS = {
     "semantic_entities": {
         "id", "entity_class", "label", "number", "instance_or_type",
@@ -41,6 +42,11 @@ SEMANTIC_PROPERTY_REQUIRED_COLUMNS = {
     "id", "semantic_entity_id", "source_name", "source_value", "value_type",
     "raw_numeric_value", "numeric_value", "unit", "scope", "canonical_name",
     "provenance", "source_binding_id", "evidence_id",
+}
+SEMANTIC_RELATIONSHIP_REQUIRED_COLUMNS = {
+    "id", "subject_semantic_entity_id", "relation_type",
+    "object_semantic_entity_id", "provenance", "evidence_id",
+    "source_binding_id",
 }
 PDF_TABLE_REQUIRED_COLUMNS = {
     "pdf_tables": {"id", "page_id", "order_index", "row_count", "column_count",
@@ -562,6 +568,51 @@ def validate_database(path: Path) -> dict[str, str]:
                     "incompatible semantic property capability; missing columns: "
                     + ", ".join(missing_columns)
                 )
+        if SEMANTIC_RELATIONSHIP_TABLE in objects:
+            if present_semantic_tables != SEMANTIC_TABLES:
+                raise QueryCoreError(
+                    "semantic relationship capability requires semantic capability"
+                )
+            actual = {
+                row["name"] for row in connection.execute(
+                    "PRAGMA table_info(semantic_relationships)"
+                )
+            }
+            missing_columns = sorted(SEMANTIC_RELATIONSHIP_REQUIRED_COLUMNS - actual)
+            if missing_columns:
+                raise QueryCoreError(
+                    "incompatible semantic relationship capability; missing columns: "
+                    + ", ".join(missing_columns)
+                )
+            invalid = connection.execute(
+                "SELECT id FROM semantic_relationships "
+                "WHERE typeof(relation_type)!='text' OR trim(relation_type)='' LIMIT 1"
+            ).fetchone()
+            if invalid:
+                raise QueryCoreError(
+                    "semantic relationship relation_type must be non-empty: "
+                    f"{invalid['id']}"
+                )
+            relationship_checks = (
+                ("LEFT JOIN semantic_entities e ON e.id=r.subject_semantic_entity_id "
+                 "WHERE e.id IS NULL", "subject semantic entity"),
+                ("LEFT JOIN semantic_entities e ON e.id=r.object_semantic_entity_id "
+                 "WHERE e.id IS NULL", "object semantic entity"),
+                ("LEFT JOIN evidence e ON e.id=r.evidence_id "
+                 "WHERE r.evidence_id IS NOT NULL AND e.id IS NULL", "evidence"),
+                ("LEFT JOIN semantic_bindings b ON b.id=r.source_binding_id "
+                 "WHERE r.source_binding_id IS NOT NULL AND b.id IS NULL",
+                 "semantic binding"),
+            )
+            for clause, label in relationship_checks:
+                invalid = connection.execute(
+                    "SELECT r.id FROM semantic_relationships r " + clause + " LIMIT 1"
+                ).fetchone()
+                if invalid:
+                    raise QueryCoreError(
+                        f"semantic relationship references nonexistent {label}: "
+                        f"{invalid['id']}"
+                    )
         if "pdf_pages" in objects:
             required_pdf_page_columns = {
                 "id",
@@ -799,6 +850,13 @@ class QueryCore:
             SEMANTIC_PROPERTY_TABLE, *SEMANTIC_PROPERTY_REQUIRED_COLUMNS
         )
 
+    def has_semantic_relationship_capability(self) -> bool:
+        """Return whether source-neutral semantic relationships are available."""
+        return self._has_columns(
+            SEMANTIC_RELATIONSHIP_TABLE,
+            *SEMANTIC_RELATIONSHIP_REQUIRED_COLUMNS,
+        )
+
     def get_semantic_entity(self, entity_id: str) -> dict[str, Any] | None:
         """Project one semantic identity over existing source facts, without copies."""
         if not self.has_semantic_capability():
@@ -866,7 +924,7 @@ class QueryCore:
                     "source_binding_ref": row["source_binding_id"],
                     "evidence_refs": [row["evidence_id"]] if row["evidence_id"] else [],
                 })
-        relationship_rows: dict[str, dict[str, Any]] = {}
+        relationship_rows: dict[tuple[str, str], dict[str, Any]] = {}
         for source_kind, source_id in resolved_bindings:
             for row in self._rows(
                 "SELECT * FROM relationships WHERE "
@@ -874,7 +932,51 @@ class QueryCore:
                 "ORDER BY id",
                 (source_kind, source_id, source_kind, source_id),
             ):
-                relationship_rows[row["id"]] = row
+                direction = (
+                    "outgoing"
+                    if (row["source_kind"], row["source_id"])
+                    == (source_kind, source_id)
+                    else "incoming"
+                )
+                projected = dict(row)
+                projected.update({
+                    "fact_kind": "query_core_relationship",
+                    "direction": direction,
+                    "evidence_refs": (
+                        [row["evidence_id"]] if row["evidence_id"] else []
+                    ),
+                })
+                key = ("query_core_relationship", row["id"])
+                existing = relationship_rows.get(key)
+                if existing is not None and existing["direction"] != direction:
+                    existing["direction"] = "self"
+                else:
+                    relationship_rows[key] = projected
+        if self.has_semantic_relationship_capability():
+            for row in self._rows(
+                "SELECT * FROM semantic_relationships WHERE "
+                "subject_semantic_entity_id=? OR object_semantic_entity_id=? "
+                "ORDER BY id",
+                (entity_id, entity_id),
+            ):
+                persisted = dict(row)
+                persisted.update({
+                    "fact_kind": "semantic_relationship",
+                    "direction": (
+                        "self"
+                        if row["subject_semantic_entity_id"] == entity_id
+                        and row["object_semantic_entity_id"] == entity_id
+                        else (
+                            "outgoing"
+                            if row["subject_semantic_entity_id"] == entity_id
+                            else "incoming"
+                        )
+                    ),
+                    "evidence_refs": (
+                        [row["evidence_id"]] if row["evidence_id"] else []
+                    ),
+                })
+                relationship_rows[("semantic_relationship", row["id"])] = persisted
         evidence_refs = sorted({
             ref for ref in (
                 [entity.get("evidence_id")]

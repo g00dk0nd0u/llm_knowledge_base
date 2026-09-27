@@ -268,9 +268,9 @@ def test_space_binding_projects_source_and_target_relationships_without_paramete
         assert connection.execute(
             "SELECT count(*) FROM parameters WHERE entity_kind='space'"
         ).fetchone()[0] == 0
-        assert not connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE name='semantic_relationships'"
-        ).fetchone()
+        assert connection.execute(
+            "SELECT count(*) FROM semantic_relationships"
+        ).fetchone()[0] == 0
 
 
 def test_semantics_are_source_neutral_and_optional(
@@ -297,6 +297,7 @@ def test_semantics_are_source_neutral_and_optional(
     legacy.write_bytes(current.read_bytes())
     with sqlite3.connect(legacy) as connection:
         connection.execute("DROP TABLE semantic_properties")
+        connection.execute("DROP TABLE semantic_relationships")
         connection.execute("DROP TABLE semantic_bindings")
         connection.execute("DROP TABLE semantic_entities")
     assert validate_database(legacy)["schema_version"] == "2"
@@ -309,13 +310,26 @@ def test_semantics_are_source_neutral_and_optional(
     phase_1a.write_bytes(current.read_bytes())
     with sqlite3.connect(phase_1a) as connection:
         connection.execute("DROP TABLE semantic_properties")
+        connection.execute("DROP TABLE semantic_relationships")
     assert validate_database(phase_1a)["schema_version"] == "2"
     with QueryCore(phase_1a) as query:
         assert query.has_semantic_capability()
         assert not query.has_semantic_property_capability()
+        assert not query.has_semantic_relationship_capability()
         assert [p["source_value"] for p in query.get_semantic_entity(
             "semantic-door-101"
         )["properties"]] == ["D-101", "EL560", "60 min"]
+
+    phase_1b_1c = tmp_path / "phase-1b-1c.sqlite"
+    phase_1b_1c.write_bytes(current.read_bytes())
+    with sqlite3.connect(phase_1b_1c) as connection:
+        connection.execute("DROP TABLE semantic_relationships")
+    assert validate_database(phase_1b_1c)["schema_version"] == "2"
+    with QueryCore(phase_1b_1c) as query:
+        assert query.has_semantic_capability()
+        assert query.has_semantic_property_capability()
+        assert not query.has_semantic_relationship_capability()
+        assert query.get_semantic_entity("semantic-door-101")["relationships"]
 
 
 @pytest.mark.parametrize(
@@ -445,3 +459,140 @@ def test_semantic_projection_is_stdlib_only(
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["properties"][1]["source_name"] == "電気錠"
+
+
+@pytest.fixture
+def semantic_relationship_records() -> dict:
+    entities = [
+        ("building", "Building"), ("storey", "Storey"),
+        ("space", "Space"), ("door", "Door"), ("equipment", "Equipment"),
+    ]
+    return {
+        "project_id": "semantic-relationships", "created_from": "fixture",
+        "binding_mode": "project",
+        "documents": [{
+            "id": "document", "identity": "source/relationships.pdf",
+            "title": "Relationships", "source_filename": "relationships.pdf",
+            "source_sha256": "d" * 64,
+        }],
+        "evidence": [{
+            "id": "evidence", "document_id": "document", "pdf_page": 1,
+        }],
+        "semantic_entities": [{
+            "id": entity_id, "entity_class": entity_class,
+            "instance_or_type": "instance", "resolution_state": "exact",
+            "provenance": "fixture",
+        } for entity_id, entity_class in entities],
+        "semantic_bindings": [{
+            "id": "pdf-binding", "semantic_entity_id": "building",
+            "source_kind": "evidence", "source_id": "evidence",
+            "resolution_state": "exact", "provenance": "fixture",
+            "evidence_id": "evidence",
+        }],
+        "semantic_relationships": [
+            {
+                "id": "rel-building-storey", "subject_semantic_entity_id": "building",
+                "relation_type": "contains", "object_semantic_entity_id": "storey",
+                "provenance": "project_manifest", "source_binding_id": "pdf-binding",
+            },
+            {
+                "id": "rel-storey-space", "subject_semantic_entity_id": "storey",
+                "relation_type": "contains", "object_semantic_entity_id": "space",
+                "provenance": "pdf_schedule", "evidence_id": "evidence",
+            },
+            {
+                "id": "rel-door-space", "subject_semantic_entity_id": "door",
+                "relation_type": "located_in", "object_semantic_entity_id": "space",
+                "provenance": "pdf_schedule", "evidence_id": "evidence",
+            },
+            {
+                "id": "rel-equipment-space", "subject_semantic_entity_id": "equipment",
+                "relation_type": "serves", "object_semantic_entity_id": "space",
+                "provenance": "project_manifest",
+            },
+        ],
+    }
+
+
+def test_source_neutral_semantic_relationships_round_trip(
+    tmp_path: Path, semantic_relationship_records: dict
+) -> None:
+    database = build_database(
+        semantic_relationship_records, tmp_path / "relationships.sqlite"
+    )
+    assert validate_database(database)["schema_version"] == "2"
+    with QueryCore(database) as query:
+        assert query.has_semantic_capability()
+        assert query.has_semantic_relationship_capability()
+        storey = query.get_semantic_entity("storey")
+        assert [(row["id"], row["direction"]) for row in storey["relationships"]] == [
+            ("rel-building-storey", "incoming"),
+            ("rel-storey-space", "outgoing"),
+        ]
+        space = query.get_semantic_entity("space")
+        assert [(row["id"], row["relation_type"], row["direction"])
+                for row in space["relationships"]] == [
+            ("rel-door-space", "located_in", "incoming"),
+            ("rel-equipment-space", "serves", "incoming"),
+            ("rel-storey-space", "contains", "incoming"),
+        ]
+        assert all(row["fact_kind"] == "semantic_relationship"
+                   for row in space["relationships"])
+        assert space["relationships"][0]["evidence_refs"] == ["evidence"]
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT count(*) FROM source_models").fetchone()[0] == 0
+        assert connection.execute("SELECT count(*) FROM relationships").fetchone()[0] == 0
+
+
+def test_revit_and_semantic_relationship_facts_coexist(
+    tmp_path: Path, semantic_contract_records: dict
+) -> None:
+    semantic_contract_records["semantic_relationships"] = [{
+        "id": "semantic-door-space",
+        "subject_semantic_entity_id": "semantic-door-101",
+        "relation_type": "documented_near",
+        "object_semantic_entity_id": "semantic-space-101",
+        "provenance": "fixture", "evidence_id": "evidence-door-101-schedule",
+    }]
+    database = build_database(semantic_contract_records, tmp_path / "coexist.sqlite")
+    with QueryCore(database) as query:
+        relationships = query.get_semantic_entity("semantic-door-101")["relationships"]
+        assert [(row["fact_kind"], row["id"], row["direction"])
+                for row in relationships] == [
+            ("query_core_relationship", "relationship-door-space", "outgoing"),
+            ("query_core_relationship", "relationship-instance-of", "self"),
+            ("semantic_relationship", "semantic-door-space", "outgoing"),
+        ]
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT count(*) FROM relationships").fetchone()[0] == 3
+        assert connection.execute(
+            "SELECT count(*) FROM semantic_relationships"
+        ).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"subject_semantic_entity_id": "missing"}, "nonexistent subject"),
+        ({"object_semantic_entity_id": "missing"}, "nonexistent object"),
+        ({"evidence_id": "missing"}, "nonexistent evidence"),
+        ({"source_binding_id": "missing"}, "nonexistent semantic binding"),
+        ({"relation_type": "  "}, "relation_type must be non-empty"),
+    ],
+)
+def test_semantic_relationship_validation(
+    tmp_path: Path, semantic_relationship_records: dict,
+    change: dict, message: str,
+) -> None:
+    semantic_relationship_records["semantic_relationships"][0].update(change)
+    with pytest.raises(QueryCoreError, match=message):
+        build_database(semantic_relationship_records, tmp_path / "invalid.sqlite")
+
+
+def test_unknown_semantic_relation_type_is_extensible(
+    tmp_path: Path, semantic_relationship_records: dict
+) -> None:
+    semantic_relationship_records["semantic_relationships"][0][
+        "relation_type"
+    ] = "future_relation"
+    build_database(semantic_relationship_records, tmp_path / "future.sqlite")
