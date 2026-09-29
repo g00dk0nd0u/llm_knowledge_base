@@ -32,6 +32,32 @@ by the project, including PyMuPDF or jsonschema.
 
 ## Identity and parameters
 
+### Optional explicit drawing references
+
+The optional, source-neutral `drawing_references` table stores explicit reference
+facts separately from the Revit-oriented `relationships` table and from
+`semantic_relationships`, which requires resolved semantic endpoints. Its required
+`source_evidence_id` is authoritative for the page/view/sheet/bbox containing the
+mark. `relation_type` accepts any non-blank string; its vocabulary is intentionally
+extensible. `printed_reference` is nullable and, when present, is retained exactly.
+
+`exact` and `resolved_deterministically` facts require at least one target view,
+sheet, or evidence pointer. Multiple pointers must exist, belong to one document,
+agree with any sheet/view carried by target evidence, and—where existing placement
+data can prove it—the target view must be placed on the target sheet. `ambiguous` and
+`unresolved` facts retain their printed reference with every target pointer null;
+Query Core never guesses a winner.
+
+`QueryCore.has_drawing_reference_capability()` detects the table without changing
+schema version 2 or making it mandatory for legacy databases.
+`get_drawing_reference(id)` returns the stored fact, authoritative source evidence
+and navigation, plus resolved target records/navigation when available;
+`get_drawing_references_for_view(id)` deterministically lists facts whose source
+evidence belongs to that view. A PDF/project-only database may use this capability
+without a `source_models` host row. This slice performs no automatic Revit/PDF
+reference extraction, target matching, semantic mutation, or duplication into
+`semantic_relationships`.
+
 ### Optional semantic projection
 
 Current v2 builds include optional `semantic_entities`, `semantic_bindings`,

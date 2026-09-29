@@ -114,6 +114,23 @@ CREATE TABLE spaces (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('Roo
 CREATE TABLE element_types (id TEXT PRIMARY KEY, family_name TEXT, type_name TEXT NOT NULL, category TEXT NOT NULL, source_model_id TEXT REFERENCES source_models(id), source_unique_id TEXT, provenance TEXT NOT NULL, confidence REAL CHECK(confidence IS NULL OR confidence BETWEEN 0 AND 1), UNIQUE(source_model_id,source_unique_id)) WITHOUT ROWID;
 CREATE TABLE elements (id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, type_id TEXT REFERENCES element_types(id), space_id TEXT REFERENCES spaces(id), level_id TEXT REFERENCES levels(id), source_model_id TEXT REFERENCES source_models(id), source_unique_id TEXT, provenance TEXT NOT NULL, confidence REAL CHECK(confidence IS NULL OR confidence BETWEEN 0 AND 1), UNIQUE(source_model_id,source_unique_id)) WITHOUT ROWID;
 CREATE TABLE evidence (id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES documents(id), sheet_id TEXT REFERENCES sheets(id), view_id TEXT REFERENCES views(id), pdf_page INTEGER NOT NULL CHECK(pdf_page>=1), x_min REAL,y_min REAL,x_max REAL,y_max REAL, coordinate_space TEXT CHECK(coordinate_space IS NULL OR coordinate_space='pdf_points_top_left'), CHECK(x_min IS NULL OR (x_min<=x_max AND y_min<=y_max))) WITHOUT ROWID;
+CREATE TABLE drawing_references (
+  id TEXT PRIMARY KEY,
+  source_evidence_id TEXT NOT NULL REFERENCES evidence(id),
+  relation_type TEXT NOT NULL CHECK(length(trim(relation_type))>0),
+  printed_reference TEXT,
+  target_view_id TEXT REFERENCES views(id),
+  target_sheet_id TEXT REFERENCES sheets(id),
+  target_evidence_id TEXT REFERENCES evidence(id),
+  resolution_state TEXT NOT NULL CHECK(resolution_state IN ('exact','resolved_deterministically','ambiguous','unresolved')),
+  provenance TEXT NOT NULL,
+  CHECK(
+    (resolution_state IN ('exact','resolved_deterministically') AND
+      (target_view_id IS NOT NULL OR target_sheet_id IS NOT NULL OR target_evidence_id IS NOT NULL))
+    OR
+    (resolution_state IN ('ambiguous','unresolved') AND target_view_id IS NULL AND target_sheet_id IS NULL AND target_evidence_id IS NULL)
+  )
+) WITHOUT ROWID;
 CREATE TABLE parameters (
   id TEXT PRIMARY KEY, entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL,
   scope TEXT CHECK(scope IN ('instance','type')), definition_name TEXT NOT NULL, definition_key TEXT,

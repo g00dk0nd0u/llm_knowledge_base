@@ -16,7 +16,10 @@ def navigation_target(
         if all(row.get(key) is not None for key in _BBOX_KEYS)
         else None
     )
-    source_id_key = "evidence_id" if source_kind == "evidence" else "appearance_id"
+    source_id_key = (
+        "evidence_id" if source_kind == "evidence" else
+        "appearance_id" if source_kind == "entity_appearance" else "source_id"
+    )
     target = {
         "document": {
             "id": row["document_id"],
