@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import QueryCoreError
+from .drawing_references import validate_drawing_references
 from .geometry import decode_location_primitive, primitive_bounds
 
 SCHEMA_VERSION = 2
@@ -144,49 +145,11 @@ def _validate(records: dict[str, Any]) -> None:
                 "semantic property binding belongs to another semantic entity"
             )
     evidence_ids = {row.get("id") for row in records.get("evidence", [])}
-    evidence_rows = {row.get("id"): row for row in records.get("evidence", [])}
-    view_rows = {row.get("id"): row for row in records.get("views", [])}
-    sheet_rows = {row.get("id"): row for row in records.get("sheets", [])}
-    placements = {
-        (row.get("sheet_id"), row.get("view_id"))
-        for row in records.get("viewports", [])
-    }
-    placed_views = {view_id for _, view_id in placements}
-    for reference in records.get("drawing_references", []):
-        relation_type = reference.get("relation_type")
-        if not isinstance(relation_type, str) or not relation_type.strip():
-            raise QueryCoreError("drawing reference relation_type must be non-empty")
-        source = evidence_rows.get(reference.get("source_evidence_id"))
-        if source is None:
-            raise QueryCoreError("drawing reference references nonexistent source evidence")
-        state = reference.get("resolution_state")
-        if state not in {"exact", "resolved_deterministically", "ambiguous", "unresolved"}:
-            raise QueryCoreError("drawing reference has invalid resolution_state")
-        pointer_keys = ("target_view_id", "target_sheet_id", "target_evidence_id")
-        pointers = [reference.get(key) for key in pointer_keys]
-        if state in {"exact", "resolved_deterministically"} and not any(pointers):
-            raise QueryCoreError("resolved drawing reference requires a target")
-        if state in {"ambiguous", "unresolved"} and any(pointers):
-            raise QueryCoreError("unresolved drawing reference must not select a target")
-        view = view_rows.get(reference.get("target_view_id")) if pointers[0] else None
-        sheet = sheet_rows.get(reference.get("target_sheet_id")) if pointers[1] else None
-        target_evidence = evidence_rows.get(reference.get("target_evidence_id")) if pointers[2] else None
-        if pointers[0] and view is None:
-            raise QueryCoreError("drawing reference references nonexistent target view")
-        if pointers[1] and sheet is None:
-            raise QueryCoreError("drawing reference references nonexistent target sheet")
-        if pointers[2] and target_evidence is None:
-            raise QueryCoreError("drawing reference references nonexistent target evidence")
-        targets = [row for row in (view, sheet, target_evidence) if row is not None]
-        if len({row["document_id"] for row in targets}) > 1:
-            raise QueryCoreError("drawing reference targets belong to different documents")
-        if target_evidence is not None:
-            if view is not None and target_evidence.get("view_id") not in {None, view["id"]}:
-                raise QueryCoreError("drawing reference target evidence/view mismatch")
-            if sheet is not None and target_evidence.get("sheet_id") not in {None, sheet["id"]}:
-                raise QueryCoreError("drawing reference target evidence/sheet mismatch")
-        if view is not None and sheet is not None and view["id"] in placed_views and (sheet["id"], view["id"]) not in placements:
-            raise QueryCoreError("drawing reference target view is not placed on target sheet")
+    validate_drawing_references(
+        records.get("drawing_references", []), records.get("evidence", []),
+        records.get("views", []), records.get("sheets", []),
+        records.get("viewports", []),
+    )
     for relationship in records.get("semantic_relationships", []):
         if relationship.get("subject_semantic_entity_id") not in semantic_ids:
             raise QueryCoreError(

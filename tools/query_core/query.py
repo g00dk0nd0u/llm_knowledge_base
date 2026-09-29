@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import QueryCoreError
+from .drawing_references import validate_drawing_references
 from .geometry import (
     decode_location_primitive,
     longitudinal_overlap,
@@ -652,6 +653,13 @@ def validate_database(path: Path) -> dict[str, str]:
                     "incompatible drawing reference capability; missing columns: "
                     + ", ".join(missing_columns)
                 )
+            validate_drawing_references(
+                map(dict, connection.execute("SELECT * FROM drawing_references")),
+                map(dict, connection.execute("SELECT * FROM evidence")),
+                map(dict, connection.execute("SELECT * FROM views")),
+                map(dict, connection.execute("SELECT * FROM sheets")),
+                map(dict, connection.execute("SELECT * FROM viewports")),
+            )
         if "pdf_pages" in objects:
             required_pdf_page_columns = {
                 "id",
@@ -930,8 +938,8 @@ class QueryCore:
         sheet = self._rows("SELECT * FROM sheets WHERE id=?", (row["target_sheet_id"],))[0] if row["target_sheet_id"] else None
         evidence = self.get_pdf_evidence(row["target_evidence_id"]) if row["target_evidence_id"] else None
         navigation = self.get_evidence_navigation(row["target_evidence_id"]) if row["target_evidence_id"] else None
-        if navigation is None and (sheet is not None or view is not None):
-            document_id = (sheet or view)["document_id"]
+        if navigation is None and sheet is not None:
+            document_id = sheet["document_id"]
             document = self._rows(
                 "SELECT * FROM documents WHERE id=?", (document_id,)
             )[0]
