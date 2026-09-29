@@ -221,6 +221,110 @@ def test_viewport_context_is_shared_by_occurrence_and_navigation_apis(
     assert unresolved_semantic["occurrences"] == []
 
 
+def test_appearance_context_never_combines_documents(
+    semantic_drawing_database: Path,
+) -> None:
+    with sqlite3.connect(semantic_drawing_database) as connection:
+        connection.execute(
+            "INSERT INTO documents VALUES "
+            "('doc-foreign','foreign-v1','Foreign','foreign.pdf',?)",
+            ("f" * 64,),
+        )
+        connection.execute(
+            "INSERT INTO sheets (id,document_id,number,name,pdf_page,export_order) "
+            "VALUES ('sheet-foreign','doc-foreign','B-101','Foreign Sheet',1,99)"
+        )
+        connection.execute(
+            "INSERT INTO views (id,document_id,name,view_type) VALUES "
+            "('view-foreign','doc-foreign','Foreign View','plan')"
+        )
+        connection.executemany(
+            "INSERT INTO viewports "
+            "(id,sheet_id,view_id,placement_kind,sheet_x_min,sheet_y_min,"
+            "sheet_x_max,sheet_y_max,sheet_coordinate_unit) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            [
+                ("vp-foreign", "sheet-foreign", "view-foreign", "viewport", None,
+                 None, None, None, "sheet_points"),
+                ("vp-cross", "sheet-a201", "view-foreign", "viewport", None,
+                 None, None, None, "sheet_points"),
+            ],
+        )
+        cases = [
+            ("direct-view", None, "view-level2", "vp-foreign"),
+            ("direct-sheet", "sheet-a201", None, "vp-foreign"),
+            ("direct-same", "sheet-a201", "view-level2", "vp-foreign"),
+            ("viewport-only", None, None, "vp-dock"),
+            ("viewport-cross", None, None, "vp-cross"),
+            ("direct-conflict", "sheet-a201", "view-foreign", None),
+        ]
+        connection.executemany(
+            "INSERT INTO elements SELECT ?,name,category,type_id,space_id,level_id,"
+            "source_model_id,?,provenance,confidence FROM elements "
+            "WHERE id='element-sd03'",
+            [(f"element-{name}", f"test-context-{name}") for name, *_ in cases],
+        )
+        connection.executemany(
+            "INSERT INTO entity_appearances VALUES "
+            "(?, 'element', ?, ?, ?, ?, NULL, 1, NULL,NULL,NULL,NULL,"
+            "'pdf_points_top_left','model','page_only','test')",
+            [
+                (f"appearance-{name}", f"element-{name}", sheet, view, viewport)
+                for name, sheet, view, viewport in cases
+            ],
+        )
+        connection.execute(
+            "INSERT INTO semantic_entities "
+            "(id,entity_class,instance_or_type,resolution_state,provenance) "
+            "VALUES ('sem-direct-conflict','Element','instance','exact','test')"
+        )
+        connection.execute(
+            "INSERT INTO semantic_bindings "
+            "(id,semantic_entity_id,source_kind,source_id,resolution_state,provenance) "
+            "VALUES ('binding-direct-conflict','sem-direct-conflict','element',"
+            "'element-direct-conflict','exact','test')"
+        )
+
+    expected = {
+        "direct-view": ("doc-drawings", None, "view-level2"),
+        "direct-sheet": ("doc-drawings", "sheet-a201", None),
+        "direct-same": ("doc-drawings", "sheet-a201", "view-level2"),
+        "viewport-only": ("doc-drawings", "sheet-a312", "view-dock"),
+        "viewport-cross": ("doc-drawings", "sheet-a201", None),
+        "direct-conflict": ("doc-drawings", "sheet-a201", None),
+    }
+    with QueryCore(semantic_drawing_database) as query:
+        for name, (document_id, sheet_id, view_id) in expected.items():
+            occurrence = query.get_occurrence_evidence(
+                "element", f"element-{name}"
+            )[0]
+            target = query.get_navigation_targets("element", f"element-{name}")[0]
+            private_target = query._get_appearance_navigation(f"appearance-{name}")
+            assert private_target is not None
+            assert (
+                occurrence["document"]["id"],
+                occurrence["sheet_id"],
+                occurrence["view_id"],
+            ) == (document_id, sheet_id, view_id)
+            for navigation in (target, private_target):
+                assert (
+                    navigation["document"]["id"],
+                    navigation["sheet_id"],
+                    navigation["view_id"],
+                ) == (document_id, sheet_id, view_id)
+
+        conflict = query.get_occurrence_evidence(
+            "element", "element-direct-conflict"
+        )[0]
+        semantic = query.get_semantic_drawing_context("sem-direct-conflict")
+
+    assert conflict["appearance_sheet_id"] == "sheet-a201"
+    assert conflict["appearance_view_id"] == "view-foreign"
+    assert semantic["occurrences"][0]["document"]["id"] == "doc-drawings"
+    assert semantic["occurrences"][0]["sheet_id"] == "sheet-a201"
+    assert semantic["occurrences"][0]["view_id"] is None
+
+
 def test_pdf_native_bindings_retain_exact_traceability(
     semantic_drawing_database: Path,
 ) -> None:

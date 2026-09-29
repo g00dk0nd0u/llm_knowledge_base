@@ -261,6 +261,11 @@ Public APIs include `search_text`, `find_entities`, `get_entity`,
 `get_evidence_navigation`. Change-impact APIs include `get_type_instances`,
 `get_related_spaces`, and `get_change_impact`.
 
+In occurrence projections, `appearance_sheet_id` and `appearance_view_id` preserve
+the raw direct appearance references. The projected `sheet_id` and `view_id` are
+navigation context resolved within one document; direct references take precedence
+over viewport fallbacks, and references from another document are not projected.
+
 Explicit spatial APIs include `get_contained_elements`,
 `get_containing_spaces`, `get_space_connections`, `get_same_type_elements`,
 `get_same_space_elements`, `get_level_difference`, and `get_spatial_context`.
