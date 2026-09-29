@@ -28,6 +28,18 @@ PDF_TABLE_TABLES = {"pdf_tables", "pdf_table_cells", "pdf_table_cell_spans"}
 SEMANTIC_TABLES = {"semantic_entities", "semantic_bindings"}
 SEMANTIC_PROPERTY_TABLE = "semantic_properties"
 SEMANTIC_RELATIONSHIP_TABLE = "semantic_relationships"
+_APPEARANCE_CONTEXT_SELECT = (
+    "SELECT COALESCE(a.sheet_id,vp.sheet_id) AS sheet_id,"
+    "COALESCE(a.view_id,vp.view_id) AS view_id,"
+    "a.sheet_id AS appearance_sheet_id,a.view_id AS appearance_view_id,a.*,"
+    "d.id AS document_id,d.identity AS document_identity,d.source_filename,"
+    "s.number AS sheet_number,s.name AS sheet_name,"
+    "v.name AS view_name,v.view_type FROM entity_appearances a "
+    "LEFT JOIN viewports vp ON vp.id=a.viewport_id "
+    "LEFT JOIN sheets s ON s.id=COALESCE(a.sheet_id,vp.sheet_id) "
+    "LEFT JOIN views v ON v.id=COALESCE(a.view_id,vp.view_id) "
+    "JOIN documents d ON d.id=COALESCE(s.document_id,v.document_id) "
+)
 SEMANTIC_REQUIRED_COLUMNS = {
     "semantic_entities": {
         "id", "entity_class", "label", "number", "instance_or_type",
@@ -1611,13 +1623,8 @@ class QueryCore:
     ) -> list[dict[str, Any]]:
         """Return drawing occurrences with resolved document, sheet, and view data."""
         rows = self._rows(
-            "SELECT a.*,d.id AS document_id,d.identity AS document_identity,"
-            "d.source_filename,s.number AS sheet_number,s.name AS sheet_name,"
-            "v.name AS view_name,v.view_type FROM entity_appearances a "
-            "LEFT JOIN sheets s ON s.id=a.sheet_id "
-            "LEFT JOIN views v ON v.id=a.view_id "
-            "JOIN documents d ON d.id=COALESCE(s.document_id,v.document_id) "
-            "WHERE a.entity_kind=? AND a.entity_id=? "
+            _APPEARANCE_CONTEXT_SELECT
+            + "WHERE a.entity_kind=? AND a.entity_id=? "
             "ORDER BY d.identity,a.pdf_page,s.number,v.name,a.id",
             (entity_kind, entity_id),
         )
@@ -1642,15 +1649,12 @@ class QueryCore:
     ) -> list[dict[str, Any]]:
         """Return deterministic PDF navigation descriptors for an entity."""
         rows = self._rows(
-            "SELECT a.id AS appearance_id,a.*,d.id AS document_id,"
-            "d.identity AS document_identity,d.source_filename,"
-            "s.number AS sheet_number,s.name AS sheet_name,v.name AS view_name,v.view_type "
-            "FROM entity_appearances a LEFT JOIN sheets s ON s.id=a.sheet_id "
-            "LEFT JOIN views v ON v.id=a.view_id "
-            "JOIN documents d ON d.id=COALESCE(s.document_id,v.document_id) "
-            "WHERE a.entity_kind=? AND a.entity_id=?",
+            _APPEARANCE_CONTEXT_SELECT
+            + "WHERE a.entity_kind=? AND a.entity_id=?",
             (entity_kind, entity_id),
         )
+        for row in rows:
+            row["appearance_id"] = row["id"]
         return deduplicate_navigation(
             navigation_target(row, source_kind="entity_appearance") for row in rows
         )
@@ -1659,15 +1663,11 @@ class QueryCore:
         self, appearance_id: str
     ) -> dict[str, Any] | None:
         rows = self._rows(
-            "SELECT a.id AS appearance_id,a.*,d.id AS document_id,"
-            "d.identity AS document_identity,d.source_filename,"
-            "s.number AS sheet_number,s.name AS sheet_name,v.name AS view_name,v.view_type "
-            "FROM entity_appearances a LEFT JOIN sheets s ON s.id=a.sheet_id "
-            "LEFT JOIN views v ON v.id=a.view_id "
-            "JOIN documents d ON d.id=COALESCE(s.document_id,v.document_id) "
-            "WHERE a.id=?",
+            _APPEARANCE_CONTEXT_SELECT + "WHERE a.id=?",
             (appearance_id,),
         )
+        if rows:
+            rows[0]["appearance_id"] = rows[0]["id"]
         return (
             navigation_target(rows[0], source_kind="entity_appearance")
             if rows
