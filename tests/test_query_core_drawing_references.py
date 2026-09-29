@@ -30,6 +30,26 @@ def _reference(reference_id, **values):
     }
 
 
+def _add_page_only_target_evidence(records, *, pdf_page=2):
+    records["evidence"].append({
+        "id": "ev-target-page", "document_id": "doc-drawings",
+        "sheet_id": None, "view_id": None, "pdf_page": pdf_page,
+        "x_min": 10, "y_min": 20, "x_max": 30, "y_max": 40,
+        "coordinate_space": "pdf_points_top_left",
+    })
+
+
+def _replace_reference_table_without_constraints(database):
+    connection = sqlite3.connect(database)
+    connection.execute(
+        "CREATE TABLE unchecked_references AS SELECT * FROM drawing_references"
+    )
+    connection.execute("DROP TABLE drawing_references")
+    connection.execute("ALTER TABLE unchecked_references RENAME TO drawing_references")
+    connection.commit()
+    return connection
+
+
 def test_resolved_unresolved_ambiguous_and_extensible_references(tmp_path):
     records = _records(tmp_path)
     records["drawing_references"] = [
@@ -98,6 +118,122 @@ def test_cross_document_and_provable_placement_mismatch_are_rejected(tmp_path):
     )]
     with pytest.raises(QueryCoreError, match="not placed"):
         build_database(records, tmp_path / "mismatch.sqlite")
+
+
+def test_target_sheet_and_evidence_pages_must_agree_at_build_time(tmp_path):
+    records = _records(tmp_path)
+    _add_page_only_target_evidence(records, pdf_page=99)
+    records["drawing_references"] = [_reference(
+        "page-mismatch", resolution_state="exact",
+        target_sheet_id="sheet-a421", target_evidence_id="ev-target-page",
+    )]
+    with pytest.raises(QueryCoreError, match="evidence/sheet page mismatch"):
+        build_database(records, tmp_path / "page-mismatch.sqlite")
+
+    records["evidence"][-1]["pdf_page"] = 2
+    database = build_database(records, tmp_path / "page-match.sqlite")
+    with QueryCore(database) as core:
+        assert core.get_drawing_reference("page-mismatch")["target"][
+            "navigation"
+        ]["pdf_page"] == 2
+
+
+@pytest.mark.parametrize(
+    "sql,params,error",
+    [
+        ("UPDATE drawing_references SET target_view_id=NULL, target_sheet_id=NULL, "
+         "target_evidence_id=NULL", (), "requires a target"),
+        ("UPDATE drawing_references SET resolution_state='unresolved'", (),
+         "must not select a target"),
+        ("UPDATE drawing_references SET source_evidence_id='missing'", (),
+         "source evidence"),
+        ("UPDATE drawing_references SET target_view_id='missing'", (),
+         "target view"),
+        ("UPDATE drawing_references SET target_sheet_id='sheet-other'", (),
+         "different documents"),
+        ("UPDATE drawing_references SET target_view_id='view-dock'", (),
+         "evidence/view mismatch"),
+        ("UPDATE drawing_references SET target_sheet_id='sheet-a312'", (),
+         "evidence/sheet mismatch"),
+        ("UPDATE evidence SET sheet_id=NULL, pdf_page=99 WHERE id='ev-roof'", (),
+         "evidence/sheet page mismatch"),
+        ("UPDATE drawing_references SET target_evidence_id=NULL, "
+         "target_view_id='view-dock'", (), "not placed"),
+    ],
+)
+def test_open_rejects_semantically_invalid_unchecked_capability(
+    tmp_path, sql, params, error,
+):
+    records = _records(tmp_path)
+    records["documents"].append({
+        "id": "doc-other", "identity": "other", "title": "Other",
+        "source_filename": "other.pdf", "source_sha256": "a" * 64,
+    })
+    records["sheets"].append({
+        "id": "sheet-other", "document_id": "doc-other", "number": "X-1",
+        "name": "Other", "pdf_page": 1, "export_order": 4,
+        "source_model_id": "model-host", "source_unique_id": "sheet-other",
+    })
+    records["drawing_references"] = [_reference(
+        "resolved", resolution_state="exact", target_view_id="view-roof",
+        target_sheet_id="sheet-a421", target_evidence_id="ev-roof",
+    )]
+    database = build_database(records, tmp_path / "unchecked.sqlite")
+    connection = _replace_reference_table_without_constraints(database)
+    connection.execute(sql, params)
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(QueryCoreError, match=error):
+        QueryCore(database)
+
+
+def test_resolved_target_shapes_keep_resolution_separate_from_navigation(tmp_path):
+    records = _records(tmp_path)
+    records["drawing_references"] = [
+        _reference("view-only", resolution_state="exact", target_view_id="view-roof"),
+        _reference("sheet-only", resolution_state="exact", target_sheet_id="sheet-a421"),
+        _reference("evidence-only", resolution_state="exact", target_evidence_id="ev-roof"),
+        _reference(
+            "full", resolution_state="resolved_deterministically",
+            target_view_id="view-roof", target_sheet_id="sheet-a421",
+            target_evidence_id="ev-roof",
+        ),
+    ]
+    database = build_database(records, tmp_path / "target-shapes.sqlite")
+
+    with QueryCore(database) as core:
+        view_only = core.get_drawing_reference("view-only")
+        assert view_only["resolution_state"] == "exact"
+        assert view_only["target"]["view"]["id"] == "view-roof"
+        assert view_only["target"]["sheet"] is None
+        assert view_only["target"]["evidence"] is None
+        assert view_only["target"]["navigation"] is None
+
+        sheet_only = core.get_drawing_reference("sheet-only")["target"]
+        assert sheet_only["sheet"]["id"] == "sheet-a421"
+        assert sheet_only["navigation"]["pdf_page"] == 2
+        assert sheet_only["navigation"]["can_zoom"] is False
+
+        evidence_only = core.get_drawing_reference("evidence-only")["target"]
+        assert evidence_only["view"] is None and evidence_only["sheet"] is None
+        assert evidence_only["evidence"]["id"] == "ev-roof"
+        assert evidence_only["navigation"]["pdf_page"] == 2
+
+        full = core.get_drawing_reference("full")["target"]
+        assert full["view"]["id"] == "view-roof"
+        assert full["sheet"]["id"] == "sheet-a421"
+        assert full["evidence"]["id"] == "ev-roof"
+        assert full["navigation"]["bbox"] == [410.0, 110.0, 560.0, 180.0]
+
+        for reference_id in ("view-only", "sheet-only", "evidence-only", "full"):
+            result = core.get_drawing_reference(reference_id)
+            for navigation in (
+                result["source"]["navigation"], result["target"]["navigation"],
+            ):
+                if navigation is not None:
+                    assert isinstance(navigation["pdf_page"], int)
+                    assert navigation["pdf_page"] >= 1
 
 
 def test_pdf_only_capability_and_legacy_v2_compatibility(tmp_path):
