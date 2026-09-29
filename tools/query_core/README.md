@@ -74,6 +74,19 @@ Legacy v2 databases without semantic tables and Phase 1A/1B/1C databases without
 the others retain their existing projections and report the relationship capability as
 unavailable. Unknown non-empty relationship types remain valid for future adapters.
 
+`QueryCore.get_semantic_spatial_context(id)` is a read-only building-topology
+projection for resolved (`exact` or `resolved_deterministically`) `space`, `element`,
+and `level` bindings. Each binding remains a separate, deterministically ordered
+context. Space and element contexts reuse `get_spatial_context()` and therefore the
+existing containment, connection, level, type-membership, and adjacency APIs rather
+than implementing topology again. Stored relationships and context are labeled
+`evidence_class=source_fact`; adjacency and type-sibling observations are labeled
+`evidence_class=deterministic_derived` and are never inserted into
+`semantic_relationships`. A referenced source entity includes all existing resolved
+semantic references, or an empty semantic-reference list when no binding exists. The
+API does not create entities, fuzzy-match records, or convert a Query Core level into a
+semantic Storey.
+
 This read path uses only `sqlite3` and the Python standard library. It therefore keeps
 the same Python 3.12 `-S` boundary as all other existing-SQLite and Project Query Bundle
 queries; semantic creation remains a build-time concern.
