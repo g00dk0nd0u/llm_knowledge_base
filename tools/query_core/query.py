@@ -992,6 +992,134 @@ class QueryCore:
             "evidence_refs": evidence_refs,
         }
 
+    def _semantic_source_reference(
+        self, source_kind: str, source_id: str
+    ) -> dict[str, Any]:
+        """Resolve only explicit deterministic bindings for one source record."""
+        semantic_entities = self._rows(
+            "SELECT e.id,e.entity_class,e.label,e.number,b.id AS binding_id,"
+            "b.resolution_state FROM semantic_bindings b "
+            "JOIN semantic_entities e ON e.id=b.semantic_entity_id "
+            "WHERE b.source_kind=? AND b.source_id=? "
+            "AND b.resolution_state IN ('exact','resolved_deterministically') "
+            "ORDER BY e.id,b.id",
+            (source_kind, source_id),
+        )
+        return {
+            "source": {"kind": source_kind, "id": source_id},
+            "semantic_entities": semantic_entities,
+        }
+
+    def _semantic_spatial_target(
+        self, value: dict[str, Any] | None, source_kind: str
+    ) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        return {
+            **value,
+            "reference": self._semantic_source_reference(source_kind, value["id"]),
+        }
+
+    def get_semantic_spatial_context(self, entity_id: str) -> dict[str, Any] | None:
+        """Project proven Query Core spatial facts for resolved semantic bindings.
+
+        This is a read-only projection: stored facts remain ``source_fact`` and
+        adjacency remains an explicitly ``deterministic_derived`` observation.
+        """
+        semantic = self.get_semantic_entity(entity_id)
+        if semantic is None:
+            return None
+        contexts = []
+        for binding in semantic["bindings"]:
+            source_kind = binding["source_kind"]
+            source_id = binding["source_id"]
+            if (
+                source_kind not in {"space", "element", "level"}
+                or source_id is None
+                or binding["resolution_state"]
+                not in {"exact", "resolved_deterministically"}
+            ):
+                continue
+            if source_kind == "level":
+                level = self.get_entity("level", source_id)
+                if level is None:
+                    continue
+                source_context = {
+                    "status": "ok",
+                    "entity": self._semantic_spatial_target(level, "level"),
+                    "level": self._semantic_spatial_target(level, "level"),
+                    "evidence_class": "source_fact",
+                }
+            else:
+                source_context = self.get_spatial_context(source_kind, source_id)
+                source_context["evidence_class"] = "source_fact"
+                source_context["entity"] = self._semantic_spatial_target(
+                    source_context["entity"], source_kind
+                )
+                source_context["level"] = self._semantic_spatial_target(
+                    source_context["level"], "level"
+                )
+                if source_kind == "space":
+                    source_context["contained_elements"] = [
+                        self._semantic_spatial_target(row, "element")
+                        for row in source_context["contained_elements"]
+                    ]
+                    for connection in source_context["connections"]:
+                        connection["evidence_class"] = "source_fact"
+                        for key, kind in (
+                            ("connector_element", "element"),
+                            ("connector_type", "element_type"),
+                            ("from_space", "space"),
+                            ("to_space", "space"),
+                            ("connected_space", "space"),
+                        ):
+                            connection[key] = self._semantic_spatial_target(
+                                connection[key], kind
+                            )
+                    adjacency = source_context["adjacency"]
+                    adjacency["evidence_class"] = "deterministic_derived"
+                    adjacency["space"] = self._semantic_spatial_target(
+                        adjacency["space"], "space"
+                    )
+                    for adjacent in adjacency["adjacent_spaces"]:
+                        adjacent["evidence_class"] = "deterministic_derived"
+                        adjacent["space"] = self._semantic_spatial_target(
+                            adjacent["space"], "space"
+                        )
+                else:
+                    source_context["containment"] = [
+                        self._semantic_spatial_target(row, "space")
+                        for row in source_context["containment"]
+                    ]
+                    siblings = source_context["type_siblings"]
+                    siblings["evidence_class"] = "deterministic_derived"
+                    siblings["element"] = self._semantic_spatial_target(
+                        siblings["element"], "element"
+                    )
+                    siblings["element_type"] = self._semantic_spatial_target(
+                        siblings["element_type"], "element_type"
+                    )
+                    siblings["elements"] = [
+                        self._semantic_spatial_target(row, "element")
+                        for row in siblings["elements"]
+                    ]
+            contexts.append({
+                "binding": binding,
+                "source_reference": {"kind": source_kind, "id": source_id},
+                "spatial_context": source_context,
+            })
+        relationships = [
+            {**relationship, "evidence_class": "source_fact"}
+            for relationship in semantic["relationships"]
+        ]
+        return {
+            "capability": semantic["capability"],
+            "status": "ok" if contexts else "insufficient_data",
+            "semantic_entity": semantic["entity"],
+            "relationships": relationships,
+            "spatial_contexts": contexts,
+        }
+
     @staticmethod
     def _pdf_table_navigation(
         row: dict[str, Any], *, source_kind: str, source_id: str
