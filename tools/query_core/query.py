@@ -1120,6 +1120,105 @@ class QueryCore:
             "spatial_contexts": contexts,
         }
 
+    def get_semantic_drawing_context(self, entity_id: str) -> dict[str, Any] | None:
+        """Project stored drawing/PDF occurrences for resolved semantic bindings."""
+        semantic = self.get_semantic_entity(entity_id)
+        if semantic is None:
+            return None
+
+        occurrences = []
+        for binding in semantic["bindings"]:
+            source_kind, source_id = binding["source_kind"], binding["source_id"]
+            if (
+                source_id is None
+                or binding["resolution_state"]
+                not in {"exact", "resolved_deterministically"}
+            ):
+                continue
+
+            projected = []
+            if source_kind in {"element", "element_type", "space", "level"}:
+                navigation = {
+                    row["appearance_id"]: row
+                    for row in self.get_navigation_targets(source_kind, source_id)
+                }
+                for row in self.get_occurrence_evidence(source_kind, source_id):
+                    target = navigation.get(row["appearance_id"])
+                    if target is None:
+                        # Navigation intentionally deduplicates identical locations;
+                        # the semantic projection must retain every appearance row.
+                        target = self._get_appearance_navigation(row["appearance_id"])
+                    projected.append({**row, "navigation": target})
+            elif source_kind == "pdf_table_cell":
+                cell = self.get_pdf_table_cell(source_id)
+                if cell is not None:
+                    projected.append(cell)
+            elif source_kind == "pdf_text_span":
+                span = self.get_pdf_text_span(source_id)
+                if span is not None:
+                    projected.append(span)
+            elif source_kind == "evidence":
+                evidence = self.get_pdf_evidence(source_id)
+                if evidence is not None:
+                    evidence["evidence_id"] = evidence.pop("id")
+                    evidence["bbox"] = (
+                        [
+                            evidence.pop(key)
+                            for key in ("x_min", "y_min", "x_max", "y_max")
+                        ]
+                        if all(
+                            evidence[key] is not None
+                            for key in ("x_min", "y_min", "x_max", "y_max")
+                        )
+                        else None
+                    )
+                    for key in ("x_min", "y_min", "x_max", "y_max"):
+                        evidence.pop(key, None)
+                    evidence["document"] = {
+                        "id": evidence.pop("document_id"),
+                        "identity": evidence.pop("document_identity"),
+                        "source_filename": evidence.pop("source_filename"),
+                        "source_sha256": evidence.pop("source_sha256"),
+                    }
+                    evidence["navigation"] = self.get_evidence_navigation(source_id)
+                    projected.append(evidence)
+
+            for occurrence in projected:
+                occurrence.update({
+                    "binding": binding,
+                    "source_kind": source_kind,
+                    "source_id": source_id,
+                    "occurrence_id": (
+                        occurrence.get("appearance_id")
+                        or occurrence.get("cell_id")
+                        or occurrence.get("span_id")
+                        or occurrence.get("evidence_id")
+                    ),
+                    "evidence_class": "source_fact",
+                })
+                occurrences.append(occurrence)
+
+        def ordering(row: dict[str, Any]) -> tuple[Any, ...]:
+            document = row.get("document") or {}
+            bbox = row.get("bbox")
+            return (
+                document.get("identity") or "",
+                row.get("pdf_page") or 0,
+                row.get("sheet_number") or "",
+                row.get("view_name") or "",
+                tuple(bbox) if bbox is not None else (),
+                row["occurrence_id"],
+                row["binding"]["id"],
+            )
+
+        occurrences.sort(key=ordering)
+        return {
+            "capability": semantic["capability"],
+            "status": "ok" if occurrences else "insufficient_data",
+            "semantic_entity": semantic["entity"],
+            "occurrences": occurrences,
+        }
+
     @staticmethod
     def _pdf_table_navigation(
         row: dict[str, Any], *, source_kind: str, source_id: str
@@ -1322,6 +1421,48 @@ class QueryCore:
         )
         return result
 
+    def get_pdf_text_span(self, span_id: str) -> dict[str, Any] | None:
+        """Return one persisted PDF text span with its exact source location."""
+        if not self._has_columns(
+            "pdf_text_spans", *PDF_TEXT_REQUIRED_COLUMNS["pdf_text_spans"]
+        ):
+            return None
+        rows = self._rows(
+            "SELECT s.*,l.id AS line_id,l.order_index AS line_index,"
+            "b.id AS block_id,b.order_index AS block_index,b.evidence_id,"
+            "p.page_number AS pdf_page,d.id AS document_id,"
+            "d.identity AS document_identity,d.source_filename,d.source_sha256 "
+            "FROM pdf_text_spans s JOIN pdf_text_lines l ON l.id=s.line_id "
+            "JOIN pdf_text_blocks b ON b.id=l.block_id "
+            "JOIN pdf_pages p ON p.id=b.page_id "
+            "JOIN documents d ON d.id=p.document_id WHERE s.id=?",
+            (span_id,),
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        result = {
+            "span_id": row["id"],
+            "text": row["text"],
+            "source_ref": {
+                "block_id": row["block_id"],
+                "block_index": row["block_index"],
+                "line_id": row["line_id"],
+                "line_index": row["line_index"],
+                "span_index": row["order_index"],
+            },
+            "evidence_id": row["evidence_id"],
+            "document": self._pdf_document(row),
+            "pdf_page": row["pdf_page"],
+            "bbox": [row[key] for key in ("x_min", "y_min", "x_max", "y_max")],
+            "coordinate_space": row["coordinate_space"],
+            "provenance": row["provenance"],
+        }
+        result["navigation"] = self._pdf_table_navigation(
+            row, source_kind="pdf_text_span", source_id=span_id
+        )
+        return result
+
     def search_pdf_table_cells(
         self, query: str, limit: int = 20
     ) -> list[dict[str, Any]]:
@@ -1472,7 +1613,7 @@ class QueryCore:
         rows = self._rows(
             "SELECT a.*,d.id AS document_id,d.identity AS document_identity,"
             "d.source_filename,s.number AS sheet_number,s.name AS sheet_name,"
-            "v.name AS view_name FROM entity_appearances a "
+            "v.name AS view_name,v.view_type FROM entity_appearances a "
             "LEFT JOIN sheets s ON s.id=a.sheet_id "
             "LEFT JOIN views v ON v.id=a.view_id "
             "JOIN documents d ON d.id=COALESCE(s.document_id,v.document_id) "
@@ -1503,7 +1644,7 @@ class QueryCore:
         rows = self._rows(
             "SELECT a.id AS appearance_id,a.*,d.id AS document_id,"
             "d.identity AS document_identity,d.source_filename,"
-            "s.number AS sheet_number,s.name AS sheet_name,v.name AS view_name "
+            "s.number AS sheet_number,s.name AS sheet_name,v.name AS view_name,v.view_type "
             "FROM entity_appearances a LEFT JOIN sheets s ON s.id=a.sheet_id "
             "LEFT JOIN views v ON v.id=a.view_id "
             "JOIN documents d ON d.id=COALESCE(s.document_id,v.document_id) "
@@ -1520,7 +1661,7 @@ class QueryCore:
         rows = self._rows(
             "SELECT a.id AS appearance_id,a.*,d.id AS document_id,"
             "d.identity AS document_identity,d.source_filename,"
-            "s.number AS sheet_number,s.name AS sheet_name,v.name AS view_name "
+            "s.number AS sheet_number,s.name AS sheet_name,v.name AS view_name,v.view_type "
             "FROM entity_appearances a LEFT JOIN sheets s ON s.id=a.sheet_id "
             "LEFT JOIN views v ON v.id=a.view_id "
             "JOIN documents d ON d.id=COALESCE(s.document_id,v.document_id) "
@@ -1783,7 +1924,7 @@ class QueryCore:
 
     def get_pdf_evidence(self, evidence_id: str) -> dict[str, Any] | None:
         rows = self._rows(
-            "SELECT e.*,d.identity AS document_identity,d.source_filename,d.source_sha256,s.number AS sheet_number,s.name AS sheet_name,v.name AS view_name FROM evidence e JOIN documents d ON d.id=e.document_id LEFT JOIN sheets s ON s.id=e.sheet_id LEFT JOIN views v ON v.id=e.view_id WHERE e.id=?",
+            "SELECT e.*,d.identity AS document_identity,d.source_filename,d.source_sha256,s.number AS sheet_number,s.name AS sheet_name,v.name AS view_name,v.view_type FROM evidence e JOIN documents d ON d.id=e.document_id LEFT JOIN sheets s ON s.id=e.sheet_id LEFT JOIN views v ON v.id=e.view_id WHERE e.id=?",
             (evidence_id,),
         )
         return rows[0] if rows else None

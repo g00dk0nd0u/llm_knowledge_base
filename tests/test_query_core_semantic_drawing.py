@@ -1,0 +1,188 @@
+from __future__ import annotations
+
+import sqlite3
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from tools.query_core.fixtures import build_synthetic_fixture
+from tools.query_core.query import QueryCore
+
+
+@pytest.fixture
+def semantic_drawing_database(tmp_path: Path) -> Path:
+    _, database = build_synthetic_fixture(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO entity_appearances SELECT 'appearance-sd03-same-page',"
+            "entity_kind,entity_id,sheet_id,view_id,viewport_id,link_instance_id,"
+            "pdf_page,x_min+1,y_min,x_max+1,y_max,coordinate_space,appearance_kind,"
+            "bbox_quality,provenance FROM entity_appearances "
+            "WHERE id='appearance-sd03-0'"
+        )
+        connection.execute(
+            "INSERT INTO pdf_pages (id,document_id,page_number,width_points,"
+            "height_points,rotation,coordinate_space,provenance) VALUES "
+            "('pdf-page-9','doc-drawings',9,612,792,0,'pdf_points_top_left','test')"
+        )
+        connection.execute(
+            "INSERT INTO evidence VALUES "
+            "('ev-span','doc-drawings',NULL,NULL,9,10,20,40,30,'pdf_points_top_left')"
+        )
+        connection.execute(
+            "INSERT INTO pdf_text_blocks VALUES "
+            "('block-9','pdf-page-9',0,'D-101',10,20,40,30,"
+            "'pdf_points_top_left','embedded_pdf_text','ev-span')"
+        )
+        connection.execute(
+            "INSERT INTO pdf_text_lines VALUES "
+            "('line-9','block-9',0,'D-101',10,20,40,30,"
+            "'pdf_points_top_left','embedded_pdf_text')"
+        )
+        connection.execute(
+            "INSERT INTO pdf_text_spans VALUES "
+            "('span-9','line-9',0,'D-101',11,21,39,29,"
+            "'pdf_points_top_left','embedded_pdf_text',NULL,NULL,NULL)"
+        )
+        connection.execute(
+            "INSERT INTO pdf_tables VALUES "
+            "('table-9','pdf-page-9',0,2,2,5,15,100,100,'pdf_points_top_left',"
+            "'derived_pdf_table','pymupdf_lines_strict','1','PyMuPDF','1')"
+        )
+        connection.executemany(
+            "INSERT INTO pdf_table_cells VALUES "
+            "(?,'table-9',?,?,1,1,?,?,?,?,?,'pdf_points_top_left','derived_pdf_table')",
+            [
+                ("cell-9-header", 0, 0, "", 10, 16, 40, 19),
+                ("cell-9-header-2", 0, 1, "", 41, 16, 80, 19),
+                ("cell-9", 1, 0, "D-101", 10, 20, 40, 30),
+                ("cell-9-type", 1, 1, "", 41, 20, 80, 30),
+            ],
+        )
+        connection.execute(
+            "INSERT INTO pdf_table_cell_spans VALUES ('cell-9','span-9',0)"
+        )
+        entities = [
+            ("sem-element", "Door", "exact"),
+            ("sem-cell", "DoorScheduleRow", "exact"),
+            ("sem-span", "DrawingText", "exact"),
+            ("sem-evidence", "DrawingEvidence", "exact"),
+            ("sem-none", "Door", "unresolved"),
+        ]
+        connection.executemany(
+            "INSERT INTO semantic_entities "
+            "(id,entity_class,instance_or_type,resolution_state,provenance) "
+            "VALUES (?,?,'instance',?,'test')",
+            entities,
+        )
+        bindings = [
+            ("binding-element-b", "sem-element", "element", "element-sd03", "exact"),
+            ("binding-element-a", "sem-element", "element", "element-sd03", "resolved_deterministically"),
+            ("binding-ambiguous", "sem-element", "element", "element-dl03", "ambiguous"),
+            ("binding-cell", "sem-cell", "pdf_table_cell", "cell-9", "exact"),
+            ("binding-span", "sem-span", "pdf_text_span", "span-9", "exact"),
+            ("binding-evidence", "sem-evidence", "evidence", "ev-shutter", "exact"),
+            ("binding-none", "sem-none", "element", None, "unresolved"),
+        ]
+        connection.executemany(
+            "INSERT INTO semantic_bindings "
+            "(id,semantic_entity_id,source_kind,source_id,resolution_state,provenance) "
+            "VALUES (?,?,?,?,?,'test')",
+            bindings,
+        )
+    return database
+
+
+def test_entity_appearances_are_preserved_and_navigation_is_reused(
+    semantic_drawing_database: Path,
+) -> None:
+    with QueryCore(semantic_drawing_database) as query:
+        before = query.connection.execute(
+            "SELECT count(*) FROM semantic_relationships"
+        ).fetchone()[0]
+        result = query.get_semantic_drawing_context("sem-element")
+        navigation = query.get_navigation_targets("element", "element-sd03")
+        after = query.connection.execute(
+            "SELECT count(*) FROM semantic_relationships"
+        ).fetchone()[0]
+
+    assert result["status"] == "ok"
+    assert len(result["occurrences"]) == 8
+    assert {row["binding"]["id"] for row in result["occurrences"]} == {
+        "binding-element-a", "binding-element-b"
+    }
+    assert all(row["evidence_class"] == "source_fact" for row in result["occurrences"])
+    ids = [row["appearance_id"] for row in result["occurrences"]]
+    assert ids.count("appearance-sd03-0") == ids.count("appearance-sd03-same-page") == 2
+    first = next(row for row in result["occurrences"] if row["appearance_id"] == "appearance-sd03-0")
+    assert first["document"]["identity"] == "synthetic-drawings-v1"
+    assert (first["sheet_number"], first["view_name"], first["view_type"], first["pdf_page"]) == (
+        "A-312", "Loading Dock Elevation", "elevation", 1
+    )
+    assert first["bbox"] == [120.0, 150.0, 330.0, 240.0]
+    assert first["navigation"] == next(
+        row for row in navigation if row["appearance_id"] == first["appearance_id"]
+    )
+    assert before == after == 0
+
+
+def test_pdf_native_bindings_retain_exact_traceability(
+    semantic_drawing_database: Path,
+) -> None:
+    with QueryCore(semantic_drawing_database) as query:
+        cell = query.get_semantic_drawing_context("sem-cell")["occurrences"][0]
+        span = query.get_semantic_drawing_context("sem-span")["occurrences"][0]
+        evidence = query.get_semantic_drawing_context("sem-evidence")["occurrences"][0]
+
+    assert (cell["table"]["table_id"], cell["cell_id"], cell["pdf_page"]) == (
+        "table-9", "cell-9", 9
+    )
+    assert cell["bbox"] == [10.0, 20.0, 40.0, 30.0]
+    assert cell["source_spans"][0]["span_id"] == "span-9"
+    assert span["bbox"] == [11.0, 21.0, 39.0, 29.0]
+    assert span["source_ref"]["block_id"] == "block-9"
+    assert span["evidence_id"] == "ev-span"
+    assert evidence["evidence_id"] == "ev-shutter"
+    assert evidence["pdf_page"] == 1
+    assert evidence["bbox"] == [120.0, 150.0, 330.0, 240.0]
+
+
+def test_unsupported_or_unresolved_data_is_explicit_and_legacy_is_readable(
+    semantic_drawing_database: Path, tmp_path: Path,
+) -> None:
+    with QueryCore(semantic_drawing_database) as query:
+        result = query.get_semantic_drawing_context("sem-none")
+    assert result["status"] == "insufficient_data"
+    assert result["occurrences"] == []
+
+    legacy = tmp_path / "legacy.sqlite"
+    legacy.write_bytes(semantic_drawing_database.read_bytes())
+    with sqlite3.connect(legacy) as connection:
+        connection.execute("DROP TABLE semantic_relationships")
+        connection.execute("DROP TABLE semantic_properties")
+        connection.execute("DROP TABLE semantic_bindings")
+        connection.execute("DROP TABLE semantic_entities")
+    with QueryCore(legacy) as query:
+        assert query.get_semantic_drawing_context("sem-element") is None
+
+
+def test_semantic_drawing_projection_is_stdlib_only(
+    semantic_drawing_database: Path,
+) -> None:
+    code = (
+        "import sys; from tools.query_core import QueryCore; "
+        f"q=QueryCore({str(semantic_drawing_database)!r}); "
+        "v=q.get_semantic_drawing_context('sem-cell'); q.close(); "
+        "assert v['occurrences'][0]['cell_id']=='cell-9'; "
+        "assert 'fitz' not in sys.modules and 'jsonschema' not in sys.modules"
+    )
+    result = subprocess.run(
+        [sys.executable, "-S", "-c", code],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
