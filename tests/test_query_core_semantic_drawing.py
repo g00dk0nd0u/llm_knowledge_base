@@ -128,6 +128,99 @@ def test_entity_appearances_are_preserved_and_navigation_is_reused(
     assert before == after == 0
 
 
+def test_viewport_context_is_shared_by_occurrence_and_navigation_apis(
+    semantic_drawing_database: Path,
+) -> None:
+    with sqlite3.connect(semantic_drawing_database) as connection:
+        connection.executemany(
+            "INSERT INTO elements SELECT ?,name,category,type_id,space_id,level_id,"
+            "source_model_id,?,provenance,confidence FROM elements "
+            "WHERE id='element-sd03'",
+            [
+                ("element-viewport", "test-viewport"),
+                ("element-priority", "test-priority"),
+                ("element-unresolved", "test-unresolved"),
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO entity_appearances VALUES "
+            "(?, 'element', ?, ?, ?, ?, NULL, ?, NULL,NULL,NULL,NULL,"
+            "'pdf_points_top_left','model','page_only','test')",
+            [
+                ("appearance-viewport-only", "element-viewport", None, None,
+                 "vp-dock", 1),
+                ("appearance-direct-priority", "element-priority", "sheet-a201",
+                 "view-level2", "vp-dock", 3),
+                ("appearance-unresolved-viewport", "element-unresolved", None,
+                 None, None, 1),
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO semantic_entities "
+            "(id,entity_class,instance_or_type,resolution_state,provenance) "
+            "VALUES (?,'Element','instance','exact','test')",
+            [("sem-viewport",), ("sem-unresolved-viewport",)],
+        )
+        connection.executemany(
+            "INSERT INTO semantic_bindings "
+            "(id,semantic_entity_id,source_kind,source_id,resolution_state,provenance) "
+            "VALUES (?,?,'element',?,'exact','test')",
+            [
+                ("binding-viewport", "sem-viewport", "element-viewport"),
+                ("binding-unresolved-viewport", "sem-unresolved-viewport",
+                 "element-unresolved"),
+            ],
+        )
+
+    with QueryCore(semantic_drawing_database) as query:
+        occurrences = query.get_occurrence_evidence("element", "element-viewport")
+        targets = query.get_navigation_targets("element", "element-viewport")
+        private_target = query._get_appearance_navigation("appearance-viewport-only")
+        semantic = query.get_semantic_drawing_context("sem-viewport")
+        priority = query.get_occurrence_evidence("element", "element-priority")
+        priority_targets = query.get_navigation_targets("element", "element-priority")
+        unresolved = query.get_occurrence_evidence("element", "element-unresolved")
+        unresolved_targets = query.get_navigation_targets(
+            "element", "element-unresolved"
+        )
+        unresolved_semantic = query.get_semantic_drawing_context(
+            "sem-unresolved-viewport"
+        )
+
+    assert len(occurrences) == len(targets) == 1
+    occurrence, target = occurrences[0], targets[0]
+    assert occurrence["appearance_sheet_id"] is None
+    assert occurrence["appearance_view_id"] is None
+    assert occurrence["sheet_id"] == target["sheet_id"] == "sheet-a312"
+    assert occurrence["view_id"] == target["view_id"] == "view-dock"
+    assert occurrence["sheet_number"] == target["sheet_number"] == "A-312"
+    assert occurrence["view_name"] == target["view_name"] == "Loading Dock Elevation"
+    assert occurrence["document"] == target["document"] == private_target["document"]
+    assert occurrence["pdf_page"] == target["pdf_page"] == 1
+    assert semantic["status"] == "ok"
+    assert semantic["occurrences"][0]["navigation"] == target
+
+    assert len(priority) == len(priority_targets) == 1
+    assert (
+        priority[0]["sheet_id"]
+        == priority[0]["appearance_sheet_id"]
+        == "sheet-a201"
+    )
+    assert (
+        priority[0]["view_id"]
+        == priority[0]["appearance_view_id"]
+        == "view-level2"
+    )
+    assert priority[0]["sheet_number"] == "A-201"
+    assert priority[0]["view_name"] == "Level 2 Data Hall Plan"
+    assert priority_targets[0]["sheet_id"] == "sheet-a201"
+    assert priority_targets[0]["view_id"] == "view-level2"
+
+    assert unresolved == unresolved_targets == []
+    assert unresolved_semantic["status"] == "insufficient_data"
+    assert unresolved_semantic["occurrences"] == []
+
+
 def test_pdf_native_bindings_retain_exact_traceability(
     semantic_drawing_database: Path,
 ) -> None:
