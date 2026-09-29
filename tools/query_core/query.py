@@ -28,6 +28,12 @@ PDF_TABLE_TABLES = {"pdf_tables", "pdf_table_cells", "pdf_table_cell_spans"}
 SEMANTIC_TABLES = {"semantic_entities", "semantic_bindings"}
 SEMANTIC_PROPERTY_TABLE = "semantic_properties"
 SEMANTIC_RELATIONSHIP_TABLE = "semantic_relationships"
+DRAWING_REFERENCE_TABLE = "drawing_references"
+DRAWING_REFERENCE_REQUIRED_COLUMNS = {
+    "id", "source_evidence_id", "relation_type", "printed_reference",
+    "target_view_id", "target_sheet_id", "target_evidence_id",
+    "resolution_state", "provenance",
+}
 _APPEARANCE_CONTEXT_SELECT = (
     "SELECT CASE WHEN ds.document_id=d.id THEN a.sheet_id "
     "WHEN vps.document_id=d.id THEN vp.sheet_id END AS sheet_id,"
@@ -634,6 +640,18 @@ def validate_database(path: Path) -> dict[str, str]:
                         f"semantic relationship references nonexistent {label}: "
                         f"{invalid['id']}"
                     )
+        if DRAWING_REFERENCE_TABLE in objects:
+            actual = {
+                row["name"] for row in connection.execute(
+                    "PRAGMA table_info(drawing_references)"
+                )
+            }
+            missing_columns = sorted(DRAWING_REFERENCE_REQUIRED_COLUMNS - actual)
+            if missing_columns:
+                raise QueryCoreError(
+                    "incompatible drawing reference capability; missing columns: "
+                    + ", ".join(missing_columns)
+                )
         if "pdf_pages" in objects:
             required_pdf_page_columns = {
                 "id",
@@ -877,6 +895,82 @@ class QueryCore:
             SEMANTIC_RELATIONSHIP_TABLE,
             *SEMANTIC_RELATIONSHIP_REQUIRED_COLUMNS,
         )
+
+    def has_drawing_reference_capability(self) -> bool:
+        """Return whether explicit source drawing-reference facts are available."""
+        return self._has_columns(
+            DRAWING_REFERENCE_TABLE, *DRAWING_REFERENCE_REQUIRED_COLUMNS
+        )
+
+    def get_drawing_reference(self, reference_id: str) -> dict[str, Any] | None:
+        """Return one stored drawing-reference fact and explicit navigation only."""
+        if not self.has_drawing_reference_capability():
+            return None
+        rows = self._rows(
+            "SELECT * FROM drawing_references WHERE id=?", (reference_id,)
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        source_evidence = self.get_pdf_evidence(row["source_evidence_id"])
+        result = {
+            key: row[key] for key in (
+                "id", "relation_type", "printed_reference", "resolution_state",
+                "provenance",
+            )
+        }
+        result["source"] = {
+            "evidence": source_evidence,
+            "navigation": self.get_evidence_navigation(row["source_evidence_id"]),
+        }
+        if row["resolution_state"] in {"ambiguous", "unresolved"}:
+            result["target"] = None
+            return result
+        view = self._rows("SELECT * FROM views WHERE id=?", (row["target_view_id"],))[0] if row["target_view_id"] else None
+        sheet = self._rows("SELECT * FROM sheets WHERE id=?", (row["target_sheet_id"],))[0] if row["target_sheet_id"] else None
+        evidence = self.get_pdf_evidence(row["target_evidence_id"]) if row["target_evidence_id"] else None
+        navigation = self.get_evidence_navigation(row["target_evidence_id"]) if row["target_evidence_id"] else None
+        if navigation is None and (sheet is not None or view is not None):
+            document_id = (sheet or view)["document_id"]
+            document = self._rows(
+                "SELECT * FROM documents WHERE id=?", (document_id,)
+            )[0]
+            context = {
+                "document_id": document_id,
+                "document_identity": document["identity"],
+                "source_filename": document["source_filename"],
+                "source_sha256": document["source_sha256"],
+                "sheet_id": sheet["id"] if sheet else None,
+                "sheet_number": sheet["number"] if sheet else None,
+                "sheet_name": sheet["name"] if sheet else None,
+                "view_id": view["id"] if view else None,
+                "view_name": view["name"] if view else None,
+                "view_type": view["view_type"] if view else None,
+                "pdf_page": sheet["pdf_page"] if sheet else None,
+                "x_min": None, "y_min": None, "x_max": None, "y_max": None,
+                "coordinate_space": None,
+                "source_id": row["id"],
+            }
+            navigation = navigation_target(context, source_kind="drawing_reference_target")
+        result["target"] = {
+            "view": view, "sheet": sheet, "evidence": evidence,
+            "navigation": navigation,
+        }
+        return result
+
+    def get_drawing_references_for_view(self, view_id: str) -> list[dict[str, Any]]:
+        """Return explicit references located in evidence for one source view."""
+        if not self.has_drawing_reference_capability():
+            return []
+        ids = self._rows(
+            "SELECT r.id FROM drawing_references r "
+            "JOIN evidence e ON e.id=r.source_evidence_id "
+            "JOIN documents d ON d.id=e.document_id WHERE e.view_id=? "
+            "ORDER BY d.identity,e.pdf_page,e.x_min,e.y_min,e.x_max,e.y_max,"
+            "r.relation_type,r.id",
+            (view_id,),
+        )
+        return [self.get_drawing_reference(row["id"]) for row in ids]
 
     def get_semantic_entity(self, entity_id: str) -> dict[str, Any] | None:
         """Project one semantic identity over existing source facts, without copies."""
