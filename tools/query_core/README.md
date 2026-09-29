@@ -87,6 +87,16 @@ semantic references, or an empty semantic-reference list when no binding exists.
 API does not create entities, fuzzy-match records, or convert a Query Core level into a
 semantic Storey.
 
+`QueryCore.get_semantic_drawing_context(id)` similarly projects only existing source
+locations from resolved bindings. Query Core `element`, `element_type`, `space`, and
+`level` bindings reuse occurrence evidence and navigation; `pdf_table_cell`,
+`pdf_text_span`, and `evidence` bindings retain their persisted document, one-based
+page, bbox, coordinate space, provenance, and available source traceability. Every
+appearance row and binding stays independently identifiable and is labeled
+`evidence_class=source_fact`. Results are ordered by document identity, page,
+sheet/view, bbox, occurrence ID, and binding ID. The API returns `insufficient_data`
+rather than resolving names or inferring drawing-topology relationships.
+
 This read path uses only `sqlite3` and the Python standard library. It therefore keeps
 the same Python 3.12 `-S` boundary as all other existing-SQLite and Project Query Bundle
 queries; semantic creation remains a build-time concern.
