@@ -71,6 +71,50 @@ public sealed class SnapshotTests
     }
 
     [Fact]
+    public void ScheduleAppearanceIdsAreStableAndScopedToEverySourceOccurrence()
+    {
+        var appearance = StableIds.ScheduleAppearance(
+            "element", "door", "schedule", "instance", "sheet");
+
+        Assert.Equal(appearance, StableIds.ScheduleAppearance(
+            "element", "door", "schedule", "instance", "sheet"));
+        Assert.NotEqual(appearance, StableIds.ScheduleAppearance(
+            "element_type", "door", "schedule", "instance", "sheet"));
+        Assert.NotEqual(appearance, StableIds.ScheduleAppearance(
+            "element", "other", "schedule", "instance", "sheet"));
+        Assert.NotEqual(appearance, StableIds.ScheduleAppearance(
+            "element", "door", "other", "instance", "sheet"));
+        Assert.NotEqual(appearance, StableIds.ScheduleAppearance(
+            "element", "door", "schedule", "other", "sheet"));
+        Assert.NotEqual(appearance, StableIds.ScheduleAppearance(
+            "element", "door", "schedule", "instance", "other"));
+    }
+
+    [Theory]
+    [InlineData(true, false, false, false, false, false, "schedule_membership_filtered_by_sheet_unsupported")]
+    [InlineData(false, true, false, false, false, false, "schedule_membership_split_unsupported")]
+    [InlineData(false, false, true, false, false, false, "schedule_membership_key_schedule_unsupported")]
+    [InlineData(false, false, false, true, false, false, "schedule_membership_material_takeoff_unsupported")]
+    [InlineData(false, false, false, false, true, false, "schedule_membership_linked_files_unsupported")]
+    [InlineData(false, false, false, false, false, true, "schedule_membership_embedded_schedule_unsupported")]
+    public void RejectsScheduleModesWithoutSafePageMembership(bool filtered, bool split,
+        bool key, bool material, bool linked, bool embedded, string warning)
+    {
+        var decision = ScheduleMembershipPolicy.Decide(
+            filtered, split, key, material, linked, embedded);
+
+        Assert.False(decision.Supported);
+        Assert.Equal(warning, decision.WarningCode);
+    }
+
+    [Fact]
+    public void SupportsOrdinaryUnsplitHostSchedule()
+    {
+        Assert.Equal(new ScheduleMembershipDecision(true, null),
+            ScheduleMembershipPolicy.Decide(false, false, false, false, false, false));
+    }
+
+    [Fact]
     public void SpatialIdsAreScopedToTheirSourceModelAndRemainStable()
     {
         var host = StableIds.For("space", "model-host", "room-unique-id");

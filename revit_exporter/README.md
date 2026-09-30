@@ -161,6 +161,28 @@ Consequently source evidence has a null PDF bbox, target evidence is null, and p
 marker text is not reconstructed. A hosted target View remains exact without PDF
 navigation; its target sheet is populated only for exactly one exported placement.
 
+Phase 3C1 keeps `ScheduleSheetInstance` placements in a dedicated
+`_schedulePlacements` map, separate from graphical `_placements`. For each unique
+eligible ordinary host `ViewSchedule`, one view-scoped
+`FilteredElementCollector(Document, viewSchedule.Id)` pass with
+`WhereElementIsNotElementType()` and one with `WhereElementIsElementType()` provide
+the only membership facts. Supported members map to the existing `element`,
+`element_type`, `space` (Room/Space), or `level` identities; a schedule-only model
+instance receives the same source-faithful element/type record as a graphical member.
+Each safe placed occurrence emits `entity_appearances` with
+`appearance_kind=schedule`, `bbox_quality=page_only`, null bbox coordinates, and the
+existing schedule-placement viewport ID. This asserts page membership only—not a
+row, cell, or printed position—and never parses PDF or schedule text or duplicates
+the fact as a semantic relationship.
+
+Membership projection is deliberately skipped with one warning per schedule View
+for Filter by Sheet, split schedules, key schedules, material takeoffs, embedded
+schedules, and schedules including linked files. These modes cannot yet guarantee
+truthful host entity-to-placement page membership without row/segment or linked-model
+semantics. Unsupported collected objects are aggregated by runtime type and category
+rather than forced into fake elements. Ordinary section `section_cut_to` inference
+remains deferred.
+
 For Revit 2025 safety, Phase B1 deliberately never uses the three-argument linked-view
 `FilteredElementCollector`. Linked documents are collected independently and link
 appearance visibility is conservative. This avoids reported 2025.x native crashes and
