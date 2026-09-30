@@ -444,6 +444,41 @@ ENTITY_TABLES = {
 }
 
 
+def _load_drawing_reference_validation_context(
+    connection: sqlite3.Connection,
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+] | None:
+    references = [
+        dict(row) for row in connection.execute("SELECT * FROM drawing_references")
+    ]
+    if not references:
+        return None
+
+    evidence = [dict(row) for row in connection.execute(
+        "SELECT e.* FROM evidence e WHERE EXISTS ("
+        "SELECT 1 FROM drawing_references r "
+        "WHERE r.source_evidence_id=e.id OR r.target_evidence_id=e.id)"
+    )]
+    views = [dict(row) for row in connection.execute(
+        "SELECT v.* FROM views v WHERE EXISTS ("
+        "SELECT 1 FROM drawing_references r WHERE r.target_view_id=v.id)"
+    )]
+    sheets = [dict(row) for row in connection.execute(
+        "SELECT s.* FROM sheets s WHERE EXISTS ("
+        "SELECT 1 FROM drawing_references r WHERE r.target_sheet_id=s.id)"
+    )]
+    viewports = [dict(row) for row in connection.execute(
+        "SELECT vp.* FROM viewports vp WHERE EXISTS ("
+        "SELECT 1 FROM drawing_references r WHERE r.target_view_id=vp.view_id)"
+    )]
+    return references, evidence, views, sheets, viewports
+
+
 def validate_database(path: Path) -> dict[str, str]:
     connection: sqlite3.Connection | None = None
     try:
@@ -653,13 +688,9 @@ def validate_database(path: Path) -> dict[str, str]:
                     "incompatible drawing reference capability; missing columns: "
                     + ", ".join(missing_columns)
                 )
-            validate_drawing_references(
-                map(dict, connection.execute("SELECT * FROM drawing_references")),
-                map(dict, connection.execute("SELECT * FROM evidence")),
-                map(dict, connection.execute("SELECT * FROM views")),
-                map(dict, connection.execute("SELECT * FROM sheets")),
-                map(dict, connection.execute("SELECT * FROM viewports")),
-            )
+            context = _load_drawing_reference_validation_context(connection)
+            if context is not None:
+                validate_drawing_references(*context)
         if "pdf_pages" in objects:
             required_pdf_page_columns = {
                 "id",
