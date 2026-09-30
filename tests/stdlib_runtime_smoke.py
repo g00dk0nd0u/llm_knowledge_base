@@ -46,6 +46,16 @@ database = build_database(
                 "content": "Loading Dock データホール",
             }
         ],
+        "semantic_entities": [{
+            "id": "semantic-smoke", "entity_class": "Door", "label": "D-001",
+            "instance_or_type": "instance", "resolution_state": "exact",
+            "provenance": "stdlib-smoke",
+        }],
+        "semantic_bindings": [{
+            "id": "binding-smoke", "semantic_entity_id": "semantic-smoke",
+            "source_kind": "element", "source_id": None,
+            "resolution_state": "unresolved", "provenance": "stdlib-smoke",
+        }],
     },
     root / "project.sqlite",
 )
@@ -80,5 +90,11 @@ for query in ("Loading Dock", "データホール"):
         ],
     )
     assert json.loads(search.stdout.decode("utf-8")) == expected
+
+context = run([
+    sys.executable, "-S", "-m", "tools.query_core", "architectural-context",
+    str(database), "semantic-smoke",
+])
+assert json.loads(context.stdout.decode("utf-8"))["entity"]["label"] == "D-001"
 
 print("ok: direct import; path with spaces; English and Japanese SQLite search")
