@@ -201,6 +201,47 @@ internal sealed class RevitSnapshotExporter
             AddDrawingReferences(sourceView, pair.Value, "callout_to", sourceView.GetReferenceCallouts());
             AddDrawingReferences(sourceView, pair.Value, "elevation_reference_to", sourceView.GetReferenceElevations());
         }
+        AddOrdinaryCalloutReferences();
+    }
+
+    private void AddOrdinaryCalloutReferences()
+    {
+        var calloutViews = new FilteredElementCollector(_document).OfClass(typeof(View)).Cast<View>()
+            .Where(view => !view.IsTemplate && view.IsCallout)
+            .OrderBy(view => view.UniqueId, StringComparer.Ordinal);
+        foreach (var calloutView in calloutViews)
+        {
+            var parentId = calloutView.GetCalloutParentId();
+            if (parentId == ElementId.InvalidElementId || _document.GetElement(parentId) is not View parentView)
+            {
+                _warnings.Add(new("ordinary_callout_parent_unresolved",
+                    "The ordinary callout View did not resolve to a parent View.", calloutView.UniqueId));
+                continue;
+            }
+            if (!_placements.TryGetValue(parentView.Id, out var sourcePlacements)) continue;
+
+            var targetViewId = AddView(calloutView);
+            string? targetSheetId = null;
+            if (_placements.TryGetValue(calloutView.Id, out var targetPlacements)
+                && targetPlacements.Count == 1)
+                targetSheetId = Id("sheet", _hostModelId, targetPlacements[0].Sheet.UniqueId);
+
+            foreach (var source in sourcePlacements)
+            {
+                var evidenceId = StableIds.OrdinaryCalloutEvidence(_hostModelId, parentView.UniqueId,
+                    calloutView.UniqueId, source.Sheet.UniqueId);
+                Add("evidence", Obj(("id", evidenceId), ("document_id", _documentId),
+                    ("sheet_id", Id("sheet", _hostModelId, source.Sheet.UniqueId)),
+                    ("view_id", Id("view", _hostModelId, parentView.UniqueId)), ("pdf_page", source.Page),
+                    ("x_min", null), ("y_min", null), ("x_max", null), ("y_max", null), ("coordinate_space", null)));
+                Add("drawing_references", Obj(("id", StableIds.OrdinaryCalloutDrawingReference(_hostModelId,
+                        parentView.UniqueId, calloutView.UniqueId, source.Sheet.UniqueId, "callout_to")),
+                    ("source_evidence_id", evidenceId), ("relation_type", "callout_to"),
+                    ("printed_reference", null), ("target_view_id", targetViewId),
+                    ("target_sheet_id", targetSheetId), ("target_evidence_id", null),
+                    ("resolution_state", "exact"), ("provenance", Provenance)));
+            }
+        }
     }
 
     private void AddDrawingReferences(View sourceView,

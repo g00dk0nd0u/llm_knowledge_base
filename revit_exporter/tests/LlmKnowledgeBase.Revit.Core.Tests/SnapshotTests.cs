@@ -31,6 +31,27 @@ public sealed class SnapshotTests
     }
 
     [Fact]
+    public void OrdinaryCalloutIdsAreStableAndScopedToTheExplicitRelationshipOccurrence()
+    {
+        var evidence = StableIds.OrdinaryCalloutEvidence("model", "parent", "callout", "sheet");
+        var reference = StableIds.OrdinaryCalloutDrawingReference(
+            "model", "parent", "callout", "sheet", "callout_to");
+
+        Assert.Equal(evidence,
+            StableIds.OrdinaryCalloutEvidence("model", "parent", "callout", "sheet"));
+        Assert.Equal(reference, StableIds.OrdinaryCalloutDrawingReference(
+            "model", "parent", "callout", "sheet", "callout_to"));
+        Assert.NotEqual(evidence,
+            StableIds.OrdinaryCalloutEvidence("model", "other-parent", "callout", "sheet"));
+        Assert.NotEqual(evidence,
+            StableIds.OrdinaryCalloutEvidence("model", "parent", "other-callout", "sheet"));
+        Assert.NotEqual(evidence,
+            StableIds.OrdinaryCalloutEvidence("model", "parent", "callout", "other-sheet"));
+        Assert.NotEqual(reference,
+            StableIds.DrawingReference("model", "callout", "sheet", "callout_to"));
+    }
+
+    [Fact]
     public void SpatialIdsAreScopedToTheirSourceModelAndRemainStable()
     {
         var host = StableIds.For("space", "model-host", "room-unique-id");
