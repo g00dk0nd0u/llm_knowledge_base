@@ -124,6 +124,22 @@ occurrences), compact bbox/point/line geometry, schedules, dimensions and
 segments/references, spots, text notes, tags, and grids. Failures scoped to individual
 records become manifest warnings; PDF, identity, and package failures fail the run.
 
+Phase 3B2a also treats `View.GetReferenceSections()`,
+`View.GetReferenceCallouts()`, and `View.GetReferenceElevations()` as deterministic
+Revit source facts. Only views in the exported `_placements` map are inspected, and
+`ReferenceableViewUtils.GetReferencedViewId()` supplies the target. A reference
+section is an explicit reference to an existing view, **not** an ordinary section
+cut; ordinary generated sections, callouts, and elevations remain future work.
+
+Each marker occurrence gets page-level source evidence on every exported source-sheet
+placement. Its PDF bbox and coordinate space are null because no exact Revit-sheet to
+PDF-points transform is proven. A resolved target View remains exact even when it is
+unplaced; a target sheet is recorded only for one known exported placement, so PDF
+navigation can legitimately be unavailable. Target evidence is not duplicated, and
+the visible `printed_reference` is intentionally not reconstructed from view or sheet
+metadata. Snapshot v1 adds the optional `drawing_references` collection to new exports;
+old v1 snapshots without that collection remain valid.
+
 For Revit 2025 safety, Phase B1 deliberately never uses the three-argument linked-view
 `FilteredElementCollector`. Linked documents are collected independently and link
 appearance visibility is conservative. This avoids reported 2025.x native crashes and
@@ -152,6 +168,8 @@ For **each** installed version (2025, 2026, 2027):
 * Nested linked boundary-source provenance is not fabricated; it remains unresolved
   and emits `nested_link_boundary_source_unsupported`.
 * Linked tag/reference resolution is conservative when the API cannot safely resolve it.
+* Exact reference-marker PDF bboxes and ordinary section/callout/elevation topology
+  are not available; linked-model drawing topology is also outside Phase 3B2a.
 * GitHub CI builds/tests only the Autodesk-independent Core. Autodesk-dependent hosts
   require local compilation against matching installed `RevitAPI.dll` and
   `RevitAPIUI.dll`, and cannot be run in CI without licensed local installations.

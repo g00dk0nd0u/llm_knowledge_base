@@ -820,6 +820,70 @@
             }
           }
         },
+        "drawing_references": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "source_evidence_id",
+              "relation_type",
+              "printed_reference",
+              "target_view_id",
+              "target_sheet_id",
+              "target_evidence_id",
+              "resolution_state",
+              "provenance"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source_evidence_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "relation_type": {
+                "type": "string",
+                "minLength": 1
+              },
+              "printed_reference": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target_view_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target_sheet_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target_evidence_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "resolution_state": {
+                "type": "string",
+                "minLength": 1
+              },
+              "provenance": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
         "parameters": {
           "type": "array",
           "items": {

@@ -14,6 +14,7 @@ Phase B should extract only; it must not duplicate the Python SQLite writer.
 | Rooms/spaces | `SpatialElement.GetBoundarySegments()` with finish-face `SpatialElementBoundaryOptions`; `BoundarySegment.ElementId` is the local producer or, for a linked source, its `RevitLinkInstance`; `BoundarySegment.LinkElementId` is resolved in that instance's linked document. Runtime curve type maps to `curve_kind`. Record the selected phase for FromRoom/ToRoom. |
 | View placement | `Viewport.GetBoxOutline()`, `Viewport.GetBoxCenter()`, `View.Scale`, `View.CropBox` |
 | Schedules | `ScheduleSheetInstance`, represented as a schedule placement rather than a Viewport |
+| Explicit drawing references | For exported placed source views only, `View.GetReferenceSections()`, `View.GetReferenceCallouts()`, and `View.GetReferenceElevations()` identify markers; `ReferenceableViewUtils.GetReferencedViewId()` resolves the authoritative target View. Source evidence is page-level with null PDF bbox, `printed_reference` is null, and a target sheet is retained only for exactly one exported placement. |
 
 A linked source model may have multiple `RevitLinkInstance` / `link_instances` rows.
 They share one linked element identity but produce distinct host-space geometry and
@@ -25,6 +26,13 @@ Wall, that Room's top-level occurrence is retained as the source occurrence too.
 Nested-link boundary sources are deliberately unresolved with an explicit warning.
 Non-line curves retain their kind but only endpoint approximations. No adjacency,
 near/nearest, or distance query is implemented in this phase.
+
+An explicit reference section maps to `section_reference_to`, not
+`section_cut_to`; reference callouts and elevations map to `callout_to` and
+`elevation_reference_to`. These facts do not infer ordinary generated markers,
+geometry, annotation text, or linked-model topology. An exact target View may be
+unplaced and therefore have no target sheet or PDF navigation. Snapshot v1 keeps this
+collection optional for backward compatibility.
 
 The adapters target Revit 2025, 2026, and 2027 while emitting the same versioned,
 Revit-independent snapshot. No Autodesk binary, RVT parser, or live-query dependency

@@ -13,6 +13,21 @@ public sealed class SnapshotTests
         Assert.All(SnapshotContract.RecordCollections, name => Assert.IsType<JsonArray>(records[name]));
         Assert.Equal(StableIds.For("element", "m", "u"), StableIds.For("element", "m", "u"));
         Assert.NotEqual(StableIds.Hash("x", "a"), StableIds.Hash("x", "b"));
+        Assert.Equal(1, SnapshotContract.Version);
+        Assert.IsType<JsonArray>(records["drawing_references"]);
+    }
+
+    [Fact]
+    public void DrawingReferenceIdsAreStablePerMarkerOccurrenceAndNotTarget()
+    {
+        var evidence = StableIds.ReferenceEvidence("model", "marker", "sheet-a");
+        var reference = StableIds.DrawingReference("model", "marker", "sheet-a", "callout_to");
+
+        Assert.Equal(evidence, StableIds.ReferenceEvidence("model", "marker", "sheet-a"));
+        Assert.Equal(reference, StableIds.DrawingReference("model", "marker", "sheet-a", "callout_to"));
+        Assert.NotEqual(evidence, StableIds.ReferenceEvidence("model", "marker", "sheet-b"));
+        Assert.NotEqual(reference, StableIds.DrawingReference("model", "marker", "sheet-b", "callout_to"));
+        Assert.NotEqual(reference, StableIds.DrawingReference("model", "marker", "sheet-a", "elevation_reference_to"));
     }
 
     [Fact]
