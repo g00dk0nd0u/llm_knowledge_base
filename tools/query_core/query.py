@@ -443,6 +443,34 @@ ENTITY_TABLES = {
     "element": "elements",
 }
 
+_DRAWING_REFERENCE_CONTEXT_QUERIES = {
+    "evidence": (
+        "SELECT e.* FROM drawing_references r "
+        "JOIN evidence e ON e.id=r.source_evidence_id "
+        "UNION "
+        "SELECT e.* FROM drawing_references r "
+        "JOIN evidence e ON e.id=r.target_evidence_id "
+        "WHERE r.target_evidence_id IS NOT NULL"
+    ),
+    "views": (
+        "SELECT DISTINCT v.* FROM drawing_references r "
+        "JOIN views v ON v.id=r.target_view_id "
+        "WHERE r.target_view_id IS NOT NULL"
+    ),
+    "sheets": (
+        "SELECT DISTINCT s.* FROM drawing_references r "
+        "JOIN sheets s ON s.id=r.target_sheet_id "
+        "WHERE r.target_sheet_id IS NOT NULL"
+    ),
+    "viewports": (
+        "WITH target_views AS ("
+        "SELECT DISTINCT target_view_id AS view_id FROM drawing_references "
+        "WHERE target_view_id IS NOT NULL) "
+        "SELECT vp.* FROM target_views tv "
+        "JOIN viewports vp ON vp.view_id=tv.view_id"
+    ),
+}
+
 
 def _load_drawing_reference_validation_context(
     connection: sqlite3.Connection,
@@ -460,21 +488,16 @@ def _load_drawing_reference_validation_context(
         return None
 
     evidence = [dict(row) for row in connection.execute(
-        "SELECT e.* FROM evidence e WHERE EXISTS ("
-        "SELECT 1 FROM drawing_references r "
-        "WHERE r.source_evidence_id=e.id OR r.target_evidence_id=e.id)"
+        _DRAWING_REFERENCE_CONTEXT_QUERIES["evidence"]
     )]
     views = [dict(row) for row in connection.execute(
-        "SELECT v.* FROM views v WHERE EXISTS ("
-        "SELECT 1 FROM drawing_references r WHERE r.target_view_id=v.id)"
+        _DRAWING_REFERENCE_CONTEXT_QUERIES["views"]
     )]
     sheets = [dict(row) for row in connection.execute(
-        "SELECT s.* FROM sheets s WHERE EXISTS ("
-        "SELECT 1 FROM drawing_references r WHERE r.target_sheet_id=s.id)"
+        _DRAWING_REFERENCE_CONTEXT_QUERIES["sheets"]
     )]
     viewports = [dict(row) for row in connection.execute(
-        "SELECT vp.* FROM viewports vp WHERE EXISTS ("
-        "SELECT 1 FROM drawing_references r WHERE r.target_view_id=vp.view_id)"
+        _DRAWING_REFERENCE_CONTEXT_QUERIES["viewports"]
     )]
     return references, evidence, views, sheets, viewports
 

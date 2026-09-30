@@ -9,6 +9,7 @@ from tools.query_core.errors import QueryCoreError
 from tools.query_core.fixtures import create_synthetic_pdf, synthetic_records
 from tools.query_core.query import (
     QueryCore,
+    _DRAWING_REFERENCE_CONTEXT_QUERIES,
     _load_drawing_reference_validation_context,
 )
 
@@ -97,6 +98,29 @@ def test_reference_validation_context_loads_only_reachable_rows(tmp_path):
     assert {row["id"] for row in views} == {"view-roof"}
     assert {row["id"] for row in sheets} == {"sheet-a421"}
     assert {row["id"] for row in viewports} == {"viewport-roof"}
+    connection.close()
+
+
+def test_reference_validation_queries_use_noncorrelated_access_paths(tmp_path):
+    records = _records(tmp_path)
+    records["drawing_references"] = [_reference(
+        "resolved", resolution_state="exact", target_view_id="view-roof",
+        target_sheet_id="sheet-a421", target_evidence_id="ev-roof",
+    )]
+    database = build_database(records, tmp_path / "query-plans.sqlite")
+    connection = sqlite3.connect(database)
+
+    plans = {
+        name: [row[3] for row in connection.execute(f"EXPLAIN QUERY PLAN {sql}")]
+        for name, sql in _DRAWING_REFERENCE_CONTEXT_QUERIES.items()
+    }
+
+    for plan in plans.values():
+        assert not any("CORRELATED SCALAR SUBQUERY" in detail for detail in plan)
+    for table in ("evidence", "views", "sheets"):
+        assert any(f"SEARCH {table[0]} USING" in detail for detail in plans[table])
+        assert any("SCAN r" in detail for detail in plans[table])
+        assert not any(f"SCAN {table[0]}" in detail for detail in plans[table])
     connection.close()
 
 
