@@ -1225,20 +1225,21 @@ class QueryCore:
             tuple(row["bbox"]) if row["bbox"] is not None else (), row["evidence_id"],
         ))
 
-        documents: dict[str, dict[str, Any]] = {}
-        for item in evidence:
-            doc = item["document"]
-            documents[doc["id"]] = doc
+        direct_document_ids = {
+            item["document"]["id"] for item in evidence
+        }
         for occurrence in drawing["occurrences"] if drawing else []:
             doc = occurrence.get("document")
             if doc and doc.get("id"):
-                documents[doc["id"]] = {
-                    key: doc.get(key)
-                    for key in ("id", "identity", "source_filename", "source_sha256")
-                }
-        source_documents = sorted(
-            documents.values(), key=lambda doc: (doc.get("identity") or "", doc["id"])
-        )
+                direct_document_ids.add(doc["id"])
+        source_documents = []
+        if direct_document_ids:
+            placeholders = ",".join("?" for _ in direct_document_ids)
+            source_documents = [dict(row) for row in self._rows(
+                "SELECT id,identity,source_filename,source_sha256 FROM documents "
+                f"WHERE id IN ({placeholders}) ORDER BY identity,id",
+                tuple(sorted(direct_document_ids)),
+            )]
 
         return {
             "capability": semantic["capability"],

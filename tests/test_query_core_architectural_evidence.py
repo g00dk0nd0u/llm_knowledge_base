@@ -162,6 +162,66 @@ def test_architectural_context_keeps_ambiguity_and_deduplicates_evidence(
     assert result['coverage']['source_document_count'] == 1
 
 
+def test_architectural_context_uses_canonical_direct_document_metadata(
+    tmp_path: Path,
+) -> None:
+    database = _semantic_database(tmp_path)
+    occurrence_only_sha256 = 'b' * 64
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO documents VALUES "
+            "('doc-occurrence-only','synthetic-occurrence-v1',"
+            "'Occurrence only','occurrence-only.pdf',?)",
+            (occurrence_only_sha256,),
+        )
+        connection.execute(
+            "INSERT INTO views "
+            "(id,document_id,name,view_type,source_model_id,source_unique_id) "
+            "VALUES ('view-occurrence-only','doc-occurrence-only',"
+            "'Occurrence-only model view','3D',NULL,NULL)"
+        )
+        connection.execute(
+            "INSERT INTO entity_appearances VALUES "
+            "('appearance-occurrence-only','element','element-sd03',NULL,"
+            "'view-occurrence-only',NULL,NULL,1,NULL,NULL,NULL,NULL,"
+            "'pdf_points_top_left','model','page_only','test')"
+        )
+        connection.execute(
+            "INSERT INTO documents VALUES "
+            "('doc-unrelated-context','unrelated-context-v1','Unrelated context',"
+            "'unrelated-context.pdf',?)",
+            ('c' * 64,),
+        )
+
+    evidence_sha256 = hashlib.sha256(
+        (tmp_path / 'drawing.pdf').read_bytes()
+    ).hexdigest()
+    with QueryCore(database) as core:
+        result = core.get_architectural_evidence_context('door-1')
+        repeated = core.get_architectural_evidence_context('door-1')
+
+    assert result == repeated
+    assert result is not None
+    assert result['source_documents'] == [
+        {
+            'id': 'doc-drawings',
+            'identity': 'synthetic-drawings-v1',
+            'source_filename': 'drawing.pdf',
+            'source_sha256': evidence_sha256,
+        },
+        {
+            'id': 'doc-occurrence-only',
+            'identity': 'synthetic-occurrence-v1',
+            'source_filename': 'occurrence-only.pdf',
+            'source_sha256': occurrence_only_sha256,
+        },
+    ]
+    assert all(
+        document['id'] != 'doc-unrelated-context'
+        for document in result['source_documents']
+    )
+
+
 def test_pdf_only_context_is_source_neutral_one_hop_and_traceable(
     pdf_semantic_database: Path,
 ) -> None:
