@@ -7,7 +7,11 @@ import pytest
 from tools.query_core.build import SCHEMA_VERSION, build_database
 from tools.query_core.errors import QueryCoreError
 from tools.query_core.fixtures import create_synthetic_pdf, synthetic_records
-from tools.query_core.query import QueryCore
+from tools.query_core.query import (
+    QueryCore,
+    _DRAWING_REFERENCE_CONTEXT_QUERIES,
+    _load_drawing_reference_validation_context,
+)
 
 
 def _records(tmp_path):
@@ -48,6 +52,76 @@ def _replace_reference_table_without_constraints(database):
     connection.execute("ALTER TABLE unchecked_references RENAME TO drawing_references")
     connection.commit()
     return connection
+
+
+def test_empty_reference_validation_context_has_fast_path(tmp_path):
+    database = build_database(_records(tmp_path), tmp_path / "empty.sqlite")
+    connection = sqlite3.connect(database)
+    connection.row_factory = sqlite3.Row
+    connection.set_authorizer(lambda action, *args: (
+        sqlite3.SQLITE_DENY
+        if action == sqlite3.SQLITE_READ
+        and args[0] in {"evidence", "views", "sheets", "viewports"}
+        else sqlite3.SQLITE_OK
+    ))
+
+    assert _load_drawing_reference_validation_context(connection) is None
+    connection.close()
+    with QueryCore(database):
+        pass
+
+
+def test_reference_validation_context_loads_only_reachable_rows(tmp_path):
+    records = _records(tmp_path)
+    records["drawing_references"] = [_reference(
+        "resolved", resolution_state="exact", target_view_id="view-roof",
+        target_sheet_id="sheet-a421", target_evidence_id="ev-roof",
+    )]
+    records["viewports"].append({
+        **records["viewports"][0], "id": "viewport-roof",
+        "sheet_id": "sheet-a421", "view_id": "view-roof",
+    })
+    records["viewports"].append({
+        **records["viewports"][0], "id": "viewport-level2",
+        "sheet_id": "sheet-a421", "view_id": "view-level2",
+    })
+    database = build_database(records, tmp_path / "selective.sqlite")
+    connection = sqlite3.connect(database)
+    connection.row_factory = sqlite3.Row
+
+    context = _load_drawing_reference_validation_context(connection)
+
+    assert context is not None
+    references, evidence, views, sheets, viewports = context
+    assert {row["id"] for row in references} == {"resolved"}
+    assert {row["id"] for row in evidence} == {"ev-corridor", "ev-roof"}
+    assert {row["id"] for row in views} == {"view-roof"}
+    assert {row["id"] for row in sheets} == {"sheet-a421"}
+    assert {row["id"] for row in viewports} == {"viewport-roof"}
+    connection.close()
+
+
+def test_reference_validation_queries_use_noncorrelated_access_paths(tmp_path):
+    records = _records(tmp_path)
+    records["drawing_references"] = [_reference(
+        "resolved", resolution_state="exact", target_view_id="view-roof",
+        target_sheet_id="sheet-a421", target_evidence_id="ev-roof",
+    )]
+    database = build_database(records, tmp_path / "query-plans.sqlite")
+    connection = sqlite3.connect(database)
+
+    plans = {
+        name: [row[3] for row in connection.execute(f"EXPLAIN QUERY PLAN {sql}")]
+        for name, sql in _DRAWING_REFERENCE_CONTEXT_QUERIES.items()
+    }
+
+    for plan in plans.values():
+        assert not any("CORRELATED SCALAR SUBQUERY" in detail for detail in plan)
+    for table in ("evidence", "views", "sheets"):
+        assert any(f"SEARCH {table[0]} USING" in detail for detail in plans[table])
+        assert any("SCAN r" in detail for detail in plans[table])
+        assert not any(f"SCAN {table[0]}" in detail for detail in plans[table])
+    connection.close()
 
 
 def test_resolved_unresolved_ambiguous_and_extensible_references(tmp_path):

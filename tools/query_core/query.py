@@ -443,6 +443,64 @@ ENTITY_TABLES = {
     "element": "elements",
 }
 
+_DRAWING_REFERENCE_CONTEXT_QUERIES = {
+    "evidence": (
+        "SELECT e.* FROM drawing_references r "
+        "JOIN evidence e ON e.id=r.source_evidence_id "
+        "UNION "
+        "SELECT e.* FROM drawing_references r "
+        "JOIN evidence e ON e.id=r.target_evidence_id "
+        "WHERE r.target_evidence_id IS NOT NULL"
+    ),
+    "views": (
+        "SELECT DISTINCT v.* FROM drawing_references r "
+        "JOIN views v ON v.id=r.target_view_id "
+        "WHERE r.target_view_id IS NOT NULL"
+    ),
+    "sheets": (
+        "SELECT DISTINCT s.* FROM drawing_references r "
+        "JOIN sheets s ON s.id=r.target_sheet_id "
+        "WHERE r.target_sheet_id IS NOT NULL"
+    ),
+    "viewports": (
+        "WITH target_views AS ("
+        "SELECT DISTINCT target_view_id AS view_id FROM drawing_references "
+        "WHERE target_view_id IS NOT NULL) "
+        "SELECT vp.* FROM target_views tv "
+        "JOIN viewports vp ON vp.view_id=tv.view_id"
+    ),
+}
+
+
+def _load_drawing_reference_validation_context(
+    connection: sqlite3.Connection,
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+] | None:
+    references = [
+        dict(row) for row in connection.execute("SELECT * FROM drawing_references")
+    ]
+    if not references:
+        return None
+
+    evidence = [dict(row) for row in connection.execute(
+        _DRAWING_REFERENCE_CONTEXT_QUERIES["evidence"]
+    )]
+    views = [dict(row) for row in connection.execute(
+        _DRAWING_REFERENCE_CONTEXT_QUERIES["views"]
+    )]
+    sheets = [dict(row) for row in connection.execute(
+        _DRAWING_REFERENCE_CONTEXT_QUERIES["sheets"]
+    )]
+    viewports = [dict(row) for row in connection.execute(
+        _DRAWING_REFERENCE_CONTEXT_QUERIES["viewports"]
+    )]
+    return references, evidence, views, sheets, viewports
+
 
 def validate_database(path: Path) -> dict[str, str]:
     connection: sqlite3.Connection | None = None
@@ -653,13 +711,9 @@ def validate_database(path: Path) -> dict[str, str]:
                     "incompatible drawing reference capability; missing columns: "
                     + ", ".join(missing_columns)
                 )
-            validate_drawing_references(
-                map(dict, connection.execute("SELECT * FROM drawing_references")),
-                map(dict, connection.execute("SELECT * FROM evidence")),
-                map(dict, connection.execute("SELECT * FROM views")),
-                map(dict, connection.execute("SELECT * FROM sheets")),
-                map(dict, connection.execute("SELECT * FROM viewports")),
-            )
+            context = _load_drawing_reference_validation_context(connection)
+            if context is not None:
+                validate_drawing_references(*context)
         if "pdf_pages" in objects:
             required_pdf_page_columns = {
                 "id",
