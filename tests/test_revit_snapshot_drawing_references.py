@@ -91,16 +91,25 @@ def test_resolved_revit_reference_keeps_view_and_optional_navigation(
         ) == expected_page
 
 
-def test_ordinary_callout_parent_occurrences_remain_distinct(tmp_path):
+def test_ordinary_callout_same_parent_multiple_occurrences_remain_distinct(tmp_path):
     path, payload = _snapshot(tmp_path)
-    for suffix, sheet_id, view_id, page in (
-        ("a", "sheet-a201", "view-level2", 3),
-        ("b", "sheet-a312", "view-dock", 1),
+    parent_view_id = "view-level2"
+    base_viewport = payload["records"]["viewports"][0]
+
+    for suffix, sheet_id, page in (
+        ("a", "sheet-a201", 3),
+        ("b", "sheet-a312", 1),
     ):
+        placement = dict(base_viewport)
+        placement.update(
+            id=f"vp-level2-{suffix}", sheet_id=sheet_id, view_id=parent_view_id,
+        )
+        payload["records"]["viewports"].append(placement)
+
         evidence_id = f"ev-ordinary-callout-{suffix}"
         payload["records"]["evidence"].append({
             "id": evidence_id, "document_id": "doc-drawings",
-            "sheet_id": sheet_id, "view_id": view_id, "pdf_page": page,
+            "sheet_id": sheet_id, "view_id": parent_view_id, "pdf_page": page,
             "x_min": None, "y_min": None, "x_max": None, "y_max": None,
             "coordinate_space": None,
         })
@@ -111,6 +120,12 @@ def test_ordinary_callout_parent_occurrences_remain_distinct(tmp_path):
             "target_sheet_id": None, "target_evidence_id": None,
             "resolution_state": "exact", "provenance": "revit_api",
         })
+
+    assert {
+        item["view_id"]
+        for item in payload["records"]["evidence"]
+        if item["id"].startswith("ev-ordinary-callout-")
+    } == {parent_view_id}
     _write(path, payload)
 
     database = import_snapshot(path, tmp_path / "ordinary-callouts.sqlite")
@@ -123,6 +138,8 @@ def test_ordinary_callout_parent_occurrences_remain_distinct(tmp_path):
         assert {item["id"] for item in references} == {
             "ordinary-callout-a", "ordinary-callout-b",
         }
+        assert all(item["relation_type"] == "callout_to" for item in references)
+        assert all(item["resolution_state"] == "exact" for item in references)
         assert all(item["target"]["view"]["id"] == "view-roof" for item in references)
         assert all(item["target"]["navigation"] is None for item in references)
 
