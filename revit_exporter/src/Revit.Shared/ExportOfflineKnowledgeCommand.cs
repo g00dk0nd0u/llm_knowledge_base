@@ -53,6 +53,7 @@ internal sealed class RevitSnapshotExporter
     private readonly OfflineExportOptions _options;
     private readonly List<ExportWarning> _warnings = [];
     private readonly Dictionary<ElementId, List<(ViewSheet Sheet, View View, Viewport Port, int Page)>> _placements = [];
+    private readonly HashSet<ElementId> _addedViews = [];
     private readonly Dictionary<string, JsonObject> _elements = [];
     private readonly Dictionary<string, JsonObject> _types = [];
     private readonly Dictionary<string, HashSet<string>> _recordIds = [];
@@ -95,6 +96,7 @@ internal sealed class RevitSnapshotExporter
             _snapshot = SnapshotContract.Create(project, $"Revit {_document.Application.VersionNumber}", identity.Value, sha);
             AddDocumentAndModels(identity, sha);
             AddSheetsViewsAndPlacements(sheets);
+            AddDrawingReferences();
             AddLevels(_document, _hostModelId);
             if (_options.IncludeLinks) AddLinks();
             CollectHostElements();
@@ -145,7 +147,6 @@ internal sealed class RevitSnapshotExporter
 
     private void AddSheetsViewsAndPlacements(IReadOnlyList<ViewSheet> sheets)
     {
-        var views = new HashSet<ElementId>();
         for (var index = 0; index < sheets.Count; index++)
         {
             var sheet = sheets[index]; var page = index + 1; var sheetId = Id("sheet", _hostModelId, sheet.UniqueId);
@@ -155,10 +156,7 @@ internal sealed class RevitSnapshotExporter
             foreach (var viewportId in sheet.GetAllViewports())
             {
                 if (_document.GetElement(viewportId) is not Viewport port || _document.GetElement(port.ViewId) is not View view) continue;
-                var viewId = Id("view", _hostModelId, view.UniqueId); var portId = Id("viewport", _hostModelId, port.UniqueId);
-                if (views.Add(view.Id)) Add("views", Obj(("id", viewId), ("document_id", _documentId), ("name", view.Name),
-                    ("view_type", view.ViewType.ToString()), ("export_order", null), ("source_model_id", _hostModelId), ("source_unique_id", view.UniqueId)));
-                AddSearch("view", viewId, $"{view.Name} {view.ViewType}");
+                var viewId = AddView(view); var portId = Id("viewport", _hostModelId, port.UniqueId);
                 var outline = port.GetBoxOutline();
                 Add("viewports", Obj(("id", portId), ("sheet_id", sheetId), ("view_id", viewId), ("placement_kind", "viewport"),
                     ("sheet_x_min", outline.MinimumPoint.X), ("sheet_y_min", outline.MinimumPoint.Y), ("sheet_x_max", outline.MaximumPoint.X),
@@ -172,14 +170,90 @@ internal sealed class RevitSnapshotExporter
             {
                 if (_document.GetElement(scheduleId) is not ScheduleSheetInstance schedule || schedule.IsTitleblockRevisionSchedule) continue;
                 var view = _document.GetElement(schedule.ScheduleId) as ViewSchedule; if (view is null) continue;
-                var viewId = Id("view", _hostModelId, view.UniqueId);
-                if (views.Add(view.Id)) Add("views", Obj(("id", viewId), ("document_id", _documentId), ("name", view.Name), ("view_type", "Schedule"),
-                    ("export_order", null), ("source_model_id", _hostModelId), ("source_unique_id", view.UniqueId)));
-                AddSearch("view", viewId, $"{view.Name} Schedule");
+                var viewId = AddView(view);
                 Add("viewports", Obj(("id", Id("schedule", _hostModelId, schedule.UniqueId)), ("sheet_id", sheetId), ("view_id", viewId),
                     ("placement_kind", "schedule"), ("sheet_x_min", null), ("sheet_y_min", null), ("sheet_x_max", null), ("sheet_y_max", null),
                     ("sheet_coordinate_unit", "revit_sheet_feet"), ("pdf_x_min", null), ("pdf_y_min", null), ("pdf_x_max", null), ("pdf_y_max", null),
                     ("pdf_coordinate_space", null), ("sheet_to_pdf_transform", null), ("mapping_quality", "unknown")));
+            }
+        }
+    }
+
+    private string AddView(View view)
+    {
+        var viewId = Id("view", _hostModelId, view.UniqueId);
+        if (_addedViews.Add(view.Id))
+        {
+            Add("views", Obj(("id", viewId), ("document_id", _documentId), ("name", view.Name),
+                ("view_type", view.ViewType.ToString()), ("export_order", null),
+                ("source_model_id", _hostModelId), ("source_unique_id", view.UniqueId)));
+            AddSearch("view", viewId, $"{view.Name} {view.ViewType}");
+        }
+        return viewId;
+    }
+
+    private void AddDrawingReferences()
+    {
+        foreach (var pair in _placements.OrderBy(x => x.Key.Value))
+        {
+            if (_document.GetElement(pair.Key) is not View sourceView) continue;
+            AddDrawingReferences(sourceView, pair.Value, "section_reference_to", sourceView.GetReferenceSections());
+            AddDrawingReferences(sourceView, pair.Value, "callout_to", sourceView.GetReferenceCallouts());
+            AddDrawingReferences(sourceView, pair.Value, "elevation_reference_to", sourceView.GetReferenceElevations());
+        }
+    }
+
+    private void AddDrawingReferences(View sourceView,
+        IReadOnlyList<(ViewSheet Sheet, View View, Viewport Port, int Page)> sourcePlacements,
+        string relationType, IEnumerable<ElementId> referenceElementIds)
+    {
+        foreach (var referenceElementId in referenceElementIds.OrderBy(x => x.Value))
+        {
+            var marker = _document.GetElement(referenceElementId);
+            if (marker is null)
+            {
+                _warnings.Add(new("reference_marker_unavailable",
+                    $"Revit returned reference marker element id {referenceElementId}, but the element is unavailable.",
+                    referenceElementId.ToString()));
+                continue;
+            }
+
+            View? targetView = null;
+            string? resolutionError = null;
+            try
+            {
+                var targetViewId = ReferenceableViewUtils.GetReferencedViewId(_document, referenceElementId);
+                if (targetViewId != ElementId.InvalidElementId) targetView = _document.GetElement(targetViewId) as View;
+            }
+            catch (Exception error)
+            {
+                resolutionError = error.Message;
+            }
+            if (targetView is null)
+                _warnings.Add(new("reference_target_unresolved",
+                    resolutionError ?? "The explicitly identified Revit reference marker did not resolve to a View.",
+                    marker.UniqueId));
+
+            var targetViewIdValue = targetView is null ? null : AddView(targetView);
+            string? targetSheetId = null;
+            if (targetView is not null && _placements.TryGetValue(targetView.Id, out var targetPlacements)
+                && targetPlacements.Count == 1)
+                targetSheetId = Id("sheet", _hostModelId, targetPlacements[0].Sheet.UniqueId);
+
+            foreach (var source in sourcePlacements)
+            {
+                var evidenceId = StableIds.ReferenceEvidence(_hostModelId, marker.UniqueId, source.Sheet.UniqueId);
+                Add("evidence", Obj(("id", evidenceId), ("document_id", _documentId),
+                    ("sheet_id", Id("sheet", _hostModelId, source.Sheet.UniqueId)),
+                    ("view_id", Id("view", _hostModelId, sourceView.UniqueId)), ("pdf_page", source.Page),
+                    ("x_min", null), ("y_min", null), ("x_max", null), ("y_max", null), ("coordinate_space", null)));
+                Add("drawing_references", Obj(("id", StableIds.DrawingReference(_hostModelId,
+                        marker.UniqueId, source.Sheet.UniqueId, relationType)),
+                    ("source_evidence_id", evidenceId), ("relation_type", relationType),
+                    ("printed_reference", null), ("target_view_id", targetViewIdValue),
+                    ("target_sheet_id", targetSheetId), ("target_evidence_id", null),
+                    ("resolution_state", targetView is null ? "unresolved" : "exact"),
+                    ("provenance", Provenance)));
             }
         }
     }

@@ -36,7 +36,7 @@ public static class SnapshotContract
         "viewports", "levels", "spaces", "element_types", "elements", "evidence",
         "parameters", "relationships", "annotations", "annotation_segments",
         "annotation_references", "entity_appearances", "spatial_boundaries",
-        "spatial_boundary_segments", "geometries", "search_content"
+        "spatial_boundary_segments", "geometries", "drawing_references", "search_content"
     ];
 
     public static JsonObject Create(string projectId, string createdFrom,
@@ -75,6 +75,14 @@ public static class StableIds
 
     public static string Document(string identityKind, string identityValue) =>
         Hash("document", identityKind, identityValue);
+
+    public static string ReferenceEvidence(string sourceModelId, string markerUniqueId,
+        string sourceSheetUniqueId) =>
+        Hash("evidence", sourceModelId, markerUniqueId, sourceSheetUniqueId);
+
+    public static string DrawingReference(string sourceModelId, string markerUniqueId,
+        string sourceSheetUniqueId, string relationType) =>
+        Hash("drawing-reference", sourceModelId, markerUniqueId, sourceSheetUniqueId, relationType);
 }
 
 public enum DimensionSemantic
