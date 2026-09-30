@@ -202,6 +202,85 @@ internal sealed class RevitSnapshotExporter
             AddDrawingReferences(sourceView, pair.Value, "elevation_reference_to", sourceView.GetReferenceElevations());
         }
         AddOrdinaryCalloutReferences();
+        AddOrdinaryElevationReferences();
+    }
+
+    private void AddOrdinaryElevationReferences()
+    {
+        // A scoped collector establishes the source occurrence. OwnerViewId is deliberately not used.
+        foreach (var pair in _placements.OrderBy(x => x.Key.Value))
+        {
+            if (_document.GetElement(pair.Key) is not View sourceView
+                || !FilteredElementCollector.IsViewValidForElementIteration(_document, sourceView.Id))
+                continue;
+
+            List<ElevationMarker> markers;
+            try
+            {
+                using var collector = new FilteredElementCollector(_document, sourceView.Id);
+                markers = collector.OfClass(typeof(ElevationMarker)).Cast<ElevationMarker>()
+                    .Where(marker => !marker.IsReference && marker.get_BoundingBox(sourceView) is not null)
+                    .OrderBy(marker => marker.UniqueId, StringComparer.Ordinal).ToList();
+            }
+            catch (Exception error)
+            {
+                _warnings.Add(new("ordinary_elevation_view_iteration_failed", error.Message, sourceView.UniqueId));
+                continue;
+            }
+
+            foreach (var marker in markers)
+            {
+                int maximumViewCount;
+                try { maximumViewCount = marker.MaximumViewCount; }
+                catch (Exception error)
+                {
+                    _warnings.Add(new("ordinary_elevation_marker_unavailable", error.Message, marker.UniqueId));
+                    continue;
+                }
+                for (var markerIndex = 0; markerIndex < maximumViewCount; markerIndex++)
+                {
+                    ElementId targetId;
+                    try { targetId = marker.GetViewId(markerIndex); }
+                    catch (Exception error)
+                    {
+                        _warnings.Add(new("ordinary_elevation_slot_unavailable",
+                            $"Marker {marker.UniqueId} index {markerIndex} in source View {sourceView.UniqueId}: {error.Message}",
+                            marker.UniqueId));
+                        continue;
+                    }
+                    if (targetId == ElementId.InvalidElementId) continue;
+
+                    var targetView = _document.GetElement(targetId) as ViewSection;
+                    if (targetView is null)
+                        _warnings.Add(new("ordinary_elevation_target_unresolved",
+                            $"Marker {marker.UniqueId} index {markerIndex} returned element {targetId} in source View {sourceView.UniqueId}.",
+                            marker.UniqueId));
+                    var targetViewId = targetView is null ? null : AddView(targetView);
+                    string? targetSheetId = null;
+                    if (targetView is not null && _placements.TryGetValue(targetView.Id, out var targetPlacements)
+                        && targetPlacements.Count == 1)
+                        targetSheetId = Id("sheet", _hostModelId, targetPlacements[0].Sheet.UniqueId);
+
+                    foreach (var source in pair.Value)
+                    {
+                        var evidenceId = StableIds.OrdinaryElevationEvidence(_hostModelId, sourceView.UniqueId,
+                            marker.UniqueId, markerIndex, source.Sheet.UniqueId);
+                        Add("evidence", Obj(("id", evidenceId), ("document_id", _documentId),
+                            ("sheet_id", Id("sheet", _hostModelId, source.Sheet.UniqueId)),
+                            ("view_id", Id("view", _hostModelId, sourceView.UniqueId)), ("pdf_page", source.Page),
+                            ("x_min", null), ("y_min", null), ("x_max", null), ("y_max", null), ("coordinate_space", null)));
+                        Add("drawing_references", Obj(("id", StableIds.OrdinaryElevationDrawingReference(_hostModelId,
+                                sourceView.UniqueId, marker.UniqueId, markerIndex, source.Sheet.UniqueId,
+                                "elevation_reference_to")),
+                            ("source_evidence_id", evidenceId), ("relation_type", "elevation_reference_to"),
+                            ("printed_reference", null), ("target_view_id", targetViewId),
+                            ("target_sheet_id", targetSheetId), ("target_evidence_id", null),
+                            ("resolution_state", targetView is null ? "unresolved" : "exact"),
+                            ("provenance", Provenance)));
+                    }
+                }
+            }
+        }
     }
 
     private void AddOrdinaryCalloutReferences()

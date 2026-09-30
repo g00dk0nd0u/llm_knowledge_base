@@ -52,6 +52,25 @@ public sealed class SnapshotTests
     }
 
     [Fact]
+    public void OrdinaryElevationIdsAreStableAndScopedToTheMarkerSlotOccurrence()
+    {
+        var evidence = StableIds.OrdinaryElevationEvidence("model", "source", "marker", 2, "sheet");
+        var reference = StableIds.OrdinaryElevationDrawingReference(
+            "model", "source", "marker", 2, "sheet", "elevation_reference_to");
+
+        Assert.Equal(evidence, StableIds.OrdinaryElevationEvidence("model", "source", "marker", 2, "sheet"));
+        Assert.Equal(reference, StableIds.OrdinaryElevationDrawingReference(
+            "model", "source", "marker", 2, "sheet", "elevation_reference_to"));
+        Assert.NotEqual(evidence, StableIds.OrdinaryElevationEvidence("model", "other-source", "marker", 2, "sheet"));
+        Assert.NotEqual(evidence, StableIds.OrdinaryElevationEvidence("model", "source", "other-marker", 2, "sheet"));
+        Assert.NotEqual(evidence, StableIds.OrdinaryElevationEvidence("model", "source", "marker", 0, "sheet"));
+        Assert.NotEqual(evidence, StableIds.OrdinaryElevationEvidence("model", "source", "marker", 2, "other-sheet"));
+        Assert.NotEqual(reference, StableIds.DrawingReference("model", "marker", "sheet", "elevation_reference_to"));
+        Assert.NotEqual(reference, StableIds.OrdinaryCalloutDrawingReference(
+            "model", "source", "marker", "sheet", "elevation_reference_to"));
+    }
+
+    [Fact]
     public void SpatialIdsAreScopedToTheirSourceModelAndRemainStable()
     {
         var host = StableIds.For("space", "model-host", "room-unique-id");

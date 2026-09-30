@@ -132,7 +132,12 @@ section is an explicit reference to an existing view, **not** an ordinary sectio
 cut. Ordinary callouts are discovered separately in one host-document View pass:
 `View.IsCallout` plus `View.GetCalloutParentId()` emits deterministic parent-to-child
 `callout_to` topology only when the exact parent has an exported placement. Ordinary
-sections and elevations remain deferred.
+sections remain deferred. Ordinary elevation topology is sourced only from exported
+views in `_placements`: a view-scoped `FilteredElementCollector(Document, sourceView.Id)`
+selects non-reference `ElevationMarker` occurrences, and each occupied slot from
+`MaximumViewCount` / `GetViewId(index)` resolves its hosted `ViewSection`.
+`OwnerViewId` is not used to establish the source relationship. Reference markers
+remain exclusively on the Phase 3B2a path.
 
 Each marker occurrence gets page-level source evidence on every exported source-sheet
 placement. Its PDF bbox and coordinate space are null because no exact Revit-sheet to
@@ -148,6 +153,13 @@ page-level for every exported exact-parent occurrence, with no marker bbox or
 reconstructed printed reference. The callout View is an exact target even when it is
 unplaced; its target sheet (and thus PDF navigation) is included only when exactly one
 exported placement is known.
+
+Ordinary elevations follow those rules per source View, marker, slot, and source-sheet
+occurrence. View-scoped collection is Revit's deterministic View association but only
+means marker graphics may be visible; it does not prove printed-pixel visibility.
+Consequently source evidence has a null PDF bbox, target evidence is null, and printed
+marker text is not reconstructed. A hosted target View remains exact without PDF
+navigation; its target sheet is populated only for exactly one exported placement.
 
 For Revit 2025 safety, Phase B1 deliberately never uses the three-argument linked-view
 `FilteredElementCollector`. Linked documents are collected independently and link
@@ -177,8 +189,8 @@ For **each** installed version (2025, 2026, 2027):
 * Nested linked boundary-source provenance is not fabricated; it remains unresolved
   and emits `nested_link_boundary_source_unsupported`.
 * Linked tag/reference resolution is conservative when the API cannot safely resolve it.
-* Exact reference-marker PDF bboxes and ordinary section/callout/elevation topology
-  are not available; linked-model drawing topology is also outside Phase 3B2a.
+* Exact reference-marker PDF bboxes and ordinary section topology are not available;
+  linked-model drawing topology is also outside Phase 3B2c.
 * GitHub CI builds/tests only the Autodesk-independent Core. Autodesk-dependent hosts
   require local compilation against matching installed `RevitAPI.dll` and
   `RevitAPIUI.dll`, and cannot be run in CI without licensed local installations.
