@@ -83,6 +83,17 @@ public static class StableIds
     public static string DrawingReference(string sourceModelId, string markerUniqueId,
         string sourceSheetUniqueId, string relationType) =>
         Hash("drawing-reference", sourceModelId, markerUniqueId, sourceSheetUniqueId, relationType);
+
+    public static string OrdinaryCalloutEvidence(string sourceModelId, string parentViewUniqueId,
+        string calloutViewUniqueId, string sourceSheetUniqueId) =>
+        Hash("evidence", "ordinary-callout", sourceModelId, parentViewUniqueId,
+            calloutViewUniqueId, sourceSheetUniqueId);
+
+    public static string OrdinaryCalloutDrawingReference(string sourceModelId,
+        string parentViewUniqueId, string calloutViewUniqueId, string sourceSheetUniqueId,
+        string relationType) =>
+        Hash("drawing-reference", "ordinary-callout", sourceModelId, parentViewUniqueId,
+            calloutViewUniqueId, sourceSheetUniqueId, relationType);
 }
 
 public enum DimensionSemantic

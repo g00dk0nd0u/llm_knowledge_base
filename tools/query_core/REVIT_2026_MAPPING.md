@@ -15,6 +15,7 @@ Phase B should extract only; it must not duplicate the Python SQLite writer.
 | View placement | `Viewport.GetBoxOutline()`, `Viewport.GetBoxCenter()`, `View.Scale`, `View.CropBox` |
 | Schedules | `ScheduleSheetInstance`, represented as a schedule placement rather than a Viewport |
 | Explicit drawing references | For exported placed source views only, `View.GetReferenceSections()`, `View.GetReferenceCallouts()`, and `View.GetReferenceElevations()` identify markers; `ReferenceableViewUtils.GetReferencedViewId()` resolves the authoritative target View. Source evidence is page-level with null PDF bbox, `printed_reference` is null, and a target sheet is retained only for exactly one exported placement. |
+| Ordinary callout topology | One host-document View pass selects non-template `View.IsCallout` Views, and `View.GetCalloutParentId()` supplies the exact parent. A `callout_to` record is emitted per exported parent occurrence with page-level, null-bbox evidence; the callout View remains exact when unplaced, and its sheet is retained only for exactly one placement. Printed reference is not reconstructed. |
 
 A linked source model may have multiple `RevitLinkInstance` / `link_instances` rows.
 They share one linked element identity but produce distinct host-space geometry and
@@ -33,6 +34,10 @@ An explicit reference section maps to `section_reference_to`, not
 geometry, annotation text, or linked-model topology. An exact target View may be
 unplaced and therefore have no target sheet or PDF navigation. Snapshot v1 keeps this
 collection optional for backward compatibility.
+
+Ordinary callouts coexist with those explicit reference-marker facts and use only
+`IsCallout` plus `GetCalloutParentId`; the parent is never inferred or replaced by a
+primary/dependent View. Ordinary sections and elevations remain deferred.
 
 The adapters target Revit 2025, 2026, and 2027 while emitting the same versioned,
 Revit-independent snapshot. No Autodesk binary, RVT parser, or live-query dependency

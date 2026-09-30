@@ -129,7 +129,10 @@ Phase 3B2a also treats `View.GetReferenceSections()`,
 Revit source facts. Only views in the exported `_placements` map are inspected, and
 `ReferenceableViewUtils.GetReferencedViewId()` supplies the target. A reference
 section is an explicit reference to an existing view, **not** an ordinary section
-cut; ordinary generated sections, callouts, and elevations remain future work.
+cut. Ordinary callouts are discovered separately in one host-document View pass:
+`View.IsCallout` plus `View.GetCalloutParentId()` emits deterministic parent-to-child
+`callout_to` topology only when the exact parent has an exported placement. Ordinary
+sections and elevations remain deferred.
 
 Each marker occurrence gets page-level source evidence on every exported source-sheet
 placement. Its PDF bbox and coordinate space are null because no exact Revit-sheet to
@@ -139,6 +142,12 @@ navigation can legitimately be unavailable. Target evidence is not duplicated, a
 the visible `printed_reference` is intentionally not reconstructed from view or sheet
 metadata. Snapshot v1 adds the optional `drawing_references` collection to new exports;
 old v1 snapshots without that collection remain valid.
+
+Ordinary callouts follow the same evidence and target rules: source evidence is
+page-level for every exported exact-parent occurrence, with no marker bbox or
+reconstructed printed reference. The callout View is an exact target even when it is
+unplaced; its target sheet (and thus PDF navigation) is included only when exactly one
+exported placement is known.
 
 For Revit 2025 safety, Phase B1 deliberately never uses the three-argument linked-view
 `FilteredElementCollector`. Linked documents are collected independently and link
