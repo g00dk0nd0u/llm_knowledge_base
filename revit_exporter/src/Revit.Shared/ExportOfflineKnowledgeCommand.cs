@@ -53,6 +53,7 @@ internal sealed class RevitSnapshotExporter
     private readonly OfflineExportOptions _options;
     private readonly List<ExportWarning> _warnings = [];
     private readonly Dictionary<ElementId, List<(ViewSheet Sheet, View View, Viewport Port, int Page)>> _placements = [];
+    private readonly Dictionary<ElementId, List<(ViewSheet Sheet, ViewSchedule View, ScheduleSheetInstance Instance, int Page)>> _schedulePlacements = [];
     private readonly HashSet<ElementId> _addedViews = [];
     private readonly Dictionary<string, JsonObject> _elements = [];
     private readonly Dictionary<string, JsonObject> _types = [];
@@ -101,6 +102,7 @@ internal sealed class RevitSnapshotExporter
             if (_options.IncludeLinks) AddLinks();
             CollectHostElements();
             AddSpatialElements(_document, _hostModelId);
+            AddScheduleMembership();
             AddSpatialBoundaries(_document, _hostModelId, null, Transform.Identity);
             AddAnnotations();
             FlushElements();
@@ -175,8 +177,121 @@ internal sealed class RevitSnapshotExporter
                     ("placement_kind", "schedule"), ("sheet_x_min", null), ("sheet_y_min", null), ("sheet_x_max", null), ("sheet_y_max", null),
                     ("sheet_coordinate_unit", "revit_sheet_feet"), ("pdf_x_min", null), ("pdf_y_min", null), ("pdf_x_max", null), ("pdf_y_max", null),
                     ("pdf_coordinate_space", null), ("sheet_to_pdf_transform", null), ("mapping_quality", "unknown")));
+                if (!_schedulePlacements.TryGetValue(view.Id, out var placements))
+                    _schedulePlacements[view.Id] = placements = [];
+                placements.Add((sheet, view, schedule, page));
             }
         }
+    }
+
+    private void AddScheduleMembership()
+    {
+        foreach (var pair in _schedulePlacements.OrderBy(x => x.Key.Value))
+        {
+            var view = pair.Value[0].View;
+            ScheduleMembershipDecision decision;
+            try
+            {
+                var definition = view.Definition;
+                decision = ScheduleMembershipPolicy.Decide(definition.IsFilteredBySheet,
+                    view.IsSplit(), definition.IsKeySchedule, definition.IsMaterialTakeoff,
+                    definition.IncludeLinkedFiles, definition.HasEmbeddedSchedule);
+            }
+            catch (Exception error)
+            {
+                _warnings.Add(new("schedule_membership_eligibility_failed", error.Message, view.UniqueId));
+                continue;
+            }
+            if (!decision.Supported)
+            {
+                _warnings.Add(new(decision.WarningCode!, "Schedule membership was not projected because its page membership is not safely attributable.", view.UniqueId));
+                continue;
+            }
+
+            var unsupported = new Dictionary<string, int>(StringComparer.Ordinal);
+            try
+            {
+                using var instances = new FilteredElementCollector(_document, view.Id);
+                foreach (var element in instances.WhereElementIsNotElementType()
+                             .OrderBy(x => x.UniqueId, StringComparer.Ordinal))
+                    AddScheduleMember(element, view, pair.Value, unsupported);
+
+                using var types = new FilteredElementCollector(_document, view.Id);
+                foreach (var element in types.WhereElementIsElementType()
+                             .OrderBy(x => x.UniqueId, StringComparer.Ordinal))
+                    AddScheduleMember(element, view, pair.Value, unsupported);
+            }
+            catch (Exception error)
+            {
+                _warnings.Add(new("schedule_membership_collection_failed", error.Message, view.UniqueId));
+            }
+            foreach (var item in unsupported.OrderBy(x => x.Key, StringComparer.Ordinal))
+                _warnings.Add(new("schedule_membership_unsupported_member", $"{item.Key}; count={item.Value}", view.UniqueId));
+        }
+    }
+
+    private void AddScheduleMember(Element member, ViewSchedule view,
+        IReadOnlyList<(ViewSheet Sheet, ViewSchedule View, ScheduleSheetInstance Instance, int Page)> placements,
+        Dictionary<string, int> unsupported)
+    {
+        string entityKind;
+        string entityId;
+        if (member is Room or Space)
+        {
+            entityKind = "space";
+            entityId = Id("space", _hostModelId, member.UniqueId);
+            if (!_recordIds.TryGetValue("spaces", out var ids) || !ids.Contains(entityId))
+            {
+                CountUnsupported(member, unsupported);
+                return;
+            }
+        }
+        else if (member is Level)
+        {
+            entityKind = "level";
+            entityId = Id("level", _hostModelId, member.UniqueId);
+        }
+        else if (member is ElementType type)
+        {
+            entityKind = "element_type";
+            entityId = EnsureElementTypeRecord(type, _hostModelId);
+        }
+        else if (member.Category?.CategoryType == CategoryType.Model
+                 && member is not View && member is not ViewSheet)
+        {
+            entityKind = "element";
+            entityId = Id("element", _hostModelId, member.UniqueId);
+            AddElement(member, _hostModelId, Transform.Identity, null, null);
+            if (!_elements.ContainsKey(entityId))
+            {
+                CountUnsupported(member, unsupported);
+                return;
+            }
+        }
+        else
+        {
+            CountUnsupported(member, unsupported);
+            return;
+        }
+
+        foreach (var placement in placements)
+        {
+            var appearanceId = StableIds.ScheduleAppearance(entityKind, entityId,
+                view.UniqueId, placement.Instance.UniqueId, placement.Sheet.UniqueId);
+            Add("entity_appearances", Obj(("id", appearanceId), ("entity_kind", entityKind), ("entity_id", entityId),
+                ("sheet_id", Id("sheet", _hostModelId, placement.Sheet.UniqueId)),
+                ("view_id", Id("view", _hostModelId, view.UniqueId)),
+                ("viewport_id", Id("schedule", _hostModelId, placement.Instance.UniqueId)),
+                ("link_instance_id", null), ("pdf_page", placement.Page), ("x_min", null), ("y_min", null),
+                ("x_max", null), ("y_max", null), ("coordinate_space", "pdf_points_top_left"),
+                ("appearance_kind", "schedule"), ("bbox_quality", "page_only"), ("provenance", Provenance)));
+        }
+    }
+
+    private static void CountUnsupported(Element member, Dictionary<string, int> unsupported)
+    {
+        var key = $"type={member.GetType().FullName ?? member.GetType().Name}; category={member.Category?.Name ?? "<none>"}";
+        unsupported[key] = unsupported.GetValueOrDefault(key) + 1;
     }
 
     private string AddView(View view)
@@ -476,12 +591,7 @@ internal sealed class RevitSnapshotExporter
                 string? typeId = null;
                 if (element.GetTypeId() != ElementId.InvalidElementId && element.Document.GetElement(element.GetTypeId()) is ElementType type)
                 {
-                    typeId = Id("type", modelId, type.UniqueId);
-                    _types.TryAdd(typeId, Obj(("id", typeId), ("family_name", type.FamilyName), ("type_name", type.Name),
-                        ("category", CategoryName(type)), ("source_model_id", modelId), ("source_unique_id", type.UniqueId),
-                        ("provenance", Provenance), ("confidence", null)));
-                    AddParameters(type, "element_type", typeId, "type");
-                    AddSearch("element_type", typeId, $"{type.FamilyName} {type.Name} {CategoryName(type)}");
+                    typeId = EnsureElementTypeRecord(type, modelId);
                 }
                 _elements[id] = Obj(("id", id), ("name", string.IsNullOrWhiteSpace(element.Name) ? CategoryName(element) : element.Name),
                     ("category", CategoryName(element)), ("type_id", typeId), ("space_id", null), ("level_id", ResolveLevel(element, modelId)),
@@ -502,6 +612,19 @@ internal sealed class RevitSnapshotExporter
             }
         }
         catch (Exception error) { _warnings.Add(new("element_extraction_failed", error.Message, element.UniqueId)); }
+    }
+
+    private string EnsureElementTypeRecord(ElementType type, string modelId)
+    {
+        var typeId = Id("type", modelId, type.UniqueId);
+        if (_types.TryAdd(typeId, Obj(("id", typeId), ("family_name", type.FamilyName), ("type_name", type.Name),
+                ("category", CategoryName(type)), ("source_model_id", modelId), ("source_unique_id", type.UniqueId),
+                ("provenance", Provenance), ("confidence", null))))
+        {
+            AddParameters(type, "element_type", typeId, "type");
+            AddSearch("element_type", typeId, $"{type.FamilyName} {type.Name} {CategoryName(type)}");
+        }
+        return typeId;
     }
 
     private void AddRoomRelations(FamilyInstance family, string elementId, View view)

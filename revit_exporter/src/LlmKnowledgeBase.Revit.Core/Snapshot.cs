@@ -105,6 +105,30 @@ public static class StableIds
         string sourceSheetUniqueId, string relationType) =>
         Hash("drawing-reference", "ordinary-elevation", sourceModelId, sourceViewUniqueId,
             markerUniqueId, markerIndex.ToString(), sourceSheetUniqueId, relationType);
+
+    public static string ScheduleAppearance(string entityKind, string entityId,
+        string scheduleViewUniqueId, string scheduleInstanceUniqueId,
+        string sourceSheetUniqueId) =>
+        Hash("schedule-appearance", entityKind, entityId, scheduleViewUniqueId,
+            scheduleInstanceUniqueId, sourceSheetUniqueId);
+}
+
+public sealed record ScheduleMembershipDecision(bool Supported, string? WarningCode);
+
+public static class ScheduleMembershipPolicy
+{
+    public static ScheduleMembershipDecision Decide(bool filteredBySheet, bool split,
+        bool keySchedule, bool materialTakeoff, bool includeLinkedFiles,
+        bool hasEmbeddedSchedule)
+    {
+        if (filteredBySheet) return new(false, "schedule_membership_filtered_by_sheet_unsupported");
+        if (split) return new(false, "schedule_membership_split_unsupported");
+        if (keySchedule) return new(false, "schedule_membership_key_schedule_unsupported");
+        if (includeLinkedFiles) return new(false, "schedule_membership_linked_files_unsupported");
+        if (materialTakeoff) return new(false, "schedule_membership_material_takeoff_unsupported");
+        if (hasEmbeddedSchedule) return new(false, "schedule_membership_embedded_schedule_unsupported");
+        return new(true, null);
+    }
 }
 
 public enum DimensionSemantic
