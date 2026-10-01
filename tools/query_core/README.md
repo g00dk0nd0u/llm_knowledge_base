@@ -127,6 +127,27 @@ This read path uses only `sqlite3` and the Python standard library. It therefore
 the same Python 3.12 `-S` boundary as all other existing-SQLite and Project Query Bundle
 queries; semantic creation remains a build-time concern.
 
+### Semantic Entity Discovery — Phase 4B
+
+Semantic discovery is the deterministic entry point when the internal entity ID is not
+known. Search stored entity IDs, numbers, labels, and optional sparse property values,
+then explicitly pass the selected ID to architectural context retrieval:
+
+```text
+semantic-find → semantic entity ID → architectural-context
+```
+
+```bash
+python -S -m tools.query_core semantic-find project.sqlite "D-101" --entity-class Door
+python -S -m tools.query_core architectural-context project.sqlite semantic-door-101
+```
+
+`semantic-find` returns every matching candidate up to `--limit` in deterministic
+precedence order and explains each exact or substring match. It never resolves an
+ambiguity or recursively retrieves candidate context. Matching is SQLite `NOCASE`
+(ASCII case-insensitive), not fuzzy or language-aware. If `semantic_properties` is
+absent, identity lookup remains available and property matching is reported unavailable.
+
 ### Architectural Evidence Retrieval — Phase 4A
 
 `QueryCore.get_architectural_evidence_context(semantic_entity_id)` composes the existing

@@ -29,6 +29,15 @@ PDF_TABLE_TABLES = {"pdf_tables", "pdf_table_cells", "pdf_table_cell_spans"}
 SEMANTIC_TABLES = {"semantic_entities", "semantic_bindings"}
 SEMANTIC_PROPERTY_TABLE = "semantic_properties"
 SEMANTIC_RELATIONSHIP_TABLE = "semantic_relationships"
+SEMANTIC_MATCH_PRECEDENCE = (
+    "entity_id_exact",
+    "number_exact",
+    "label_exact",
+    "property_value_exact",
+    "number_contains",
+    "label_contains",
+    "property_value_contains",
+)
 DRAWING_REFERENCE_TABLE = "drawing_references"
 DRAWING_REFERENCE_REQUIRED_COLUMNS = {
     "id", "source_evidence_id", "relation_type", "printed_reference",
@@ -1168,6 +1177,122 @@ class QueryCore:
             "relationships": [relationship_rows[key] for key in sorted(relationship_rows)],
             "evidence_refs": evidence_refs,
         }
+
+    def search_semantic_entities(
+        self, query: str, *, entity_class: str | None = None, limit: int = 20
+    ) -> dict[str, Any]:
+        """Find semantic identities by exact or substring source values.
+
+        Matching uses SQLite's ASCII case-insensitive ``NOCASE`` behavior and never
+        expands a candidate into its architectural evidence context.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise QueryCoreError("limit must be a positive integer")
+        capability = {
+            "semantic_projection": self.has_semantic_capability(),
+            "semantic_properties": self.has_semantic_property_capability(),
+            "schema_version": SCHEMA_VERSION,
+        }
+        result: dict[str, Any] = {
+            "capability": capability,
+            "query": query,
+            "entity_class": entity_class,
+            "status": "no_match",
+            "candidates": [],
+        }
+        if not capability["semantic_projection"]:
+            result["status"] = "capability_unavailable"
+            return result
+        if not query.strip():
+            return result
+
+        # One set-based statement emits only factual matches. Keep comparisons in
+        # SQLite so NOCASE/lower retain their ASCII-oriented source semantics.
+        entity_sql = "SELECT * FROM semantic_entities"
+        values: tuple[Any, ...] = (query,)
+        if entity_class is not None:
+            entity_sql += " WHERE entity_class = ? COLLATE NOCASE"
+            values += (entity_class,)
+        source_sql = (
+            "SELECT id AS semantic_entity_id,'entity_id' AS match_source,"
+            "id AS source_value,NULL AS property_id,NULL AS source_name,"
+            "NULL AS scope,NULL AS property_evidence_id FROM entities "
+            "UNION ALL SELECT id,'number',number,NULL,NULL,NULL,NULL FROM entities "
+            "UNION ALL SELECT id,'label',label,NULL,NULL,NULL,NULL FROM entities"
+        )
+        if capability["semantic_properties"]:
+            source_sql += (
+                " UNION ALL SELECT p.semantic_entity_id,'property_value',"
+                "p.source_value,p.id,p.source_name,p.scope,p.evidence_id "
+                "FROM semantic_properties p JOIN entities e "
+                "ON e.id=p.semantic_entity_id"
+            )
+        rows = self._rows(
+            "WITH search_query AS (SELECT ? AS query), "
+            f"entities AS ({entity_sql}), source_values AS ({source_sql}), "
+            "matches AS (SELECT s.*,CASE "
+            "WHEN s.source_value = q.query COLLATE NOCASE "
+            "THEN s.match_source || '_exact' "
+            "WHEN s.match_source != 'entity_id' "
+            "AND instr(lower(s.source_value),lower(q.query)) > 0 "
+            "THEN s.match_source || '_contains' END AS match_kind "
+            "FROM source_values s CROSS JOIN search_query q) "
+            "SELECT e.*,m.match_kind,m.property_id,m.source_name,m.source_value,"
+            "m.scope,m.property_evidence_id FROM matches m "
+            "JOIN entities e ON e.id=m.semantic_entity_id "
+            "WHERE m.match_kind IS NOT NULL",
+            values,
+        )
+        precedence = {kind: index for index, kind in enumerate(SEMANTIC_MATCH_PRECEDENCE)}
+        candidates_by_id: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            match = {
+                "match_kind": row.pop("match_kind"),
+                "source_name": row.pop("source_name"),
+                "source_value": row.pop("source_value"),
+            }
+            property_id = row.pop("property_id")
+            scope = row.pop("scope")
+            evidence_id = row.pop("property_evidence_id")
+            if property_id is not None:
+                match.update(
+                    property_id=property_id,
+                    scope=scope,
+                    evidence_refs=[evidence_id] if evidence_id else [],
+                )
+            candidate = candidates_by_id.setdefault(
+                row["id"], {"semantic_entity": row, "matches": []}
+            )
+            candidate["matches"].append(match)
+
+        candidates = list(candidates_by_id.values())
+        for candidate in candidates:
+            candidate["matches"].sort(key=lambda match: (
+                precedence[match["match_kind"]],
+                match.get("source_name") or "",
+                match["source_value"],
+                match.get("property_id") or "",
+            ))
+
+        candidates.sort(key=lambda candidate: (
+            precedence[candidate["matches"][0]["match_kind"]],
+            candidate["semantic_entity"]["entity_class"],
+            candidate["semantic_entity"]["number"] or "",
+            candidate["semantic_entity"]["label"] or "",
+            candidate["semantic_entity"]["id"],
+        ))
+        exact_count = sum(
+            candidate["matches"][0]["match_kind"].endswith("_exact")
+            for candidate in candidates
+        )
+        if exact_count == 1:
+            result["status"] = "exact_unique"
+        elif exact_count > 1:
+            result["status"] = "multiple_exact"
+        elif candidates:
+            result["status"] = "candidates"
+        result["candidates"] = candidates[:limit]
+        return result
 
 
     def get_architectural_evidence_context(
