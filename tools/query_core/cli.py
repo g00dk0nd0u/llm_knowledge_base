@@ -33,6 +33,13 @@ def parser() -> argparse.ArgumentParser:
     search = commands.add_parser("search")
     search.add_argument("source", type=Path)
     search.add_argument("query")
+    semantic_find = commands.add_parser(
+        "semantic-find", help="find semantic entity candidates by stored values"
+    )
+    semantic_find.add_argument("source", type=Path)
+    semantic_find.add_argument("query")
+    semantic_find.add_argument("--entity-class")
+    semantic_find.add_argument("--limit", type=int, default=20)
     architectural = commands.add_parser(
         "architectural-context", help="retrieve one-hop context for a semantic entity"
     )
@@ -110,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.output
             else cached_payload(args.pdf)
         )
-    elif args.command in {"search", "architectural-context"}:
+    elif args.command in {"search", "semantic-find", "architectural-context"}:
         database = args.source
         if args.source.suffix.lower() == ".pdf":
             from .package import cached_payload
@@ -121,11 +128,16 @@ def main(argv: list[str] | None = None) -> int:
 
             database = project_bundle_database(args.source)
         with QueryCore(database) as core:
-            result = (
-                core.search_text(args.query)
-                if args.command == "search"
-                else core.get_architectural_evidence_context(args.semantic_entity_id)
-            )
+            if args.command == "search":
+                result = core.search_text(args.query)
+            elif args.command == "semantic-find":
+                result = core.search_semantic_entities(
+                    args.query, entity_class=args.entity_class, limit=args.limit
+                )
+            else:
+                result = core.get_architectural_evidence_context(
+                    args.semantic_entity_id
+                )
             print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.command == "build-pdf":
         from .pdf_adapter import build_pdf_database

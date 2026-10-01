@@ -97,4 +97,12 @@ context = run([
 ])
 assert json.loads(context.stdout.decode("utf-8"))["entity"]["label"] == "D-001"
 
-print("ok: direct import; path with spaces; English and Japanese SQLite search")
+discovery = run([
+    sys.executable, "-S", "-m", "tools.query_core", "semantic-find",
+    str(database), "D-001",
+])
+discovery_result = json.loads(discovery.stdout.decode("utf-8"))
+assert discovery_result["status"] == "exact_unique"
+assert discovery_result["candidates"][0]["semantic_entity"]["id"] == "semantic-smoke"
+
+print("ok: direct import; path with spaces; text and semantic SQLite search")

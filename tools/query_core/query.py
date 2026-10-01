@@ -29,6 +29,15 @@ PDF_TABLE_TABLES = {"pdf_tables", "pdf_table_cells", "pdf_table_cell_spans"}
 SEMANTIC_TABLES = {"semantic_entities", "semantic_bindings"}
 SEMANTIC_PROPERTY_TABLE = "semantic_properties"
 SEMANTIC_RELATIONSHIP_TABLE = "semantic_relationships"
+SEMANTIC_MATCH_PRECEDENCE = (
+    "entity_id_exact",
+    "number_exact",
+    "label_exact",
+    "property_value_exact",
+    "number_contains",
+    "label_contains",
+    "property_value_contains",
+)
 DRAWING_REFERENCE_TABLE = "drawing_references"
 DRAWING_REFERENCE_REQUIRED_COLUMNS = {
     "id", "source_evidence_id", "relation_type", "printed_reference",
@@ -1168,6 +1177,125 @@ class QueryCore:
             "relationships": [relationship_rows[key] for key in sorted(relationship_rows)],
             "evidence_refs": evidence_refs,
         }
+
+    def search_semantic_entities(
+        self, query: str, *, entity_class: str | None = None, limit: int = 20
+    ) -> dict[str, Any]:
+        """Find semantic identities by exact or substring source values.
+
+        Matching uses SQLite's ASCII case-insensitive ``NOCASE`` behavior and never
+        expands a candidate into its architectural evidence context.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise QueryCoreError("limit must be a positive integer")
+        capability = {
+            "semantic_projection": self.has_semantic_capability(),
+            "semantic_properties": self.has_semantic_property_capability(),
+            "schema_version": SCHEMA_VERSION,
+        }
+        result: dict[str, Any] = {
+            "capability": capability,
+            "query": query,
+            "entity_class": entity_class,
+            "status": "no_match",
+            "candidates": [],
+        }
+        if not capability["semantic_projection"]:
+            result["status"] = "capability_unavailable"
+            return result
+        if not query:
+            return result
+
+        sql = "SELECT * FROM semantic_entities"
+        values: tuple[Any, ...] = ()
+        if entity_class is not None:
+            sql += " WHERE entity_class = ? COLLATE NOCASE"
+            values = (entity_class,)
+        entities = self._rows(sql, values)
+        properties_by_entity: dict[str, list[dict[str, Any]]] = {}
+        if capability["semantic_properties"]:
+            properties = self._rows("SELECT * FROM semantic_properties ORDER BY id")
+            for prop in properties:
+                properties_by_entity.setdefault(prop["semantic_entity_id"], []).append(prop)
+
+        precedence = {kind: index for index, kind in enumerate(SEMANTIC_MATCH_PRECEDENCE)}
+        candidates: list[dict[str, Any]] = []
+        for entity in entities:
+            matches: list[dict[str, Any]] = []
+            identity_values = (
+                ("entity_id", entity["id"], False),
+                ("number", entity["number"], True),
+                ("label", entity["label"], True),
+            )
+            for name, source_value, allow_contains in identity_values:
+                if source_value is None:
+                    continue
+                exact = self.connection.execute(
+                    "SELECT ? = ? COLLATE NOCASE", (source_value, query)
+                ).fetchone()[0]
+                kind = None
+                if exact:
+                    kind = f"{name}_exact"
+                elif allow_contains and self.connection.execute(
+                    "SELECT instr(lower(?), lower(?)) > 0", (source_value, query)
+                ).fetchone()[0]:
+                    kind = f"{name}_contains"
+                if kind:
+                    matches.append({
+                        "match_kind": kind,
+                        "source_name": None,
+                        "source_value": source_value,
+                    })
+            for prop in properties_by_entity.get(entity["id"], []):
+                exact = self.connection.execute(
+                    "SELECT ? = ? COLLATE NOCASE", (prop["source_value"], query)
+                ).fetchone()[0]
+                contains = (not exact and self.connection.execute(
+                    "SELECT instr(lower(?), lower(?)) > 0",
+                    (prop["source_value"], query),
+                ).fetchone()[0])
+                if exact or contains:
+                    matches.append({
+                        "match_kind": (
+                            "property_value_exact" if exact
+                            else "property_value_contains"
+                        ),
+                        "property_id": prop["id"],
+                        "source_name": prop["source_name"],
+                        "source_value": prop["source_value"],
+                        "scope": prop["scope"],
+                        "evidence_refs": (
+                            [prop["evidence_id"]] if prop["evidence_id"] else []
+                        ),
+                    })
+            if matches:
+                matches.sort(key=lambda match: (
+                    precedence[match["match_kind"]],
+                    match.get("source_name") or "",
+                    match["source_value"],
+                    match.get("property_id") or "",
+                ))
+                candidates.append({"semantic_entity": entity, "matches": matches})
+
+        candidates.sort(key=lambda candidate: (
+            precedence[candidate["matches"][0]["match_kind"]],
+            candidate["semantic_entity"]["entity_class"],
+            candidate["semantic_entity"]["number"] or "",
+            candidate["semantic_entity"]["label"] or "",
+            candidate["semantic_entity"]["id"],
+        ))
+        exact_count = sum(
+            candidate["matches"][0]["match_kind"].endswith("_exact")
+            for candidate in candidates
+        )
+        if exact_count == 1:
+            result["status"] = "exact_unique"
+        elif exact_count > 1:
+            result["status"] = "multiple_exact"
+        elif candidates:
+            result["status"] = "candidates"
+        result["candidates"] = candidates[:limit]
+        return result
 
 
     def get_architectural_evidence_context(
