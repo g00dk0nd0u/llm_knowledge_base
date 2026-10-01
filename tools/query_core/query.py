@@ -1203,79 +1203,76 @@ class QueryCore:
         if not capability["semantic_projection"]:
             result["status"] = "capability_unavailable"
             return result
-        if not query:
+        if not query.strip():
             return result
 
-        sql = "SELECT * FROM semantic_entities"
-        values: tuple[Any, ...] = ()
+        # One set-based statement emits only factual matches. Keep comparisons in
+        # SQLite so NOCASE/lower retain their ASCII-oriented source semantics.
+        entity_sql = "SELECT * FROM semantic_entities"
+        values: tuple[Any, ...] = (query,)
         if entity_class is not None:
-            sql += " WHERE entity_class = ? COLLATE NOCASE"
-            values = (entity_class,)
-        entities = self._rows(sql, values)
-        properties_by_entity: dict[str, list[dict[str, Any]]] = {}
+            entity_sql += " WHERE entity_class = ? COLLATE NOCASE"
+            values += (entity_class,)
+        source_sql = (
+            "SELECT id AS semantic_entity_id,'entity_id' AS match_source,"
+            "id AS source_value,NULL AS property_id,NULL AS source_name,"
+            "NULL AS scope,NULL AS property_evidence_id FROM entities "
+            "UNION ALL SELECT id,'number',number,NULL,NULL,NULL,NULL FROM entities "
+            "UNION ALL SELECT id,'label',label,NULL,NULL,NULL,NULL FROM entities"
+        )
         if capability["semantic_properties"]:
-            properties = self._rows("SELECT * FROM semantic_properties ORDER BY id")
-            for prop in properties:
-                properties_by_entity.setdefault(prop["semantic_entity_id"], []).append(prop)
-
-        precedence = {kind: index for index, kind in enumerate(SEMANTIC_MATCH_PRECEDENCE)}
-        candidates: list[dict[str, Any]] = []
-        for entity in entities:
-            matches: list[dict[str, Any]] = []
-            identity_values = (
-                ("entity_id", entity["id"], False),
-                ("number", entity["number"], True),
-                ("label", entity["label"], True),
+            source_sql += (
+                " UNION ALL SELECT p.semantic_entity_id,'property_value',"
+                "p.source_value,p.id,p.source_name,p.scope,p.evidence_id "
+                "FROM semantic_properties p JOIN entities e "
+                "ON e.id=p.semantic_entity_id"
             )
-            for name, source_value, allow_contains in identity_values:
-                if source_value is None:
-                    continue
-                exact = self.connection.execute(
-                    "SELECT ? = ? COLLATE NOCASE", (source_value, query)
-                ).fetchone()[0]
-                kind = None
-                if exact:
-                    kind = f"{name}_exact"
-                elif allow_contains and self.connection.execute(
-                    "SELECT instr(lower(?), lower(?)) > 0", (source_value, query)
-                ).fetchone()[0]:
-                    kind = f"{name}_contains"
-                if kind:
-                    matches.append({
-                        "match_kind": kind,
-                        "source_name": None,
-                        "source_value": source_value,
-                    })
-            for prop in properties_by_entity.get(entity["id"], []):
-                exact = self.connection.execute(
-                    "SELECT ? = ? COLLATE NOCASE", (prop["source_value"], query)
-                ).fetchone()[0]
-                contains = (not exact and self.connection.execute(
-                    "SELECT instr(lower(?), lower(?)) > 0",
-                    (prop["source_value"], query),
-                ).fetchone()[0])
-                if exact or contains:
-                    matches.append({
-                        "match_kind": (
-                            "property_value_exact" if exact
-                            else "property_value_contains"
-                        ),
-                        "property_id": prop["id"],
-                        "source_name": prop["source_name"],
-                        "source_value": prop["source_value"],
-                        "scope": prop["scope"],
-                        "evidence_refs": (
-                            [prop["evidence_id"]] if prop["evidence_id"] else []
-                        ),
-                    })
-            if matches:
-                matches.sort(key=lambda match: (
-                    precedence[match["match_kind"]],
-                    match.get("source_name") or "",
-                    match["source_value"],
-                    match.get("property_id") or "",
-                ))
-                candidates.append({"semantic_entity": entity, "matches": matches})
+        rows = self._rows(
+            "WITH search_query AS (SELECT ? AS query), "
+            f"entities AS ({entity_sql}), source_values AS ({source_sql}), "
+            "matches AS (SELECT s.*,CASE "
+            "WHEN s.source_value = q.query COLLATE NOCASE "
+            "THEN s.match_source || '_exact' "
+            "WHEN s.match_source != 'entity_id' "
+            "AND instr(lower(s.source_value),lower(q.query)) > 0 "
+            "THEN s.match_source || '_contains' END AS match_kind "
+            "FROM source_values s CROSS JOIN search_query q) "
+            "SELECT e.*,m.match_kind,m.property_id,m.source_name,m.source_value,"
+            "m.scope,m.property_evidence_id FROM matches m "
+            "JOIN entities e ON e.id=m.semantic_entity_id "
+            "WHERE m.match_kind IS NOT NULL",
+            values,
+        )
+        precedence = {kind: index for index, kind in enumerate(SEMANTIC_MATCH_PRECEDENCE)}
+        candidates_by_id: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            match = {
+                "match_kind": row.pop("match_kind"),
+                "source_name": row.pop("source_name"),
+                "source_value": row.pop("source_value"),
+            }
+            property_id = row.pop("property_id")
+            scope = row.pop("scope")
+            evidence_id = row.pop("property_evidence_id")
+            if property_id is not None:
+                match.update(
+                    property_id=property_id,
+                    scope=scope,
+                    evidence_refs=[evidence_id] if evidence_id else [],
+                )
+            candidate = candidates_by_id.setdefault(
+                row["id"], {"semantic_entity": row, "matches": []}
+            )
+            candidate["matches"].append(match)
+
+        candidates = list(candidates_by_id.values())
+        for candidate in candidates:
+            candidate["matches"].sort(key=lambda match: (
+                precedence[match["match_kind"]],
+                match.get("source_name") or "",
+                match["source_value"],
+                match.get("property_id") or "",
+            ))
 
         candidates.sort(key=lambda candidate: (
             precedence[candidate["matches"][0]["match_kind"]],
