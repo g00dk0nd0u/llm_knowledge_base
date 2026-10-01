@@ -127,6 +127,37 @@ This read path uses only `sqlite3` and the Python standard library. It therefore
 the same Python 3.12 `-S` boundary as all other existing-SQLite and Project Query Bundle
 queries; semantic creation remains a build-time concern.
 
+### Architectural Evidence Retrieval — Phase 4A
+
+`QueryCore.get_architectural_evidence_context(semantic_entity_id)` composes the existing
+semantic entity, spatial context, and drawing context projections into one read-only,
+LLM-independent envelope:
+
+```text
+semantic entity
+  ├─ properties
+  ├─ relationships
+  ├─ spatial context
+  ├─ drawing occurrences
+  ├─ evidence/navigation
+  └─ source documents
+```
+
+The envelope is one-hop only: it includes the requested identity, direct bindings and
+facts, existing deterministic spatial contexts and direct occurrences, plus evidence
+referenced by direct facts. Relationship endpoints are references and are never
+recursively expanded. Source facts remain authoritative; ambiguous and unresolved
+bindings remain explicit and do not contribute projected source facts. No LLM or Vision
+dependency is used, and no drawing reference is automatically associated merely because
+it shares a view. Schedule appearances remain distinct occurrences, including
+`appearance_kind=schedule` and `bbox_quality=page_only`.
+
+The query remains standard-library-only and read-only. Example:
+
+```bash
+python -S -m tools.query_core architectural-context project.sqlite semantic-door-101
+```
+
 ### Explicit PDF table semantic adapter
 
 `SemanticTableMapping` and `apply_semantic_table_mapping(records, mapping)` provide a

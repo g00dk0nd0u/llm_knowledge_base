@@ -1169,6 +1169,106 @@ class QueryCore:
             "evidence_refs": evidence_refs,
         }
 
+
+    def get_architectural_evidence_context(
+        self, semantic_entity_id: str
+    ) -> dict[str, Any] | None:
+        """Return a deterministic, one-hop evidence envelope for one semantic entity."""
+        semantic = self.get_semantic_entity(semantic_entity_id)
+        if semantic is None:
+            return None
+
+        spatial = self.get_semantic_spatial_context(semantic_entity_id)
+        drawing = self.get_semantic_drawing_context(semantic_entity_id)
+        bindings = semantic["bindings"]
+        counts: dict[str, int] = {
+            "exact": 0,
+            "resolved_deterministically": 0,
+            "ambiguous": 0,
+            "unresolved": 0,
+        }
+        for binding in bindings:
+            state = binding["resolution_state"]
+            counts[state] = counts.get(state, 0) + 1
+
+        refs = {ref for ref in semantic["evidence_refs"] if ref}
+        for fact in (*semantic["properties"], *semantic["relationships"]):
+            refs.update(ref for ref in fact.get("evidence_refs", []) if ref)
+
+        evidence = []
+        for evidence_id in refs:
+            row = self.get_pdf_evidence(evidence_id)
+            if row is None:
+                continue
+            bbox = (
+                [row[key] for key in ("x_min", "y_min", "x_max", "y_max")]
+                if all(row.get(key) is not None for key in ("x_min", "y_min", "x_max", "y_max"))
+                else None
+            )
+            evidence.append({
+                "evidence_id": evidence_id,
+                "document": {
+                    "id": row["document_id"],
+                    "identity": row["document_identity"],
+                    "source_filename": row["source_filename"],
+                    "source_sha256": row["source_sha256"],
+                },
+                "sheet_id": row["sheet_id"],
+                "view_id": row["view_id"],
+                "pdf_page": row["pdf_page"],
+                "bbox": bbox,
+                "coordinate_space": row["coordinate_space"],
+                "navigation": self.get_evidence_navigation(evidence_id),
+            })
+        evidence.sort(key=lambda row: (
+            row["document"]["identity"] or "", row["pdf_page"] or 0,
+            tuple(row["bbox"]) if row["bbox"] is not None else (), row["evidence_id"],
+        ))
+
+        direct_document_ids = {
+            item["document"]["id"] for item in evidence
+        }
+        for occurrence in drawing["occurrences"] if drawing else []:
+            doc = occurrence.get("document")
+            if doc and doc.get("id"):
+                direct_document_ids.add(doc["id"])
+        source_documents = []
+        if direct_document_ids:
+            placeholders = ",".join("?" for _ in direct_document_ids)
+            source_documents = [dict(row) for row in self._rows(
+                "SELECT id,identity,source_filename,source_sha256 FROM documents "
+                f"WHERE id IN ({placeholders}) ORDER BY identity,id",
+                tuple(sorted(direct_document_ids)),
+            )]
+
+        return {
+            "capability": semantic["capability"],
+            "status": "ok",
+            "entity": semantic["entity"],
+            "resolution": {
+                "entity_state": semantic["entity"].get("resolution_state"),
+                "binding_counts": counts,
+                "ambiguous_binding_ids": [b["id"] for b in bindings if b["resolution_state"] == "ambiguous"],
+                "unresolved_binding_ids": [b["id"] for b in bindings if b["resolution_state"] == "unresolved"],
+            },
+            "bindings": bindings,
+            "properties": semantic["properties"],
+            "relationships": semantic["relationships"],
+            "spatial_contexts": spatial["spatial_contexts"] if spatial else [],
+            "drawing_occurrences": drawing["occurrences"] if drawing else [],
+            "evidence": evidence,
+            "source_documents": source_documents,
+            "coverage": {
+                "binding_count": len(bindings),
+                "property_count": len(semantic["properties"]),
+                "relationship_count": len(semantic["relationships"]),
+                "spatial_context_count": len(spatial["spatial_contexts"]) if spatial else 0,
+                "drawing_occurrence_count": len(drawing["occurrences"]) if drawing else 0,
+                "evidence_count": len(evidence),
+                "source_document_count": len(source_documents),
+            },
+        }
+
     def _semantic_source_reference(
         self, source_kind: str, source_id: str
     ) -> dict[str, Any]:

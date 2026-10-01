@@ -177,6 +177,7 @@ The repository currently includes:
 - full-text search and structured retrieval;
 - documents, sheets, views, viewports, levels, spaces, elements, element types, parameters, annotations, relationships, geometry, and source evidence;
 - semantic entities, source bindings, sparse semantic properties, and source-neutral semantic relationships;
+- integrated one-hop architectural evidence context retrieval across semantic, spatial, drawing, and PDF evidence;
 - deterministic PDF-table-to-semantic mapping through explicit configuration;
 - entity occurrences and drawing/PDF navigation;
 - a Revit 2025/2026/2027 offline exporter architecture;

@@ -95,6 +95,17 @@ def test_schedule_appearances_reuse_drawing_context_without_relationships(
                 "provenance": "revit_api",
             })
 
+    model_type_appearance = next(
+        row for row in records["entity_appearances"]
+        if row["appearance_kind"] == "model"
+    )
+    records["entity_appearances"].append({
+        **model_type_appearance,
+        "id": "model-appearance-scheduled-door-type",
+        "entity_kind": "element_type",
+        "entity_id": element_type["id"],
+    })
+
     snapshot.write_text(json.dumps(payload), encoding="utf-8")
 
     database = import_snapshot(snapshot, tmp_path / "schedule.sqlite")
@@ -117,6 +128,7 @@ def test_schedule_appearances_reuse_drawing_context_without_relationships(
         )
         navigation = query.get_navigation_targets("element", element["id"])
         semantic = query.get_semantic_drawing_context("semantic-door-type")
+        architectural = query.get_architectural_evidence_context("semantic-door-type")
         relationship_count = query.connection.execute(
             "SELECT count(*) FROM semantic_relationships"
         ).fetchone()[0]
@@ -131,8 +143,16 @@ def test_schedule_appearances_reuse_drawing_context_without_relationships(
     assert all(row["bbox"] is None for row in schedule_occurrences)
     assert {row["pdf_page"] for row in navigation
             if row["appearance_id"].startswith("schedule-appearance-")} == {1, 4}
-    assert {row["appearance_kind"] for row in semantic["occurrences"]} == {"schedule"}
+    assert {row["appearance_kind"] for row in semantic["occurrences"]} == {"model", "schedule"}
     assert {row["pdf_page"] for row in semantic["occurrences"]} == {1, 4}
+    assert architectural is not None
+    occurrences = architectural["drawing_occurrences"]
+    assert {row["appearance_kind"] for row in occurrences} == {"model", "schedule"}
+    schedule_context = [row for row in occurrences if row["appearance_kind"] == "schedule"]
+    assert all(row["bbox_quality"] == "page_only" for row in schedule_context)
+    assert all(row["bbox"] is None for row in schedule_context)
+    assert len([row for row in occurrences if row["appearance_kind"] == "model"]) == 1
+    assert architectural["relationships"] == []
     assert relationship_count == 0
     assert not any(
         row["entity_kind"] == "element" and row["entity_id"] == space["id"]

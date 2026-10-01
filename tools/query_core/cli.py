@@ -33,6 +33,11 @@ def parser() -> argparse.ArgumentParser:
     search = commands.add_parser("search")
     search.add_argument("source", type=Path)
     search.add_argument("query")
+    architectural = commands.add_parser(
+        "architectural-context", help="retrieve one-hop context for a semantic entity"
+    )
+    architectural.add_argument("source", type=Path)
+    architectural.add_argument("semantic_entity_id")
     build_pdf = commands.add_parser(
         "build-pdf", help="build Query Core from one PDF Pipeline v1 or v2 document"
     )
@@ -105,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.output
             else cached_payload(args.pdf)
         )
-    elif args.command == "search":
+    elif args.command in {"search", "architectural-context"}:
         database = args.source
         if args.source.suffix.lower() == ".pdf":
             from .package import cached_payload
@@ -116,9 +121,12 @@ def main(argv: list[str] | None = None) -> int:
 
             database = project_bundle_database(args.source)
         with QueryCore(database) as core:
-            print(
-                json.dumps(core.search_text(args.query), ensure_ascii=False, indent=2)
+            result = (
+                core.search_text(args.query)
+                if args.command == "search"
+                else core.get_architectural_evidence_context(args.semantic_entity_id)
             )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.command == "build-pdf":
         from .pdf_adapter import build_pdf_database
 
