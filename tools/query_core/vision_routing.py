@@ -67,7 +67,13 @@ def route_vision_evidence(context: dict[str, Any]) -> dict[str, Any]:
             continue
         scope = "page" if bbox is None else "region"
         navigation = row.get("navigation") or {}
+        # Native row/navigation metadata comes from the same source record.
+        # A present row value (including null) is authoritative; consult the
+        # existing navigation metadata only when the row omits the field.
         coordinate_space = row.get("coordinate_space", navigation.get("coordinate_space"))
+        if bbox is not None and coordinate_space != "pdf_points_top_left":
+            # Insufficient region metadata must not become a page request.
+            continue
         quality = row.get("bbox_quality", navigation.get("bbox_quality"))
         surface_key = _json_key([document["id"], page, scope, bbox])
         candidate = grouped.setdefault(surface_key, {

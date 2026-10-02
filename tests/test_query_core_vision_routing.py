@@ -281,3 +281,94 @@ def test_invalid_geometry_does_not_invent_page_fallback(
         result = core.get_vision_evidence_candidates('semantic-door-101')
         assert result['status'] == 'ok'
         assert result['candidates'] == []
+
+
+@pytest.mark.parametrize(('coordinate_space', 'page_only', 'expected_scope'), [
+    (None, False, None),
+    ('pdf_points_top_left', False, 'region'),
+    (None, True, 'page'),
+])
+def test_stored_evidence_coordinate_gate_is_deterministic_and_read_only(
+    pdf_semantic_database: Path, coordinate_space: str | None,
+    page_only: bool, expected_scope: str | None,
+) -> None:
+    with sqlite3.connect(pdf_semantic_database) as connection:
+        # Exercise both evidence occurrences and direct evidence without a cell
+        # occurrence at the same surface masking an unsafe evidence candidate.
+        connection.execute(
+            "UPDATE semantic_bindings SET source_kind='evidence',source_id='ev-pdf-shared' "
+            "WHERE id='binding-a-cell'"
+        )
+        connection.execute(
+            "UPDATE evidence SET coordinate_space=? WHERE id='ev-pdf-shared'",
+            (coordinate_space,),
+        )
+        if page_only:
+            connection.execute(
+                "UPDATE evidence SET x_min=NULL,y_min=NULL,x_max=NULL,y_max=NULL "
+                "WHERE id='ev-pdf-shared'"
+            )
+    before = pdf_semantic_database.read_bytes()
+    bbox = None if page_only else [10.0, 20.0, 40.0, 30.0]
+    with QueryCore(pdf_semantic_database) as core:
+        context = core.get_architectural_evidence_context('pdf-door-a')
+        assert context['drawing_occurrences']
+        assert context['evidence']
+        for row in context['drawing_occurrences'] + context['evidence']:
+            assert row['bbox'] == bbox
+            assert row['coordinate_space'] == row['navigation']['coordinate_space'] == coordinate_space
+        result = core.get_vision_evidence_candidates('pdf-door-a')
+        baseline = _json(result)
+        assert _json(core.get_vision_evidence_candidates('pdf-door-a')) == baseline
+        assert core.connection.total_changes == 0
+    with QueryCore(pdf_semantic_database) as core:
+        core.connection.execute('PRAGMA reverse_unordered_selects=ON')
+        assert _json(core.get_vision_evidence_candidates('pdf-door-a')) == baseline
+        assert core.connection.total_changes == 0
+    assert pdf_semantic_database.read_bytes() == before
+    assert result['status'] == 'ok'
+    if expected_scope is None:
+        assert result['candidates'] == []  # No region or unsafe page fallback.
+        assert result['coverage'] == {'candidate_count': 0}
+    else:
+        candidate, = result['candidates']
+        assert candidate['input_scope'] == expected_scope
+        assert candidate['bbox'] == bbox
+        assert candidate['coordinate_space'] == coordinate_space
+        assert candidate['pdf_page'] == 9
+        assert candidate['document'] == context['source_documents'][0]
+        assert {('drawing_occurrence', 'ev-pdf-shared'),
+                ('evidence', 'ev-pdf-shared')} <= _refs(candidate)
+
+
+@pytest.mark.parametrize(('row_space', 'navigation_space', 'routable'), [
+    (None, 'pdf_points_top_left', False),
+    ('unknown', 'pdf_points_top_left', False),
+    ('pdf_points_top_left', None, True),
+    ('absent', 'pdf_points_top_left', True),
+    ('absent', None, False),
+    ('absent', 'unknown', False),
+])
+def test_coordinate_resolution_preserves_explicit_row_metadata(
+    pdf_semantic_database: Path, monkeypatch: pytest.MonkeyPatch,
+    row_space: str | None, navigation_space: str | None, routable: bool,
+) -> None:
+    with QueryCore(pdf_semantic_database) as core:
+        context = core.get_architectural_evidence_context('pdf-door-a')
+        context['drawing_occurrences'] = []
+        evidence, = context['evidence']
+        if row_space == 'absent':
+            evidence.pop('coordinate_space')
+        else:
+            evidence['coordinate_space'] = row_space
+        evidence['navigation']['coordinate_space'] = navigation_space
+        monkeypatch.setattr(core, 'get_architectural_evidence_context', lambda _: context)
+        result = core.get_vision_evidence_candidates('pdf-door-a')
+    assert result['status'] == 'ok'
+    if routable:
+        candidate, = result['candidates']
+        assert candidate['input_scope'] == 'region'
+        assert candidate['coordinate_space'] == 'pdf_points_top_left'
+        assert candidate['bbox'] == evidence['bbox']
+    else:
+        assert result['candidates'] == []  # Never reinterpret the bbox as a page.
