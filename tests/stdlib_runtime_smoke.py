@@ -105,4 +105,13 @@ discovery_result = json.loads(discovery.stdout.decode("utf-8"))
 assert discovery_result["status"] == "exact_unique"
 assert discovery_result["candidates"][0]["semantic_entity"]["id"] == "semantic-smoke"
 
-print("ok: direct import; path with spaces; text and semantic SQLite search")
+vision = run([
+    sys.executable, "-S", "-m", "tools.query_core", "vision-candidates",
+    str(database), "semantic-smoke",
+])
+vision_result = json.loads(vision.stdout.decode("utf-8"))
+assert vision_result["status"] == "ok"
+assert vision_result["candidates"] == []
+assert vision_result["coverage"] == {"candidate_count": 0}
+
+print("ok: direct import; path with spaces; text and semantic SQLite search; vision routing")

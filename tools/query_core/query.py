@@ -15,6 +15,7 @@ from .geometry import (
     primitive_distance,
 )
 from .navigation import deduplicate_navigation, navigation_target
+from .vision_routing import route_vision_evidence
 
 SCHEMA_VERSION = 2
 REQUIRED_METADATA = {
@@ -1393,6 +1394,13 @@ class QueryCore:
                 "source_document_count": len(source_documents),
             },
         }
+
+    def get_vision_evidence_candidates(
+        self, semantic_entity_id: str
+    ) -> dict[str, Any] | None:
+        """Route direct evidence for an explicitly selected entity, without writes."""
+        context = self.get_architectural_evidence_context(semantic_entity_id)
+        return route_vision_evidence(context) if context is not None else None
 
     def _semantic_source_reference(
         self, source_kind: str, source_id: str

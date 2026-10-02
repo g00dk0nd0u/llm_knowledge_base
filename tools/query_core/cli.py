@@ -45,6 +45,11 @@ def parser() -> argparse.ArgumentParser:
     )
     architectural.add_argument("source", type=Path)
     architectural.add_argument("semantic_entity_id")
+    vision = commands.add_parser(
+        "vision-candidates", help="route existing evidence for a selected semantic entity"
+    )
+    vision.add_argument("source", type=Path, help="existing SQLite database or Project Query Bundle")
+    vision.add_argument("semantic_entity_id")
     build_pdf = commands.add_parser(
         "build-pdf", help="build Query Core from one PDF Pipeline v1 or v2 document"
     )
@@ -117,9 +122,10 @@ def main(argv: list[str] | None = None) -> int:
             if args.output
             else cached_payload(args.pdf)
         )
-    elif args.command in {"search", "semantic-find", "architectural-context"}:
+    elif args.command in {"search", "semantic-find", "architectural-context", "vision-candidates"}:
         database = args.source
-        if args.source.suffix.lower() == ".pdf":
+        # Routing consumes existing data and must never trigger PDF extraction.
+        if args.source.suffix.lower() == ".pdf" and args.command != "vision-candidates":
             from .package import cached_payload
 
             database = cached_payload(args.source)
@@ -134,10 +140,12 @@ def main(argv: list[str] | None = None) -> int:
                 result = core.search_semantic_entities(
                     args.query, entity_class=args.entity_class, limit=args.limit
                 )
-            else:
+            elif args.command == "architectural-context":
                 result = core.get_architectural_evidence_context(
                     args.semantic_entity_id
                 )
+            else:
+                result = core.get_vision_evidence_candidates(args.semantic_entity_id)
             print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.command == "build-pdf":
         from .pdf_adapter import build_pdf_database
