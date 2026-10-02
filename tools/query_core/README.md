@@ -179,6 +179,40 @@ The query remains standard-library-only and read-only. Example:
 python -S -m tools.query_core architectural-context project.sqlite semantic-door-101
 ```
 
+### Vision Evidence Routing Contract — Phase 5A
+
+```text
+semantic-find → explicit entity selection → architectural-context → vision-candidates → future renderer/provider
+```
+
+```bash
+python -S -m tools.query_core vision-candidates project.sqlite semantic-door-101
+```
+
+`QueryCore.get_vision_evidence_candidates(semantic_entity_id)` routes only existing
+direct architectural-context occurrences and evidence. It accepts a selected ID,
+not a free-text query; CLI sources are existing SQLite databases or Project Query
+Bundles. Each candidate contains a stable surface-based `candidate_id`,
+`input_scope`, canonical `document` (including authoritative `source_sha256`),
+`pdf_page`, unchanged `bbox`, stored `bbox_quality` (null when absent),
+`coordinate_space`, `navigation`, and sorted `source_refs` / `routing_reasons`.
+Usable boxes route as `region`; no box with a valid document/page routes as `page`,
+including schedule `bbox_quality=page_only`. Invalid boxes are skipped, never padded
+or replaced with a crop. Identical document/page/scope/box targets are deduplicated;
+distinct source locations remain separate.
+Every contributing occurrence/evidence navigation and quality survives in `source_refs`;
+the lexically first surface supplies primary navigation and quality. Direct fact IDs
+and reasons are aggregated through existing evidence and binding references.
+
+Results have `status=ok`, `semantic_entity_id`, `candidates`, and
+`coverage.candidate_count`, plus the existing semantic capability descriptor. An
+existing entity without routable surfaces succeeds with an empty candidate list;
+a missing entity returns null. No new capability, schema, table, or cache is required.
+`vision-candidates` does not call Vision, does not render images, and does not change
+source facts. These are routing targets, not observations or review findings. Phase 5
+is not complete; rendering and provider execution remain future work. Issue #47
+real-document validation remains pending until a permitted real PDF environment exists.
+
 ### Explicit PDF table semantic adapter
 
 `SemanticTableMapping` and `apply_semantic_table_mapping(records, mapping)` provide a
