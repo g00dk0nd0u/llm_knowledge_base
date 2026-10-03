@@ -158,6 +158,63 @@ Query Core remains stdlib-only with schema version 2 and SnapshotContract versio
 This is a rendering boundary only: Vision/provider execution and Issue #47
 permitted real-document validation remain future work.
 
+## Render deterministic candidate context — Phase 5D / V1
+
+For V1 candidate-region inspection (architectural semantic model §10), explicitly
+select a Phase 5A **region** candidate and supply the authoritative source PDF:
+
+```bash
+python -m tools.pdf_pipeline render-context-candidate \
+  artifacts/project.sqlite <semantic-entity-id> <candidate-id> \
+  --pdf projects/example/source/source.pdf --dpi 300 --output artifacts/vision-context
+```
+
+The Python API is
+`tools.pdf_pipeline.vision_render.render_vision_context_candidate(repo_root,
+database, semantic_entity_id, candidate_id, source_pdf, *, dpi=300, output=...)`.
+`output` is a directory. The API and CLI offer no margin argument, bbox override,
+automatic candidate selection, or source filesystem scan.
+
+The fixed `fixed_margin_v1` policy expands the unchanged `evidence_bbox` by
+**144.0 PDF points** on all four sides in unrotated `pdf_points_top_left` space.
+Only this expanded rectangle is clamped to the actual page-local crop extent;
+an evidence bbox outside that extent fails rather than being adjusted. The
+resulting `context_bbox` always contains the evidence. Bboxes are never rounded,
+snapped, or guessed. `clamped_edges` lists exactly the edges changed by clamping,
+in `left`, `top`, `right`, `bottom` order. An expanded edge that exactly meets the
+extent is not marked clamped. Page candidates and crops with no additional
+context fail explicitly. Context that reaches the entire extent remains a
+region crop with both bboxes; there is no region-to-page fallback. A different
+margin requires a future policy version.
+
+V1 shares Phase 5B's exact candidate regeneration/ID selection, canonical document
+SHA validation, same-buffer PDF opening, DPI bounds, rotation mapping, ignored
+artifact output restrictions, and atomic opaque PNG publication. Offset CropBox
+coordinates use the same unrotated page-local extent as extraction. The PNG
+retains the displayed rotation, including 90°/270° dimension swaps; fractional
+boundaries use PyMuPDF's enclosing pixel grid without modifying either bbox.
+
+JSON/API results include `status=ok`, `stage=V1`, `semantic_entity_id`,
+`candidate_id`, canonical `document` (including identity and `source_sha256`),
+one-based `pdf_page`, `input_scope=region`, `evidence_bbox`, `context_bbox`,
+`coordinate_space=pdf_points_top_left`, `policy=fixed_margin_v1`, `margin_pt=144.0`,
+`clamped_edges`, `dpi`, pixel dimensions, renderer library/version/rotation/alpha,
+`output_path`, and `output_sha256`. No ambiguous `bbox` field is emitted, so the
+existing Phase 5C V3 request builder rejects a V1 result. Phase 5B results and
+behavior are unchanged. The filename includes the full candidate ID and policy:
+`<safe-document-stem>-<candidate-id>-fixed_margin_v1-p0001-300dpi.png`.
+Changing the output directory changes only `output_path`, never identity or
+image bytes in the pinned renderer environment.
+
+Source PDFs, the SQLite database, and candidate metadata remain read-only;
+generated PNGs stay outside version control. Query Core SCHEMA_VERSION stays 2
+and SnapshotContract.Version stays 1. This phase adds no V1 request schema,
+provider execution, OCR, observations, persistence, V0/V2, paired images, LLM,
+or embeddings. Before actual V1 Vision execution, a separate V1 request contract
+must bind the evidence/context geometry and policy to the image, followed by
+provider integration and optional derived-observation handling. Issue #47
+permitted real-document validation remains pending.
+
 ## Validation
 
 ```bash
