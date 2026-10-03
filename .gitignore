@@ -40,3 +40,7 @@ revit_exporter/local/
 .env
 .env.*
 !.env.example
+
+# Provider-neutral contract code (render artifacts remain ignored)
+!tools/vision/
+!tools/vision/*.py
