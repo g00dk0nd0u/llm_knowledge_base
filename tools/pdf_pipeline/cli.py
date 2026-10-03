@@ -33,6 +33,15 @@ def _parser() -> argparse.ArgumentParser:
     selection.add_argument("--all", action="store_true", dest="all_pages")
     render.add_argument("--dpi", type=int, default=300)
     render.add_argument("--output", type=Path, required=True)
+    candidate = commands.add_parser(
+        "render-candidate", help="verify and render an explicitly selected Vision candidate"
+    )
+    candidate.add_argument("database", type=Path)
+    candidate.add_argument("semantic_entity_id")
+    candidate.add_argument("candidate_id")
+    candidate.add_argument("--pdf", type=Path, required=True)
+    candidate.add_argument("--dpi", type=int, default=300)
+    candidate.add_argument("--output", type=Path, required=True)
     report = commands.add_parser("report", help="summarize existing Pipeline v2 knowledge")
     report.add_argument("project_directory", type=Path)
     report.add_argument("--format", choices=("text", "json"), default="text")
@@ -83,6 +92,18 @@ def main(argv: list[str] | None = None) -> int:
             )
             for output in outputs:
                 print(output)
+        elif args.command == "render-candidate":
+            import json
+
+            from .vision_render import render_vision_candidate
+
+            _configure_utf8_output()
+            result = render_vision_candidate(
+                root, args.database, args.semantic_entity_id, args.candidate_id,
+                args.pdf, dpi=args.dpi, output=args.output,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True,
+                             allow_nan=False))
     except PipelineError as exc:
         print(f"error: {exc}", file=__import__("sys").stderr)
         return 1

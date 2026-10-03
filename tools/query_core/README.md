@@ -182,7 +182,7 @@ python -S -m tools.query_core architectural-context project.sqlite semantic-door
 ### Vision Evidence Routing Contract — Phase 5A
 
 ```text
-semantic-find → explicit entity selection → architectural-context → vision-candidates → future renderer/provider
+semantic-find → explicit entity selection → architectural-context → vision-candidates → PDF renderer → future provider
 ```
 
 ```bash
@@ -209,9 +209,14 @@ Results have `status=ok`, `semantic_entity_id`, `candidates`, and
 existing entity without routable surfaces succeeds with an empty candidate list;
 a missing entity returns null. No new capability, schema, table, or cache is required.
 `vision-candidates` does not call Vision, does not render images, and does not change
-source facts. These are routing targets, not observations or review findings. Phase 5
-is not complete; rendering and provider execution remain future work. Issue #47
-real-document validation remains pending until a permitted real PDF environment exists.
+source facts. These are routing targets, not observations or review findings.
+[Phase 5B rendering](../pdf_pipeline/README.md#render-an-explicitly-selected-evidence-candidate--phase-5b)
+lives on the dependency-enabled PDF Pipeline side. It regenerates this candidate
+list, selects an exact ID, verifies an explicitly supplied PDF against the canonical
+source SHA, and renders the page or exact region to a temporary PNG with provenance.
+No PDF dependency is imported into Query Core. Provider execution remains future
+work; Issue #47 real-document validation remains pending until a permitted real PDF
+environment exists.
 
 ### Explicit PDF table semantic adapter
 
