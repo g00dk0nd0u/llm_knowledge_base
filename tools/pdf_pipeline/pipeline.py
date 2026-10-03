@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-import fitz
+import pymupdf as fitz
 
 from . import PIPELINE_VERSION
 from .constants import LOW_TEXT_THRESHOLD, MANY_DRAWINGS_THRESHOLD
@@ -936,6 +936,65 @@ def _parse_pages(specification: str, page_count: int) -> list[int]:
     return sorted(selected)
 
 
+def _render_output_directory(root: Path, output: Path) -> Path:
+    """Apply the shared logical/resolved artifact-root policy and create output."""
+    requested_absolute = output.is_absolute()
+    logical_output = Path(os.path.abspath(output if requested_absolute else root / output))
+    output = logical_output.resolve()
+    try:
+        logical_relative = logical_output.relative_to(root)
+    except ValueError:
+        logical_relative = None
+    try:
+        resolved_relative = output.relative_to(root)
+    except ValueError:
+        resolved_relative = None
+    logical_allowed = (
+        logical_relative is not None
+        and bool(logical_relative.parts)
+        and logical_relative.parts[0] in RENDER_ROOTS
+    )
+    resolved_allowed = (
+        resolved_relative is not None
+        and bool(resolved_relative.parts)
+        and resolved_relative.parts[0] in RENDER_ROOTS
+    )
+    if (not requested_absolute and not logical_allowed) or (
+        resolved_relative is not None and not resolved_allowed
+    ):
+        raise PipelineError(
+            "repository-local render output must be under an ignored artifact root: "
+            + ", ".join(sorted(RENDER_ROOTS))
+        )
+    output.mkdir(parents=True, exist_ok=True)
+    return output
+
+
+def _render_pixmap(
+    page: fitz.Page, dpi: int, *, clip: fitz.Rect | None = None,
+) -> fitz.Pixmap:
+    """Render in displayed page space with the existing opaque PNG semantics."""
+    return page.get_pixmap(matrix=fitz.Matrix(dpi / 72, dpi / 72),
+                           clip=clip, alpha=False)
+
+
+def _atomic_png(pixmap: fitz.Pixmap, target: Path) -> str:
+    """Publish a complete PNG atomically; return the SHA of those exact bytes."""
+    # Unique staging names allow concurrent renders of the same deterministic
+    # target. A failed save/replace leaves the previous target intact.
+    with tempfile.NamedTemporaryFile(
+        dir=target.parent, prefix=f".{target.stem}.", suffix=".tmp.png", delete=False,
+    ) as stream:
+        temporary = Path(stream.name)
+    try:
+        pixmap.save(temporary)
+        digest = _sha256(temporary)
+        os.replace(temporary, target)
+        return digest
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def render_pages(
     root: Path,
     pdf: Path,
@@ -968,44 +1027,13 @@ def render_pages(
         raise PipelineError(f"cannot open corrupt or invalid PDF {pdf}: {exc}") from exc
     try:
         chosen = list(range(1, document.page_count + 1)) if all_pages else _parse_pages(pages or "", document.page_count)
-        requested_absolute = output.is_absolute()
-        logical_output = Path(os.path.abspath(output if requested_absolute else root / output))
-        output = logical_output.resolve()
-        try:
-            logical_relative = logical_output.relative_to(root)
-        except ValueError:
-            logical_relative = None
-        try:
-            resolved_relative = output.relative_to(root)
-        except ValueError:
-            resolved_relative = None
-        logical_allowed = (
-            logical_relative is not None
-            and bool(logical_relative.parts)
-            and logical_relative.parts[0] in RENDER_ROOTS
-        )
-        resolved_allowed = (
-            resolved_relative is not None
-            and bool(resolved_relative.parts)
-            and resolved_relative.parts[0] in RENDER_ROOTS
-        )
-        if (not requested_absolute and not logical_allowed) or (
-            resolved_relative is not None and not resolved_allowed
-        ):
-            raise PipelineError(
-                "repository-local render output must be under an ignored artifact root: "
-                + ", ".join(sorted(RENDER_ROOTS))
-            )
-        output.mkdir(parents=True, exist_ok=True)
+        output = _render_output_directory(root, output)
         results: list[Path] = []
-        matrix = fitz.Matrix(dpi / 72, dpi / 72)
         stem = re.sub(r"[^A-Za-z0-9._-]+", "-", pdf.stem).strip("-.") or "document"
         for number in chosen:
             target = output / f"{stem}-p{number:04d}-{dpi}dpi.png"
-            temporary = target.with_name(f".{target.stem}.tmp.png")
-            pixmap = document[number - 1].get_pixmap(matrix=matrix, alpha=False)
-            pixmap.save(temporary)
-            os.replace(temporary, target)
+            pixmap = _render_pixmap(document[number - 1], dpi)
+            _atomic_png(pixmap, target)
             results.append(target)
         return results
     except PipelineError:

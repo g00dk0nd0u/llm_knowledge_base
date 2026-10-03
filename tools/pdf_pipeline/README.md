@@ -92,6 +92,72 @@ be between 36 and 1200. PNGs are temporary, ignored under the documented artifac
 and cannot be written into `projects/*/knowledge/`. Very large sheets can consume
 substantial memory at high DPI; v2 intentionally does not implement tiling.
 
+## Render an explicitly selected evidence candidate — Phase 5B
+
+Discover and explicitly select a semantic entity and Phase 5A `candidate_id` using
+Query Core, then render it on a dependency-enabled machine:
+
+```bash
+python -m tools.pdf_pipeline render-candidate \
+  artifacts/project.sqlite <semantic-entity-id> <candidate-id> \
+  --pdf projects/example/source/source.pdf --dpi 300 --output artifacts/vision
+```
+
+The Python API is
+`tools.pdf_pipeline.vision_render.render_vision_candidate(repo_root, database,
+semantic_entity_id, candidate_id, source_pdf, *, dpi=300, output=...)`.
+Relative paths resolve against `repo_root`; `output` is a directory. This command
+regenerates candidates with `QueryCore.get_vision_evidence_candidates()` and
+requires exactly one matching ID. It does not accept a bbox or search query.
+
+The explicitly supplied PDF must match the candidate document's canonical,
+64-character lowercase hexadecimal `source_sha256`. Missing/malformed hashes,
+mismatches, absent candidates/entities, invalid pages, unreadable/corrupt PDFs,
+and password-required PDFs fail explicitly. Copies or renamed files with identical
+bytes are valid; their names never replace stored document metadata. The PDF is
+opened from the same byte buffer used for hashing, avoiding a source replacement
+race. This retains the complete PDF bytes in memory during rendering.
+
+A page candidate requires `bbox=null` and renders the full displayed source page.
+A region candidate requires a finite, positive-area bbox and exactly
+`coordinate_space=pdf_points_top_left`. Bounds are checked against the actual
+unrotated page-local crop extent used by Pipeline v2 extraction, rather than the
+raw MediaBox, offset CropBox, or rotated page dimensions. Partially outside boxes
+fail; there is no padding, clamping, page fallback, scaling policy, or tiling.
+PyMuPDF [`Page.rotation_matrix`](https://pymupdf.readthedocs.io/en/latest/page.html#Page.rotation_matrix)
+maps that stored rectangle into displayed page space for
+[`Page.get_pixmap`](https://pymupdf.readthedocs.io/en/latest/page.html#Page.get_pixmap)
+clipping. The PNG retains source display rotation; 90°/270° swap region dimensions.
+The original bbox remains unchanged in metadata. Synthetic tests prove dimensions
+and colored marker locations for 0°, 90°, 180°, and 270°, including offset crops.
+Fractional clip boundaries use PyMuPDF's normal enclosing integer pixel grid.
+
+Rendering shares `render_pages()`'s `fitz.Matrix(dpi / 72, dpi / 72)`, opaque PNG,
+artifact-directory safety, and atomic replacement helpers. DPI defaults to 300
+and must be an integer from 36 through 1200. The existing `render` CLI keeps its
+page selection, filenames, full-page behavior, and output policy. Absolute
+external output directories remain supported; repository-local output must use
+`artifacts/`, `vision/`, `renders/`, `.tmp/`, `.cache/`, or `tiles/`. Failed saves or
+replacements preserve an existing PNG and clean staging files.
+
+The stable filename is
+`<safe-document-stem>-<full-candidate-id>-p0001-300dpi.png`; the stem is sanitized
+and bounded, and the complete candidate identity avoids truncated-ID collisions.
+JSON stdout/API results contain `status`, `candidate_id`, `semantic_entity_id`,
+`input_scope`, canonical `document`, one-based `pdf_page`, unchanged `bbox` (null
+for pages), stored `coordinate_space`, `dpi`, `pixel_width`, `pixel_height`,
+`renderer` (name, PyMuPDF library/version, page rotation, alpha policy),
+`output_path`, and the SHA-256 of the atomically published PNG (`output_sha256`).
+Paths are repository-relative when possible, otherwise absolute. Identical renders
+produce identical PNG bytes in the pinned PyMuPDF 1.28.2 test environment;
+cross-version byte identity is not promised, so library version is recorded.
+
+Inputs, candidate metadata, source PDFs, and the SQLite database remain read-only.
+There is no sidecar, database migration, table, image cache, or observation write.
+Query Core remains stdlib-only with schema version 2 and SnapshotContract version 1.
+This is a rendering boundary only: Vision/provider execution and Issue #47
+permitted real-document validation remain future work.
+
 ## Validation
 
 ```bash
