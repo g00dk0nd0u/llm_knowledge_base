@@ -42,6 +42,15 @@ def _parser() -> argparse.ArgumentParser:
     candidate.add_argument("--pdf", type=Path, required=True)
     candidate.add_argument("--dpi", type=int, default=300)
     candidate.add_argument("--output", type=Path, required=True)
+    context = commands.add_parser(
+        "render-context-candidate", help="render fixed-margin V1 context for an explicit region candidate"
+    )
+    context.add_argument("database", type=Path)
+    context.add_argument("semantic_entity_id")
+    context.add_argument("candidate_id")
+    context.add_argument("--pdf", type=Path, required=True)
+    context.add_argument("--dpi", type=int, default=300)
+    context.add_argument("--output", type=Path, required=True)
     report = commands.add_parser("report", help="summarize existing Pipeline v2 knowledge")
     report.add_argument("project_directory", type=Path)
     report.add_argument("--format", choices=("text", "json"), default="text")
@@ -99,6 +108,18 @@ def main(argv: list[str] | None = None) -> int:
 
             _configure_utf8_output()
             result = render_vision_candidate(
+                root, args.database, args.semantic_entity_id, args.candidate_id,
+                args.pdf, dpi=args.dpi, output=args.output,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True,
+                             allow_nan=False))
+        elif args.command == "render-context-candidate":
+            import json
+
+            from .vision_render import render_vision_context_candidate
+
+            _configure_utf8_output()
+            result = render_vision_context_candidate(
                 root, args.database, args.semantic_entity_id, args.candidate_id,
                 args.pdf, dpi=args.dpi, output=args.output,
             )
