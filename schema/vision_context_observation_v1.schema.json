@@ -1,0 +1,338 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "vision_context_observation v1",
+  "description": "Transient V1 provider observation; evidence identity is exclusively the complete validated nested context request. Runtime additionally verifies geometry and both content IDs. No source authority or persistence.",
+  "type": "object",
+  "properties": {
+    "contract_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "kind": {
+      "const": "vision_context_observation"
+    },
+    "observation_id": {
+      "type": "string",
+      "pattern": "^vision-context-observation-[a-f0-9]{64}(?![\\s\\S])"
+    },
+    "evidence_class": {
+      "const": "vision_observation"
+    },
+    "request": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "vision_context_inspection_request v1",
+      "description": "Provider-neutral V1 context surface only. Runtime additionally verifies ordered finite geometry, containment, fixed-margin/clamp consistency, request ID and PNG bytes. Source PDF bounds and facts remain renderer/source authority.",
+      "type": "object",
+      "properties": {
+        "contract_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "kind": {
+          "const": "vision_context_inspection_request"
+        },
+        "stage": {
+          "const": "V1"
+        },
+        "request_id": {
+          "type": "string",
+          "pattern": "^vision-context-request-[a-f0-9]{64}(?![\\s\\S])"
+        },
+        "instruction": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "semantic_entity_id": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "candidate_id": {
+          "type": "string",
+          "pattern": "^vision-candidate-[a-f0-9]{64}(?![\\s\\S])"
+        },
+        "document": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "identity": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "source_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
+            }
+          },
+          "required": [
+            "id",
+            "identity",
+            "source_sha256"
+          ],
+          "additionalProperties": false
+        },
+        "pdf_page": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "input_scope": {
+          "const": "region"
+        },
+        "evidence_bbox": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": 0
+          },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "context_bbox": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": 0
+          },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "coordinate_space": {
+          "const": "pdf_points_top_left"
+        },
+        "policy": {
+          "const": "fixed_margin_v1"
+        },
+        "margin_pt": {
+          "type": "number",
+          "const": 144.0
+        },
+        "clamped_edges": {
+          "type": "array",
+          "enum": [
+            [],
+            [
+              "left"
+            ],
+            [
+              "top"
+            ],
+            [
+              "right"
+            ],
+            [
+              "bottom"
+            ],
+            [
+              "left",
+              "top"
+            ],
+            [
+              "left",
+              "right"
+            ],
+            [
+              "left",
+              "bottom"
+            ],
+            [
+              "top",
+              "right"
+            ],
+            [
+              "top",
+              "bottom"
+            ],
+            [
+              "right",
+              "bottom"
+            ],
+            [
+              "left",
+              "top",
+              "right"
+            ],
+            [
+              "left",
+              "top",
+              "bottom"
+            ],
+            [
+              "left",
+              "right",
+              "bottom"
+            ],
+            [
+              "top",
+              "right",
+              "bottom"
+            ],
+            [
+              "left",
+              "top",
+              "right",
+              "bottom"
+            ]
+          ]
+        },
+        "dpi": {
+          "type": "integer",
+          "minimum": 36,
+          "maximum": 1200
+        },
+        "pixel_width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "pixel_height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "output_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
+        },
+        "renderer": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "library": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "library_version": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "page_rotation": {
+              "enum": [
+                0,
+                90,
+                180,
+                270
+              ],
+              "type": "integer"
+            },
+            "alpha": {
+              "const": false
+            }
+          },
+          "required": [
+            "name",
+            "library",
+            "library_version",
+            "page_rotation",
+            "alpha"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "contract_version",
+        "kind",
+        "stage",
+        "request_id",
+        "instruction",
+        "semantic_entity_id",
+        "candidate_id",
+        "document",
+        "pdf_page",
+        "input_scope",
+        "evidence_bbox",
+        "context_bbox",
+        "coordinate_space",
+        "policy",
+        "margin_pt",
+        "clamped_edges",
+        "dpi",
+        "pixel_width",
+        "pixel_height",
+        "output_sha256",
+        "renderer"
+      ],
+      "additionalProperties": false
+    },
+    "provider": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "model": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "observation": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "status": {
+      "enum": [
+        "supported",
+        "conflict",
+        "ambiguous",
+        "insufficient_evidence",
+        "unresolved"
+      ]
+    },
+    "provider_run_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_at": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?!0000)[0-9]{4}-(?:(?:01|03|05|07|08|10|12)-(?:0[1-9]|[12][0-9]|3[01])|(?:04|06|09|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?!0000)(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]+)?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])(?![\\s\\S])"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "contract_version",
+    "kind",
+    "observation_id",
+    "evidence_class",
+    "request",
+    "provider",
+    "model",
+    "observation",
+    "status",
+    "provider_run_id",
+    "created_at"
+  ],
+  "additionalProperties": false,
+  "anyOf": [
+    {
+      "properties": {
+        "provider_run_id": {
+          "type": "string",
+          "pattern": "\\S"
+        }
+      }
+    },
+    {
+      "properties": {
+        "created_at": {
+          "type": "string"
+        }
+      }
+    }
+  ]
+}
