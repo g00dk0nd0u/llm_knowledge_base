@@ -2,7 +2,9 @@
 
 `tools.vision` is Python 3.12 standard-library-only. It performs no provider calls,
 HTTP, OCR, persistence, candidate selection, or source-fact updates. Only V3 final
-evidence inspection is supported. Query Core SCHEMA_VERSION remains 2 and
+evidence inspection is supported by these Phase 5C APIs. The separate
+[Phase 5E V1 context request](vision-context-inspection-contract.md) does not
+generalize these V3 contracts. Query Core SCHEMA_VERSION remains 2 and
 SnapshotContract.Version remains 1.
 
 ```python
@@ -56,5 +58,6 @@ Before actual Vision execution, a separate provider adapter must explicitly map
 this request and the local verified image into a provider API, validate its output
 and preserve this authority boundary. Authentication, execution policy, failures,
 provider integration tests and any optional observation persistence are deferred.
-V0/V1/V2, context padding, paired-image comparison, confidence scoring and Issue
-#47 remain pending.
+Phase 5D provides context rendering and Phase 5E provides its V1 request contract.
+Actual V1 execution/observations, V0/V2, paired-image comparison, confidence
+scoring and Issue #47 remain pending.

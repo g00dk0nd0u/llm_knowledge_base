@@ -1,0 +1,241 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "vision_context_inspection_request v1",
+  "description": "Provider-neutral V1 context surface only. Runtime additionally verifies ordered finite geometry, containment, fixed-margin/clamp consistency, request ID and PNG bytes. Source PDF bounds and facts remain renderer/source authority.",
+  "type": "object",
+  "properties": {
+    "contract_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "kind": {
+      "const": "vision_context_inspection_request"
+    },
+    "stage": {
+      "const": "V1"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^vision-context-request-[a-f0-9]{64}(?![\\s\\S])"
+    },
+    "instruction": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "semantic_entity_id": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "candidate_id": {
+      "type": "string",
+      "pattern": "^vision-candidate-[a-f0-9]{64}(?![\\s\\S])"
+    },
+    "document": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "identity": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
+        }
+      },
+      "required": [
+        "id",
+        "identity",
+        "source_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "pdf_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "input_scope": {
+      "const": "region"
+    },
+    "evidence_bbox": {
+      "type": "array",
+      "items": {
+        "type": "number",
+        "minimum": 0
+      },
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "context_bbox": {
+      "type": "array",
+      "items": {
+        "type": "number",
+        "minimum": 0
+      },
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "coordinate_space": {
+      "const": "pdf_points_top_left"
+    },
+    "policy": {
+      "const": "fixed_margin_v1"
+    },
+    "margin_pt": {
+      "type": "number",
+      "const": 144.0
+    },
+    "clamped_edges": {
+      "type": "array",
+      "enum": [
+        [],
+        [
+          "left"
+        ],
+        [
+          "top"
+        ],
+        [
+          "right"
+        ],
+        [
+          "bottom"
+        ],
+        [
+          "left",
+          "top"
+        ],
+        [
+          "left",
+          "right"
+        ],
+        [
+          "left",
+          "bottom"
+        ],
+        [
+          "top",
+          "right"
+        ],
+        [
+          "top",
+          "bottom"
+        ],
+        [
+          "right",
+          "bottom"
+        ],
+        [
+          "left",
+          "top",
+          "right"
+        ],
+        [
+          "left",
+          "top",
+          "bottom"
+        ],
+        [
+          "left",
+          "right",
+          "bottom"
+        ],
+        [
+          "top",
+          "right",
+          "bottom"
+        ],
+        [
+          "left",
+          "top",
+          "right",
+          "bottom"
+        ]
+      ]
+    },
+    "dpi": {
+      "type": "integer",
+      "minimum": 36,
+      "maximum": 1200
+    },
+    "pixel_width": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "pixel_height": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "output_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
+    },
+    "renderer": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "library": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "library_version": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "page_rotation": {
+          "enum": [
+            0,
+            90,
+            180,
+            270
+          ],
+          "type": "integer"
+        },
+        "alpha": {
+          "const": false
+        }
+      },
+      "required": [
+        "name",
+        "library",
+        "library_version",
+        "page_rotation",
+        "alpha"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "contract_version",
+    "kind",
+    "stage",
+    "request_id",
+    "instruction",
+    "semantic_entity_id",
+    "candidate_id",
+    "document",
+    "pdf_page",
+    "input_scope",
+    "evidence_bbox",
+    "context_bbox",
+    "coordinate_space",
+    "policy",
+    "margin_pt",
+    "clamped_edges",
+    "dpi",
+    "pixel_width",
+    "pixel_height",
+    "output_sha256",
+    "renderer"
+  ],
+  "additionalProperties": false
+}
