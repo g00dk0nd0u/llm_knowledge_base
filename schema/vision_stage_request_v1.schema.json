@@ -33,21 +33,7 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "id": {
-              "type": "string",
-              "pattern": "\\S"
-            },
             "relation_type": {
-              "type": "string",
-              "pattern": "\\S"
-            },
-            "resolution_state": {
-              "enum": [
-                "exact",
-                "resolved_deterministically"
-              ]
-            },
-            "provenance": {
               "type": "string",
               "pattern": "\\S"
             },
@@ -56,23 +42,28 @@
               "minItems": 1,
               "items": {
                 "type": "object",
+                "additionalProperties": false,
                 "properties": {
+                  "kind": {
+                    "enum": [
+                      "drawing_reference",
+                      "semantic_entity"
+                    ]
+                  },
                   "id": {
                     "type": "string",
                     "pattern": "\\S"
                   }
                 },
                 "required": [
+                  "kind",
                   "id"
                 ]
               }
             }
           },
           "required": [
-            "id",
             "relation_type",
-            "resolution_state",
-            "provenance",
             "source_refs"
           ]
         }
@@ -133,21 +124,7 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "id": {
-                "type": "string",
-                "pattern": "\\S"
-              },
               "relation_type": {
-                "type": "string",
-                "pattern": "\\S"
-              },
-              "resolution_state": {
-                "enum": [
-                  "exact",
-                  "resolved_deterministically"
-                ]
-              },
-              "provenance": {
                 "type": "string",
                 "pattern": "\\S"
               },
@@ -156,23 +133,28 @@
                 "minItems": 1,
                 "items": {
                   "type": "object",
+                  "additionalProperties": false,
                   "properties": {
+                    "kind": {
+                      "enum": [
+                        "drawing_reference",
+                        "semantic_entity"
+                      ]
+                    },
                     "id": {
                       "type": "string",
                       "pattern": "\\S"
                     }
                   },
                   "required": [
+                    "kind",
                     "id"
                   ]
                 }
               }
             },
             "required": [
-              "id",
               "relation_type",
-              "resolution_state",
-              "provenance",
               "source_refs"
             ]
           }

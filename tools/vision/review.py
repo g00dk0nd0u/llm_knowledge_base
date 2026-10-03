@@ -13,7 +13,10 @@ from tools.query_core.vision_routing import route_vision_evidence
 from .contract import _id, _require, _text, build_vision_inspection_request
 from .context_contract import build_vision_context_inspection_request
 from .stages import build_stage_request
-from .runner import run_vision, VisionExecutionError
+from .runner import run_vision, VisionExecutionError, require_live_budget
+
+# Fixed policy shared by fake/render-only/live plans. Never enumerate omitted pairs.
+MAX_V2_COOCCURRENCE_JOBS = 32
 
 
 def _evidence_surface(row, navigation):
@@ -147,36 +150,58 @@ def plan_review(core, entity_id, *, model, provider='none', stages=('V1', 'V2', 
                                     reason='page_has_no_context_bbox'))
         if 'V3' in stages:
             add('V3', [candidate])
+    cooccurrence = dict(limit=MAX_V2_COOCCURRENCE_JOBS, eligible_count=0, scheduled_count=0,
+                        omitted_count=0, reason=None)
     if 'V2' in stages:
-        def by_evidence(evidence_id):
-            return next((c for c in candidates if any(
-                r.get('kind') == 'evidence' and r.get('id') == evidence_id
-                for r in c['source_refs'])), None)
+        explicit_pairs = set()
+        evidence_candidates = {r['id']: c for c in candidates for r in c['source_refs']
+                               if r['kind'] == 'evidence'}
         for ref in context['drawing_references']:
-            source = by_evidence(ref['source']['evidence']['id'])
+            source = evidence_candidates.get(ref['source']['evidence']['id'])
             target_id = context['reference_targets'].get(ref['id'])
-            dest = by_evidence(target_id) if target_id else None
+            dest = evidence_candidates.get(target_id)
             if (ref['resolution_state'] not in ('exact', 'resolved_deterministically')
                     or source is None or dest is None or source['candidate_id'] == dest['candidate_id']):
                 skipped.append(dict(stage='V2', reference_id=ref['id'],
                                     reason='relation_has_no_distinct_resolved_evidence_pair'))
                 continue
-            relation = {k: ref[k] for k in ('id', 'relation_type', 'resolution_state', 'provenance')}
-            relation['source_refs'] = [deepcopy(ref)]
+            pair = tuple(sorted((source['candidate_id'], dest['candidate_id'])))
+            if pair in explicit_pairs:
+                skipped.append(dict(stage='V2', reference_id=ref['id'], reason='explicit_pair_already_scheduled'))
+                continue
+            explicit_pairs.add(pair)
+            relation = dict(relation_type=ref['relation_type'],
+                            source_refs=[dict(kind='drawing_reference', id=ref['id'])])
             add('V2', [source, dest], relation)
-        # Same selected semantic entity has explicit occurrences across drawings.
-        # This is a deterministic cooccurrence, not an inferred section/detail link.
+        # Shared entity occurrences are compared only after explicit pairs. The
+        # count is algebraic; combinations is lazy and stops at the named limit.
         direct = [c for c in candidates if any(r['kind'] == 'drawing_occurrence'
                                              for r in c['source_refs'])]
+        direct_ids = {c['candidate_id'] for c in direct}
+        duplicate_count = sum(a in direct_ids and b in direct_ids for a, b in explicit_pairs)
+        eligible = len(direct) * (len(direct) - 1) // 2 - duplicate_count
+        scheduled = 0
         for left, right in combinations(direct, 2):
-            relation = dict(id=_id('cooccurrence-', [entity_id, left['candidate_id'], right['candidate_id']]),
-                            relation_type='semantic_entity_cooccurrence', resolution_state='exact',
-                            provenance='deterministic_shared_semantic_entity',
-                            source_refs=deepcopy(left['source_refs'] + right['source_refs']))
+            if scheduled >= MAX_V2_COOCCURRENCE_JOBS:
+                break
+            pair = tuple(sorted((left['candidate_id'], right['candidate_id'])))
+            if pair in explicit_pairs:
+                continue
+            relation = dict(relation_type='semantic_entity_cooccurrence',
+                            source_refs=[dict(kind='semantic_entity', id=entity_id)])
             add('V2', [left, right], relation)
+            scheduled += 1
+        omitted = eligible - scheduled
+        cooccurrence.update(eligible_count=eligible, scheduled_count=scheduled, omitted_count=omitted,
+                            reason='deterministic_cooccurrence_limit' if omitted else None)
+        if omitted:
+            skipped.append(dict(stage='V2', **cooccurrence))
+    if not jobs:
+        skipped.append(dict(reason='no_candidates' if not candidates else 'all_selected_stages_skipped'))
     content = dict(contract_version=1, semantic_entity_id=entity_id, provider=provider, model=model,
                    stages=list(stages), instruction=instruction, dpi=dpi, context=context,
                    candidates=candidates, jobs=jobs, skipped=skipped,
+                   status='ready' if jobs else 'insufficient_evidence', v2_cooccurrence=cooccurrence,
                    provider_calls_planned=len(jobs) if provider != 'none' else 0,
                    network_calls_planned=len(jobs) if provider not in ('none', 'fake') else 0,
                    requires_live_opt_in=provider not in ('none', 'fake'))
@@ -184,19 +209,25 @@ def plan_review(core, entity_id, *, model, provider='none', stages=('V1', 'V2', 
 
 
 def execute_review(core, plan, sources, *, root, database, output=Path('artifacts/vision-review'),
-                   provider=None, live=False, timeout=60.0):
+                   provider=None, live=False, timeout=60.0, max_live_calls=None):
     """Regenerate the whole plan before render/send, returning a source-faithful packet."""
     fresh = plan_review(core, plan['semantic_entity_id'], model=plan['model'],
                         provider=plan['provider'], stages=plan['stages'],
                         instruction=plan['instruction'], dpi=plan['dpi'])
     _require(fresh == plan, 'review plan changed; replan required')
     _require(isinstance(sources, dict), 'source mapping required')
+    _require(type(live) is bool, 'invalid live opt-in')
+    _require(type(timeout) in (int, float) and 0 < timeout <= 300, 'invalid timeout')
+    if not plan['jobs']:
+        return _review_packet(plan, [], [], [], [], [], 'insufficient_evidence')
     if provider is None:
         _require(plan['provider'] == 'none', 'planned provider is required')
     else:
         _require(provider.name == plan['provider'], 'provider mismatch')
-        if getattr(provider, 'requires_live', True) and not live:
-            raise VisionExecutionError('live_opt_in_required')
+        if getattr(provider, 'requires_live', True):
+            if not live:
+                raise VisionExecutionError('live_opt_in_required')
+            require_live_budget(len(plan['jobs']), max_live_calls)
     # All source assignments/SHA are checked before any provider is called.
     for document in plan['context']['source_documents']:
         _require(document['id'] in sources, 'source PDF mapping missing')
@@ -232,16 +263,20 @@ def execute_review(core, plan, sources, *, root, database, output=Path('artifact
                                    source_refs=[c['source_refs'] for c in job['candidates']]))
             if provider is not None:
                 observations.append(run_vision(request, paths, provider, model=plan['model'],
-                                               live=live, timeout=timeout))
+                                               live=live, timeout=timeout, max_live_calls=max_live_calls))
         except Exception as exc:
             # Persist only a safe category. Partial work stays a failure, never supported.
             failures.append(dict(job_id=job['job_id'], stage=job['stage'],
-                                 code=exc.code if isinstance(exc, VisionExecutionError) else 'evidence_failure'))
+                                 code=VisionExecutionError(exc.code).code if isinstance(exc, VisionExecutionError) else 'evidence_failure'))
+    assignments = [dict(document_id=d['id'], source_pdf=str(sources[d['id']]),
+                        source_sha256=d['source_sha256']) for d in plan['context']['source_documents']]
+    status = 'failed' if failures else ('ok' if provider else 'rendered')
+    return _review_packet(plan, requests, executions, observations, failures, assignments, status)
+
+
+def _review_packet(plan, requests, executions, observations, failures, assignments, status):
     content = dict(contract_version=1, evidence_class='review_packet', plan=deepcopy(plan),
                    requests=requests, executions=executions, observations=observations,
-                   source_assignments=[dict(document_id=d['id'], source_pdf=str(sources[d['id']]),
-                                            source_sha256=d['source_sha256'])
-                                       for d in plan['context']['source_documents']],
-                   failures=failures, status='failed' if failures else ('ok' if provider else 'rendered'),
+                   source_assignments=assignments, failures=failures, status=status,
                    human_review_required=True)
     return dict(content, packet_id=_id('vision-review-packet-', content))

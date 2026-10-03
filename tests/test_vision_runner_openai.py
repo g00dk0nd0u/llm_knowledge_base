@@ -42,13 +42,15 @@ def test_openai_response_shape_and_neutral_output(request_case, monkeypatch):
         assert body['store'] is False
         assert 'assistants' not in str(req.url)
         assert req.headers['authorization'] == 'Bearer test-secret'
-        content = body['input'][0]['content']
-        assert content[1]['type'] == 'input_image'
-        assert content[1]['image_url'].startswith('data:image/png;base64,')
+        assert body['input'][0]['role'] == 'developer'
+        content = body['input'][1]['content']
+        assert content[0]['text'] == 'Inspect'
+        assert content[2]['type'] == 'input_image'
+        assert content[2]['image_url'].startswith('data:image/png;base64,')
         assert body['text']['format']['strict'] is True
         assert body['text']['format']['schema']['additionalProperties'] is False
         return httpx.Response(200, json=response_body())
-    observation = run_vision(request, [path], provider(handler), model='explicit-model', live=True)
+    observation = run_vision(request, [path], provider(handler), model='explicit-model', live=True, max_live_calls=1)
     assert len(seen) == 1
     assert observation['status'] == 'conflict'
     assert observation['request'] == request
@@ -72,7 +74,7 @@ def test_explicit_failures(request_case, monkeypatch, code, body, status):
     monkeypatch.setenv('OPENAI_API_KEY', 'test-secret')
     with pytest.raises(VisionExecutionError) as error:
         run_vision(request, [path], provider(lambda req: httpx.Response(status, json=body)),
-                   model='test', live=True)
+                   model='test', live=True, max_live_calls=1)
     assert error.value.code == code
     assert 'test-secret' not in str(error.value)
 
@@ -83,10 +85,10 @@ def test_timeout_and_malformed_json(request_case, monkeypatch):
     def handler(req):
         raise httpx.ReadTimeout('raw secret')
     with pytest.raises(VisionExecutionError, match='timeout'):
-        run_vision(request, [path], provider(handler), model='test', live=True)
+        run_vision(request, [path], provider(handler), model='test', live=True, max_live_calls=1)
     with pytest.raises(VisionExecutionError, match='malformed_response'):
         run_vision(request, [path], provider(lambda req: httpx.Response(200, text='secret invalid')),
-                   model='test', live=True)
+                   model='test', live=True, max_live_calls=1)
 
 
 def test_image_swap_request_mutation_and_consent_are_pre_network(request_case, monkeypatch):
@@ -100,10 +102,10 @@ def test_image_swap_request_mutation_and_consent_are_pre_network(request_case, m
     changed = deepcopy(request)
     changed['instruction'] = 'swapped'
     with pytest.raises(VisionContractError):
-        run_vision(changed, [path], adapter, model='test', live=True)
+        run_vision(changed, [path], adapter, model='test', live=True, max_live_calls=1)
     path.write_bytes(path.read_bytes() + b'swapped')
     with pytest.raises(VisionContractError):
-        run_vision(request, [path], adapter, model='test', live=True)
+        run_vision(request, [path], adapter, model='test', live=True, max_live_calls=1)
 
 
 def test_extra_provider_fields_never_become_observation(request_case):
@@ -169,7 +171,7 @@ def test_malformed_structured_output_is_failure(request_case, monkeypatch, text)
     body['output'][0]['content'][0]['text'] = text
     with pytest.raises(VisionExecutionError, match='malformed_response'):
         run_vision(request, [path], provider(lambda req: httpx.Response(200, json=body)),
-                   model='test', live=True)
+                   model='test', live=True, max_live_calls=1)
 
 
 def test_missing_auth_and_invalid_timeout_are_pre_network(request_case, monkeypatch):
@@ -177,19 +179,18 @@ def test_missing_auth_and_invalid_timeout_are_pre_network(request_case, monkeypa
     monkeypatch.delenv('OPENAI_API_KEY', raising=False)
     adapter = provider(lambda req: pytest.fail('network forbidden'))
     with pytest.raises(VisionExecutionError, match='auth_missing'):
-        run_vision(request, [path], adapter, model='test', live=True)
+        run_vision(request, [path], adapter, model='test', live=True, max_live_calls=1)
     with pytest.raises(VisionContractError):
-        run_vision(request, [path], adapter, model='test', live=True, timeout=float('nan'))
+        run_vision(request, [path], adapter, model='test', live=True, max_live_calls=1, timeout=float('nan'))
 
 
 def test_provider_cannot_rewrite_evidence_request(request_case):
-    from tools.vision.contract import _id
     request, path = request_case
     class Mutating(FakeProvider):
         def inspect(self, supplied, images, **kwargs):
-            supplied['document']['source_sha256'] = 'f' * 64
-            content = {k: v for k, v in supplied.items() if k != 'request_id'}
-            supplied['request_id'] = _id('vision-request-', content)
+            assert set(supplied) == {'stage', 'instruction', 'metadata'}
+            supplied['document'] = {'source_sha256': 'f' * 64}
+            supplied['request_id'] = 'forged'
             return dict(observation='Test only', status='unresolved', provider_run_id='r')
     observation = run_vision(request, [path], Mutating(), model='test')
     assert observation['request'] == request

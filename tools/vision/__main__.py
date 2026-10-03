@@ -7,7 +7,7 @@ import sys
 import tempfile
 from tools.query_core.query import QueryCore
 from .review import plan_review, execute_review
-from .runner import VisionExecutionError
+from .runner import VisionExecutionError, require_live_budget
 from .contract import VisionContractError
 
 
@@ -24,6 +24,7 @@ def main(argv=None):
     parser.add_argument('--dpi', type=int, default=300)
     parser.add_argument('--timeout', type=float, default=60)
     parser.add_argument('--live', action='store_true')
+    parser.add_argument('--max-live-calls', type=int, help='Required paid-call budget for live execution')
     parser.add_argument('--output', type=Path, default=Path('artifacts/vision-review'))
     args = parser.parse_args(argv)
     try:
@@ -39,6 +40,10 @@ def main(argv=None):
             if args.action == 'plan':
                 print(json.dumps(plan, ensure_ascii=False, indent=2, allow_nan=False))
                 return 0
+            if not plan['jobs']:
+                print(json.dumps({'status': 'insufficient_evidence', 'plan_id': plan['plan_id'],
+                                  'request_count': 0}))
+                return 1
             provider = None
             if args.provider == 'fake':
                 from .providers.fake import FakeProvider
@@ -46,6 +51,7 @@ def main(argv=None):
             elif args.provider == 'openai':
                 if not args.live:
                     raise VisionExecutionError('live_opt_in_required')
+                require_live_budget(plan['network_calls_planned'], args.max_live_calls)
                 if not os.environ.get('OPENAI_API_KEY'):
                     print(json.dumps({'status': 'SKIPPED', 'reason': 'auth_missing'}))
                     return 0
@@ -53,7 +59,8 @@ def main(argv=None):
                 provider = OpenAIProvider()
             packet = execute_review(core, plan, sources, root=args.root,
                                     database=args.database, output=args.output,
-                                    provider=provider, live=args.live, timeout=args.timeout)
+                                    provider=provider, live=args.live, timeout=args.timeout,
+                                    max_live_calls=args.max_live_calls)
         # The renderer's artifact policy applies equally to exported JSON.
         from tools.pdf_pipeline.pipeline import _render_output_directory
         directory = _render_output_directory(args.root.resolve(), args.output)
@@ -71,10 +78,10 @@ def main(argv=None):
                 temporary.unlink(missing_ok=True)
         print(json.dumps({'status': packet['status'], 'packet_id': packet['packet_id'],
                           'output': str(target), 'failure_count': len(packet['failures'])}))
-        return 1 if packet['failures'] else 0
+        return 0 if packet['status'] in ('ok', 'rendered') else 1
     except Exception as exc:
         # No exception message, raw transport, credential, or source text is logged.
-        print(json.dumps({'status': 'failed', 'code': exc.code if isinstance(exc, VisionExecutionError)
+        print(json.dumps({'status': 'failed', 'code': VisionExecutionError(exc.code).code if isinstance(exc, VisionExecutionError)
                           else 'invalid_review_input'}), file=sys.stderr)
         return 1
 

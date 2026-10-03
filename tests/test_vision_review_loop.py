@@ -69,7 +69,7 @@ class ProofProvider(FakeProvider):
         status = {'V0': 'unresolved', 'V1': 'ambiguous', 'V2': 'conflict', 'V3': 'insufficient_evidence'}[request['stage']]
         assert len(images) == (2 if request['stage'] == 'V2' else 1)
         return dict(observation='Synthetic discrepancy EL160 / EL560; review originals.',
-                    status=status, provider_run_id='proof-' + request['request_id'])
+                    status=status, provider_run_id='proof-' + request['stage'])
 
 
 def test_door_and_plan_section_complete_review_flow(proof):
@@ -161,7 +161,7 @@ def test_cli_fake_and_live_skip(proof, monkeypatch):
     assert list((proof['root'] / 'artifacts/vision-review').glob('*.json'))
     monkeypatch.delenv('OPENAI_API_KEY', raising=False)
     assert main(args + ['--provider', 'openai']) == 1
-    assert main(args + ['--provider', 'openai', '--live']) == 0
+    assert main(args + ['--provider', 'openai', '--live', '--max-live-calls', '100']) == 0
 
 
 def test_all_stages_with_openai_mock_transport(proof, monkeypatch):
@@ -171,11 +171,10 @@ def test_all_stages_with_openai_mock_transport(proof, monkeypatch):
     calls = []
     def handler(request):
         body = json.loads(request.content)
-        text = body['input'][0]['content'][0]['text']
-        envelope = json.loads(text.split('\n', 1)[1])
-        images = [c for c in body['input'][0]['content'] if c['type'] == 'input_image']
-        assert len(images) == (2 if envelope['stage'] == 'V2' else 1)
-        calls.append(envelope['stage'])
+        stage = body['input'][0]['content'][0]['text'][:2]
+        images = [c for c in body['input'][1]['content'] if c['type'] == 'input_image']
+        assert len(images) == (2 if stage == 'V2' else 1)
+        calls.append(stage)
         return httpx.Response(200, json=dict(id='resp-' + str(len(calls)), status='completed',
             output=[dict(type='message', status='completed', content=[dict(
                 type='output_text', text=json.dumps(dict(observation='Mock only', status='ambiguous')))])]))
@@ -183,7 +182,7 @@ def test_all_stages_with_openai_mock_transport(proof, monkeypatch):
         plan = plan_review(core, 'semantic-door-101', model='explicit-mock', provider='openai',
                            stages=['V0', 'V1', 'V2', 'V3'], dpi=72)
         packet = execute_review(core, plan, proof['sources'], root=proof['root'],
-                                database=proof['database'], live=True,
+                                database=proof['database'], live=True, max_live_calls=plan['network_calls_planned'],
                                 provider=OpenAIProvider(transport=httpx.MockTransport(handler)))
     assert packet['status'] == 'ok'
     assert set(calls) == {'V0', 'V1', 'V2', 'V3'}
@@ -223,7 +222,7 @@ def test_resolved_sheet_only_reference_renders_page_without_guessing(proof):
         connection.execute("UPDATE drawing_references SET target_evidence_id=NULL WHERE id='reference-section'")
     with QueryCore(proof['database']) as core:
         plan = plan_review(core, 'semantic-door-101', model='test', provider='fake', stages=['V2'], dpi=72)
-        job = next(j for j in plan['jobs'] if j['relation']['id'] == 'reference-section')
+        job = next(j for j in plan['jobs'] if j['relation']['source_refs'][0]['id'] == 'reference-section')
         assert job['candidates'][1]['input_scope'] == 'page'
         assert job['candidates'][1]['pdf_page'] == 4
         packet = execute_review(core, plan, proof['sources'], root=proof['root'], database=proof['database'], provider=ProofProvider())

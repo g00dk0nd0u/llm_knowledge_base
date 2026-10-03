@@ -20,8 +20,9 @@
    and deterministic architectural context, follows explicit one-hop drawing
    references, and collects target evidence or recorded sheet-page navigation.
    Shared semantic bindings permit deterministic cooccurrence comparisons;
-   they never establish inferred drawing-reference facts. `execute_review`
-   regenerates the plan, verifies all source assignments, renders into ignored
+   they never establish inferred drawing-reference facts. Explicit pairs are
+   prioritized/deduplicated; cooccurrence scheduling has a fixed deterministic
+   limit of 32. `execute_review` regenerates the plan, verifies all source assignments, renders into ignored
    artifacts, constructs requests, optionally runs a provider and returns a
    transient source-traced review packet.
 5. **Operating safety and proof:** CLI plan/execute, fake-provider E2E and OpenAI
@@ -47,6 +48,17 @@ selected semantic entity
 | V2 | Resolved explicit drawing-reference pairs and selected-entity cooccurrences | Comparison; unresolved/ambiguous or missing distinct targets are skipped and preserved |
 | V3 | Exact candidate bbox or recorded page | Final evidence inspection |
 
+`MAX_V2_COOCCURRENCE_JOBS = 32` bounds cooccurrence jobs for every provider,
+including fake/none. Explicit resolved pairs are scheduled first; the same unordered
+pair is never repeated as cooccurrence. `v2_cooccurrence` records limit, eligible,
+scheduled and omitted counts; omitted comparisons get an aggregate skipped reason.
+Eligibility counts are algebraic and pair iteration stops at the limit. The planner
+never materializes all pairs or individual skipped rows for omitted comparisons.
+
+Zero candidates or all selected stages skipped produce a plan and packet with
+`insufficient_evidence`. Execution starts no renderer/provider and the CLI exits 1.
+The plan command still displays this state without network or writes.
+
 Default stages are V1/V2/V3. V0 is explicitly selectable. Planning uses only
 available deterministic evidence; observations never select, rewrite or approve
 source facts. A reference with recorded target sheet/page but no target bbox
@@ -59,7 +71,17 @@ Plans, jobs, added stage contracts and packets have version 1 content hashes.
 Execution regenerates and compares the complete plan before any provider call;
 stale source/context changes require replanning. PNG reads are bounded and their
 same verified bytes go to the transport. The runner gives providers an isolated
-request copy. Rendering reuses the existing Phase 5B/5D internals; their public
+minimized provider input. Canonical requests and full source trace remain local.
+The provider sees only stage, exact caller instruction, closed minimal metadata and
+verified PNG bytes. OpenAI sends trusted stage/data guidance as a developer message,
+with instruction/metadata/images in the user message. V0 triages a page; V1 receives
+only a normalized focus box (corrected for displayed image rotation); V2 compares
+image A/B with only `relation_type`; V3 inspects exact evidence. All stages explicitly
+treat image text as data, never instructions. No document identity/filename/SHA,
+semantic/candidate/request IDs, navigation, source refs or local/DB paths are sent.
+Caller instruction is preserved verbatim; callers should include only information
+intended for external processing in that instruction. Rendering reuses the existing
+Phase 5B/5D internals; their public
 entry points still regenerate their own Query Core candidates.
 
 ## API and CLI
@@ -99,11 +121,17 @@ python -m tools.vision execute --database artifacts/project.sqlite \
 ```
 
 Live execution needs **both** `--provider openai` and `--live`, an explicit model,
+an explicit paid-call budget through `--max-live-calls N`,
 explicit `--source DOCUMENT_ID=PDF` mappings for collected documents and a configured
 `OPENAI_API_KEY`. Never run a paid call merely to validate code. With explicit
 live opt-in but no key, the CLI reports `SKIPPED / auth_missing`. Timeout is
 configurable through `--timeout` (0 < seconds <= 300); transport has no automatic
-retries or redirects. CLI exports JSON atomically under the render artifact
+retries or redirects. `execute_review(..., max_live_calls=N)` performs the same
+budget gate before source reads/render/network; direct `run_vision` network execution
+requires a budget covering its single call. Planned calls above budget or a missing
+budget fail; `--live` alone cannot initiate paid calls. Budgets count calls, not tokens
+or currency. Fake/none need no paid budget. CLI exports JSON atomically under the
+render artifact
 policy and prints only packet identity/status/output path/failure count.
 
 ## Packet and authority
@@ -123,6 +151,16 @@ unresolved. A provider-neutral `conflict` never changes source property values.
 
 Provider response/usage/confidence is discarded. Structured output accepts only
 `observation` and `status`; run identity comes from the transport response.
+Optional provider `created_at`
+Unix seconds are converted deterministically to strict timezone-aware UTC ISO,
+using decimal arithmetic and half-even rounding to microseconds. Missing timestamps
+become `None`; no current timestamp is generated. Bool, malformed, nonfinite,
+negative or calendar-out-of-range timestamps fail. V1/V3 use their unchanged builders
+and keep identical output/IDs when the timestamp is missing. V0/V2 have nullable
+`created_at` in both runtime and schema. V2 relations are a closed
+`{relation_type, source_refs}` shape; refs contain only `{kind, id}` pointers to
+local `drawing_reference` / `semantic_entity` records. Full provenance stays in
+the local plan context/candidate trace.
 Timeout, auth, HTTP, transport, refusal, malformed/duplicate/nonfinite JSON and
 partial output fail explicitly. Failures carry safe categories, never raw response
 or exception text, key or base64. Individual job failures make the whole packet
@@ -152,7 +190,11 @@ with plan/schedule/detail/section pages and explicit references. Fake-provider
 E2E verifies all four stages, conflicting EL160/EL560 source values, source
 names, relation trace, ambiguity, bbox/page/source SHA/output SHA, JSON export and
 unchanged source/database bytes. OpenAI mock transport runs every stage and
-checks image count, structured request shape, response normalization and failures.
+checks image count, minimized structured request shape, response normalization and
+failures. `tests/test_vision_hardening.py` checks 120 direct candidates with bounded
+lazy iteration, pair deduplication, early budget rejection, zero-job failure for
+all provider modes, forbidden payload metadata, all stage guidance, V1 focus rotation,
+closed runtime/schema relations and provider timestamp provenance.
 `tests/test_vision_runner_openai.py` additionally checks image replacement,
 invalid compressed pixels, live opt-in, missing auth, timeout, refusal, HTTP,
 partial/malformed output and rejected provider confidence.
