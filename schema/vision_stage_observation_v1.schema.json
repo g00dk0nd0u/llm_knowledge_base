@@ -1,0 +1,56 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "evidence_class": {
+      "const": "vision_observation"
+    },
+    "request": {
+      "$ref": "vision_stage_request_v1.schema.json"
+    },
+    "provider": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "model": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "observation": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "status": {
+      "enum": [
+        "supported",
+        "conflict",
+        "ambiguous",
+        "insufficient_evidence",
+        "unresolved"
+      ]
+    },
+    "provider_run_id": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "observation_id": {
+      "type": "string",
+      "pattern": "^vision-stage-observation-[a-f0-9]{64}$"
+    }
+  },
+  "required": [
+    "contract_version",
+    "evidence_class",
+    "request",
+    "provider",
+    "model",
+    "observation",
+    "status",
+    "provider_run_id",
+    "observation_id"
+  ]
+}

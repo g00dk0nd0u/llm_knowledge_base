@@ -125,6 +125,7 @@ def _render_selected_candidate(
     dpi: int,
     output: Path,
     context: bool,
+    _candidate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Shared exact selection, source verification, and atomic PNG publication."""
     root = repo_root.resolve()
@@ -132,19 +133,27 @@ def _render_selected_candidate(
     source_pdf = (root / source_pdf).resolve()
     if isinstance(dpi, bool) or not isinstance(dpi, int) or not 36 <= dpi <= 1200:
         raise PipelineError("DPI must be an integer between 36 and 1200")
-    try:
-        with QueryCore(database) as core:
-            routed = core.get_vision_evidence_candidates(semantic_entity_id)
-    except QueryCoreError as exc:
-        raise PipelineError(f"cannot load Query Core: {exc}") from exc
-    if routed is None:
-        raise PipelineError(f"semantic entity not found or unavailable: {semantic_entity_id}")
-    matches = [row for row in routed["candidates"] if row["candidate_id"] == candidate_id]
-    if not matches:
-        raise PipelineError(f"candidate not found: {candidate_id}")
-    if len(matches) != 1:
-        raise PipelineError(f"duplicate candidate ID: {candidate_id}")
-    candidate = matches[0]
+    if _candidate is None:
+        try:
+            with QueryCore(database) as core:
+                routed = core.get_vision_evidence_candidates(semantic_entity_id)
+        except QueryCoreError as exc:
+            raise PipelineError(f"cannot load Query Core: {exc}") from exc
+        if routed is None:
+            raise PipelineError(f"semantic entity not found or unavailable: {semantic_entity_id}")
+        matches = [row for row in routed["candidates"] if row["candidate_id"] == candidate_id]
+        if not matches:
+            raise PipelineError(f"candidate not found: {candidate_id}")
+        if len(matches) != 1:
+            raise PipelineError(f"duplicate candidate ID: {candidate_id}")
+        candidate = matches[0]
+    else:
+        # Review orchestration passes a freshly regenerated deterministic surface.
+        # This internal path also supports explicit one-hop target evidence and V0
+        # whole-page projections; source bytes/geometry are still verified below.
+        candidate = _candidate
+        if candidate.get("candidate_id") != candidate_id:
+            raise PipelineError("candidate ID mismatch")
     if context and candidate.get("input_scope") == "page":
         raise PipelineError("V1 context render requires a region candidate; page candidate rejected")
     bbox = _candidate_bbox(candidate)
