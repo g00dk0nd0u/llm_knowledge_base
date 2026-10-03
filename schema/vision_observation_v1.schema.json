@@ -1,0 +1,278 @@
+{
+  "type": "object",
+  "properties": {
+    "contract_version": {
+      "const": 1
+    },
+    "observation_id": {
+      "type": "string",
+      "pattern": "^vision-observation-[a-f0-9]{64}$"
+    },
+    "evidence_class": {
+      "const": "vision_observation"
+    },
+    "request": {
+      "type": "object",
+      "properties": {
+        "contract_version": {
+          "const": 1
+        },
+        "stage": {
+          "const": "V3"
+        },
+        "request_id": {
+          "type": "string",
+          "pattern": "^vision-request-[a-f0-9]{64}$"
+        },
+        "semantic_entity_id": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "candidate_id": {
+          "type": "string",
+          "pattern": "^vision-candidate-[a-f0-9]{64}$"
+        },
+        "document": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "identity": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "source_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "id",
+            "identity",
+            "source_sha256"
+          ],
+          "additionalProperties": false
+        },
+        "pdf_page": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "input_scope": {
+          "enum": [
+            "page",
+            "region"
+          ]
+        },
+        "bbox": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0
+              },
+              "minItems": 4,
+              "maxItems": 4
+            }
+          ]
+        },
+        "coordinate_space": {
+          "enum": [
+            null,
+            "pdf_points_top_left"
+          ]
+        },
+        "instruction": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "dpi": {
+          "type": "integer",
+          "minimum": 36,
+          "maximum": 1200
+        },
+        "pixel_width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "pixel_height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "output_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "renderer": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "library": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "library_version": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "page_rotation": {
+              "enum": [
+                0,
+                90,
+                180,
+                270
+              ]
+            },
+            "alpha": {
+              "const": false
+            }
+          },
+          "required": [
+            "name",
+            "library",
+            "library_version",
+            "page_rotation",
+            "alpha"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "contract_version",
+        "stage",
+        "request_id",
+        "semantic_entity_id",
+        "candidate_id",
+        "document",
+        "pdf_page",
+        "input_scope",
+        "bbox",
+        "coordinate_space",
+        "instruction",
+        "dpi",
+        "pixel_width",
+        "pixel_height",
+        "output_sha256",
+        "renderer"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "input_scope": {
+                "const": "page"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "bbox": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "bbox": {
+                "type": "array"
+              },
+              "coordinate_space": {
+                "const": "pdf_points_top_left"
+              }
+            }
+          }
+        }
+      ],
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "vision_inspection_request v1"
+    },
+    "provider": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "model": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "observation": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "status": {
+      "enum": [
+        "supported",
+        "conflict",
+        "ambiguous",
+        "insufficient_evidence",
+        "unresolved"
+      ]
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_at": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "(Z|[+-][0-9]{2}:[0-9]{2})$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "contract_version",
+    "observation_id",
+    "evidence_class",
+    "request",
+    "provider",
+    "model",
+    "observation",
+    "status",
+    "run_id",
+    "created_at"
+  ],
+  "additionalProperties": false,
+  "anyOf": [
+    {
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "pattern": "\\S"
+        }
+      }
+    },
+    {
+      "properties": {
+        "created_at": {
+          "type": "string"
+        }
+      }
+    }
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "vision_observation v1"
+}
