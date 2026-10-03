@@ -2,8 +2,10 @@
 
 `tools.vision` adds a separate V1 request contract for successful Phase 5D
 `render_vision_context_candidate(...)` results. Phase 5C's V3 builder, schema,
-output and `vision-request-` IDs retain their existing meaning. V1 does not
-introduce observations, execute Vision or modify source facts. Query Core
+output and `vision-request-` IDs retain their existing meaning. This request API
+does not execute Vision or modify source facts; the separate
+[Phase 5F V1 observation contract](vision-context-observation-contract.md) wraps
+validated requests. Query Core
 `SCHEMA_VERSION=2` and `SnapshotContract.Version=1` remain unchanged.
 
 ```python
@@ -63,6 +65,6 @@ contract. There are no DB writes, tables, migrations, caches or persistence.
 Before actual V1 Vision execution, a separate provider adapter must map this
 request and an explicitly verified local image into the provider API, define
 authentication/execution policy and failure handling, and test provider behavior.
-A V1 observation contract and any persistence/authority rules require separate
-work. V0/V2, paired images, OCR, LLMs, embeddings, automatic candidate selection
-and Issue #47 remain pending.
+Phase 5F provides the transient V1 observation contract; any persistence/authority
+rules require separate work. V0/V2, paired images, OCR, LLMs, embeddings,
+automatic candidate selection and Issue #47 remain pending.

@@ -59,5 +59,6 @@ this request and the local verified image into a provider API, validate its outp
 and preserve this authority boundary. Authentication, execution policy, failures,
 provider integration tests and any optional observation persistence are deferred.
 Phase 5D provides context rendering and Phase 5E provides its V1 request contract.
-Actual V1 execution/observations, V0/V2, paired-image comparison, confidence
+Phase 5F adds a separate [V1 observation contract](vision-context-observation-contract.md).
+Actual V1 execution/persistence, V0/V2, paired-image comparison, confidence
 scoring and Issue #47 remain pending.

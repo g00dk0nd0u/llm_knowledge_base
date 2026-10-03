@@ -1,0 +1,189 @@
+{
+  "v3_region_request": {
+    "pixel_height": 1,
+    "output_sha256": "f8b784c85c7c8173fdcfc74daee9fc36f7f209d8b145abd05e2918619420edae",
+    "pixel_width": 1,
+    "bbox": [
+      20.0,
+      30.0,
+      100.0,
+      70.0
+    ],
+    "candidate_id": "vision-candidate-1111111111111111111111111111111111111111111111111111111111111111",
+    "dpi": 72,
+    "renderer": {
+      "name": "tools.pdf_pipeline.vision_render",
+      "library": "PyMuPDF",
+      "library_version": "1.28.2",
+      "page_rotation": 0,
+      "alpha": false
+    },
+    "semantic_entity_id": "entity",
+    "document": {
+      "id": "document",
+      "identity": "original/synthetic.pdf",
+      "source_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "coordinate_space": "pdf_points_top_left",
+    "input_scope": "region",
+    "pdf_page": 1,
+    "contract_version": 1,
+    "stage": "V3",
+    "instruction": "  Inspect 電気錠\n",
+    "request_id": "vision-request-b74d0089201319991f48ebd3f51acc3fe41996b9af5f9dcf722f09ee3bc8c3b7"
+  },
+  "v3_region_observation": {
+    "contract_version": 1,
+    "evidence_class": "vision_observation",
+    "request": {
+      "pixel_height": 1,
+      "output_sha256": "f8b784c85c7c8173fdcfc74daee9fc36f7f209d8b145abd05e2918619420edae",
+      "pixel_width": 1,
+      "bbox": [
+        20.0,
+        30.0,
+        100.0,
+        70.0
+      ],
+      "candidate_id": "vision-candidate-1111111111111111111111111111111111111111111111111111111111111111",
+      "dpi": 72,
+      "renderer": {
+        "name": "tools.pdf_pipeline.vision_render",
+        "library": "PyMuPDF",
+        "library_version": "1.28.2",
+        "page_rotation": 0,
+        "alpha": false
+      },
+      "semantic_entity_id": "entity",
+      "document": {
+        "id": "document",
+        "identity": "original/synthetic.pdf",
+        "source_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "coordinate_space": "pdf_points_top_left",
+      "input_scope": "region",
+      "pdf_page": 1,
+      "contract_version": 1,
+      "stage": "V3",
+      "instruction": "  Inspect 電気錠\n",
+      "request_id": "vision-request-b74d0089201319991f48ebd3f51acc3fe41996b9af5f9dcf722f09ee3bc8c3b7"
+    },
+    "provider": "  provider\n",
+    "model": "model 日本語",
+    "observation": "  原文の観察\n",
+    "status": "conflict",
+    "provider_run_id": " run-1 ",
+    "created_at": null,
+    "observation_id": "vision-observation-737012a0ea282393393b211ea64c18dfc5a71a94559d310be396b414a8412ea4"
+  },
+  "v3_page_request": {
+    "pixel_height": 1,
+    "output_sha256": "f8b784c85c7c8173fdcfc74daee9fc36f7f209d8b145abd05e2918619420edae",
+    "pixel_width": 1,
+    "bbox": null,
+    "candidate_id": "vision-candidate-1111111111111111111111111111111111111111111111111111111111111111",
+    "dpi": 72,
+    "renderer": {
+      "name": "tools.pdf_pipeline.vision_render",
+      "library": "PyMuPDF",
+      "library_version": "1.28.2",
+      "page_rotation": 0,
+      "alpha": false
+    },
+    "semantic_entity_id": "entity",
+    "document": {
+      "id": "document",
+      "identity": "original/synthetic.pdf",
+      "source_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "coordinate_space": null,
+    "input_scope": "page",
+    "pdf_page": 1,
+    "contract_version": 1,
+    "stage": "V3",
+    "instruction": "  Inspect 電気錠\n",
+    "request_id": "vision-request-1914a910a0943152dfa16c07b428e983fdc43271787920e12612c3e538e525e3"
+  },
+  "v3_page_observation": {
+    "contract_version": 1,
+    "evidence_class": "vision_observation",
+    "request": {
+      "pixel_height": 1,
+      "output_sha256": "f8b784c85c7c8173fdcfc74daee9fc36f7f209d8b145abd05e2918619420edae",
+      "pixel_width": 1,
+      "bbox": null,
+      "candidate_id": "vision-candidate-1111111111111111111111111111111111111111111111111111111111111111",
+      "dpi": 72,
+      "renderer": {
+        "name": "tools.pdf_pipeline.vision_render",
+        "library": "PyMuPDF",
+        "library_version": "1.28.2",
+        "page_rotation": 0,
+        "alpha": false
+      },
+      "semantic_entity_id": "entity",
+      "document": {
+        "id": "document",
+        "identity": "original/synthetic.pdf",
+        "source_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "coordinate_space": null,
+      "input_scope": "page",
+      "pdf_page": 1,
+      "contract_version": 1,
+      "stage": "V3",
+      "instruction": "  Inspect 電気錠\n",
+      "request_id": "vision-request-1914a910a0943152dfa16c07b428e983fdc43271787920e12612c3e538e525e3"
+    },
+    "provider": "  provider\n",
+    "model": "model 日本語",
+    "observation": "  原文の観察\n",
+    "status": "conflict",
+    "provider_run_id": null,
+    "created_at": "2026-10-04T01:11:00.123456789+09:00",
+    "observation_id": "vision-observation-ad1977bfb2e41f85ca9a424d2b2108fcd505d591383722defff90c376331697f"
+  },
+  "v1_request": {
+    "contract_version": 1,
+    "kind": "vision_context_inspection_request",
+    "stage": "V1",
+    "instruction": "  Inspect 電気錠\n",
+    "semantic_entity_id": "entity",
+    "candidate_id": "vision-candidate-1111111111111111111111111111111111111111111111111111111111111111",
+    "document": {
+      "id": "document",
+      "identity": "original/synthetic.pdf",
+      "source_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "pdf_page": 1,
+    "input_scope": "region",
+    "evidence_bbox": [
+      300.125,
+      220.25,
+      380.625,
+      260.75
+    ],
+    "context_bbox": [
+      156.125,
+      76.25,
+      524.625,
+      404.75
+    ],
+    "coordinate_space": "pdf_points_top_left",
+    "policy": "fixed_margin_v1",
+    "margin_pt": 144.0,
+    "clamped_edges": [],
+    "dpi": 72,
+    "pixel_width": 1,
+    "pixel_height": 1,
+    "output_sha256": "f8b784c85c7c8173fdcfc74daee9fc36f7f209d8b145abd05e2918619420edae",
+    "renderer": {
+      "name": "tools.pdf_pipeline.vision_render",
+      "library": "PyMuPDF",
+      "library_version": "1.28.2",
+      "page_rotation": 0,
+      "alpha": false
+    },
+    "request_id": "vision-context-request-be817a0712ec991bd1cef01f7bef31b5a95436bce08eb7996556ad3b512da10b"
+  }
+}
