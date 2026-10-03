@@ -156,24 +156,40 @@ def build_vision_inspection_request(render_result, image_path, instruction, stag
     return dict(content, request_id=_id('vision-request-', content))
 
 
-def build_vision_observation(request, provider, model, observation, status, *, run_id=None, created_at=None):
+# Same expression as created_at in vision_observation_v1.schema.json.
+# Calendar dates include Gregorian leap years; the final assertion forbids
+# trailing newlines (unlike $), even without a schema format checker.
+_CREATED_AT_PATTERN = (
+    r'^(?:(?!0000)[0-9]{4}-(?:(?:01|03|05|07|08|10|12)-(?:0[1-9]|[12][0-9]|3[01])'
+    r'|(?:04|06|09|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))'
+    r'|(?!0000)(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])'
+    r'|(?:[02468][048]|[13579][26])00)-02-29)'
+    r'T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]+)?'
+    r'(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])(?![\s\S])'
+)
+
+
+def build_vision_observation(request, provider, model, observation, status, *,
+                             provider_run_id=None, created_at=None):
     """Attach provider text to validated evidence; callers cannot replace its identity."""
     evidence = validate_vision_inspection_request(request)
     for value, name in ((provider, 'provider'), (model, 'model'), (observation, 'observation')):
         _text(value, name)
     _require(status in ('supported', 'conflict', 'ambiguous', 'insufficient_evidence', 'unresolved'),
              'invalid observation status')
-    if run_id is not None:
-        _text(run_id, 'run ID')
+    if provider_run_id is not None:
+        _text(provider_run_id, 'provider run ID')
     if created_at is not None:
         _text(created_at, 'timestamp')
+        _require(re.fullmatch(_CREATED_AT_PATTERN, created_at) is not None,
+                 'timestamp must use YYYY-MM-DDTHH:MM:SS[.fraction] and Z or +/-HH:MM')
         try:
             stamp = datetime.fromisoformat(created_at)
             _require(stamp.utcoffset() is not None, 'timestamp must be timezone-aware')
         except ValueError as exc:
             raise VisionContractError('invalid timezone-aware timestamp') from exc
-    _require(run_id is not None or created_at is not None, 'run ID or timestamp required')
+    _require(provider_run_id is not None or created_at is not None, 'provider run ID or timestamp required')
     content = dict(contract_version=1, evidence_class='vision_observation', request=evidence,
                    provider=provider, model=model, observation=observation, status=status,
-                   run_id=run_id, created_at=created_at)
+                   provider_run_id=provider_run_id, created_at=created_at)
     return dict(content, observation_id=_id('vision-observation-', content))

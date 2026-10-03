@@ -11,7 +11,8 @@ from tools.vision import build_vision_inspection_request, build_vision_observati
 request = build_vision_inspection_request(render_result, image_path, instruction)
 observation = build_vision_observation(
     request, provider="provider identifier", model="model identifier",
-    observation="Provider observation text", status="supported", run_id="run identifier",
+    observation="Provider observation text", status="supported",
+    provider_run_id="provider execution identifier",
 )
 ```
 
@@ -39,9 +40,13 @@ Observation evidence_class is always `vision_observation`. Its nested request is
 a deep copy of a validated request, including the verified request ID. Provider
 output is accepted only as nonempty observation text, provider/model identifiers,
 and one of supported/conflict/ambiguous/insufficient_evidence/unresolved. There
-is no provider-supplied evidence identity argument. A nonempty run_id or an
-ISO timestamp with a timezone is required; supplied invalid values are rejected
-even when the other identity is valid. No implicit current timestamp is added.
+is no provider-supplied evidence identity argument. A nonempty provider_run_id
+(the execution ID returned by the provider) or a created_at timestamp is
+required. Timestamps use `YYYY-MM-DDTHH:MM:SS`,
+optional decimal fractional seconds, and an explicit `Z`, `+HH:MM`, or
+`-HH:MM` timezone. Runtime and schema use the same expression and validate
+calendar dates, including leap years, even without a schema format checker.
+Supplied invalid values are rejected even when the other identity is valid. No implicit current timestamp is added.
 
 The two schemas in `schema/` describe closed JSON envelopes. Runtime validation
 also checks bbox ordering, finite numbers and recomputed request ID, which JSON

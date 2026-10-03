@@ -98,23 +98,23 @@ def test_invalid_png(case, data):
 def test_observation(case, status):
     _, result, image = case
     request = build(result, image, 'inspect')
-    observation = observe(request, 'provider', 'model', '  observation\n', status, run_id='run-1')
-    assert observe(request, 'provider', 'model', '  observation\n', status, run_id='run-1') == observation
+    observation = observe(request, 'provider', 'model', '  observation\n', status, provider_run_id='run-1')
+    assert observe(request, 'provider', 'model', '  observation\n', status, provider_run_id='run-1') == observation
     assert observation['evidence_class'] == 'vision_observation'
     assert observation['request'] == request
     schema('vision_observation', observation)
     request['document']['source_sha256'] = '0'*64
     assert observation['request']['document']['source_sha256'] != '0'*64
     with pytest.raises(VisionContractError):
-        observe(request, 'provider', 'model', 'text', status, run_id='run-1')
+        observe(request, 'provider', 'model', 'text', status, provider_run_id='run-1')
 
 
 @pytest.mark.parametrize('kwargs', [dict(provider=''),dict(model=None),dict(observation={}),
-    dict(status='ok'),dict(run_id=None),dict(created_at='2026-10-03T00:00:00'),dict(run_id=' '),
+    dict(status='ok'),dict(provider_run_id=None),dict(created_at='2026-10-03T00:00:00'),dict(provider_run_id=' '),
     dict(created_at='bad')])
 def test_invalid_observation(case, kwargs):
     _, result, image = case
-    params=dict(provider='p',model='m',observation='text',status='supported',run_id='run')
+    params=dict(provider='p',model='m',observation='text',status='supported',provider_run_id='run')
     params.update(kwargs)
     with pytest.raises(VisionContractError):
         observe(build(result,image,'inspect'), **params)
@@ -126,7 +126,7 @@ def test_timestamp_and_no_override(case):
     observation = observe(request,'p','m','text','supported',created_at='2026-10-03T00:00:00+09:00')
     schema('vision_observation', observation)
     with pytest.raises(TypeError):
-        observe(request,'p','m','text','supported',run_id='r',candidate_id='override')
+        observe(request,'p','m','text','supported',provider_run_id='r',candidate_id='override')
     with pytest.raises(VisionContractError):
         build(result,image,' ')
     with pytest.raises(jsonschema.ValidationError):
@@ -166,3 +166,73 @@ def test_crc_and_dimensions(case):
     result['output_sha256'] = hashlib.sha256(data).hexdigest()
     with pytest.raises(VisionContractError,match='CRC'):
         build(result,image,'inspect')
+
+
+@pytest.mark.parametrize('created_at', [
+    '2026-10-03T00:00:00Z',
+    '2026-10-03T00:00:00+09:00',
+    '2026-10-03T00:00:00-09:00',
+    '2026-10-03T00:00:00.123456789Z',
+    '2024-02-29T23:59:59+00:00',
+    '2000-02-29T00:00:00Z',
+    '0001-01-01T00:00:00Z',
+    '9999-12-31T23:59:59-23:59',
+])
+@pytest.mark.parametrize('status', ['supported', 'conflict', 'ambiguous',
+                                   'insufficient_evidence', 'unresolved'])
+def test_timestamp_runtime_schema_acceptance(case, created_at, status):
+    _, result, image = case
+    request = build(result, image, 'inspect')
+    observation = observe(request, 'p', 'm', 'text', status, created_at=created_at)
+    assert observation['created_at'] == created_at
+    assert observation['provider_run_id'] is None
+    schema('vision_observation', observation)
+    assert observe(request, 'p', 'm', 'text', status, created_at=created_at) == observation
+
+
+@pytest.mark.parametrize('created_at', [
+    '2026-10-03T00:00:00',
+    '2026-10-03T00:00:00+0900',
+    '2026-10-03T00:00:00+09:00:00',
+    '2026-10-03T00:00:00+09:00:30',
+    '2026-10-03T00:00:00+09:00:00.5',
+    '2026-10-03T00:00:00+09',
+    '2026-10-03 00:00:00Z',
+    '20261003T000000Z',
+    '2026-10-03T00:00:00,5Z',
+    '2026-10-03t00:00:00z',
+    '2026-02-29T00:00:00Z',
+    '1900-02-29T00:00:00Z',
+    '0000-01-01T00:00:00Z',
+    '2026-04-31T00:00:00Z',
+    '2026-10-03T24:00:00Z',
+    '2026-10-03T00:00:60Z',
+    '2026-10-03T00:00:00+24:00',
+    '2026-10-03T00:00:00+09:60',
+    '2026-10-03T00:00:00Z\n',
+])
+def test_timestamp_runtime_schema_rejection(case, created_at):
+    _, result, image = case
+    request = build(result, image, 'inspect')
+    # Even a valid provider run identity must not mask an invalid timestamp.
+    with pytest.raises(VisionContractError):
+        observe(request, 'p', 'm', 'text', 'supported',
+                provider_run_id='provider-run', created_at=created_at)
+    observation = observe(request, 'p', 'm', 'text', 'supported', provider_run_id='provider-run')
+    observation['created_at'] = created_at
+    with pytest.raises(jsonschema.ValidationError):
+        schema('vision_observation', observation)
+
+
+def test_provider_run_identity_has_no_legacy_alias(case):
+    _, result, image = case
+    request = build(result, image, 'inspect')
+    observation = observe(request, 'p', 'm', 'text', 'supported', provider_run_id='provider-run')
+    assert observation['provider_run_id'] == 'provider-run'
+    assert 'run_id' not in observation
+    schema('vision_observation', observation)
+    with pytest.raises(TypeError):
+        observe(request, 'p', 'm', 'text', 'supported', run_id='legacy')
+    observation['run_id'] = observation.pop('provider_run_id')
+    with pytest.raises(jsonschema.ValidationError):
+        schema('vision_observation', observation)
