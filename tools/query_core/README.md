@@ -230,6 +230,33 @@ multi-valued configured header column is an error. No schedule discovery, fuzzy 
 domain synonym, OCR, or semantic guessing occurs, and normal PDF build/update commands do
 not invoke this adapter.
 
+For a complete data grid whose grouped header is outside the extracted table, set
+`header_rows=()` and supply `column_bindings=(SemanticTableColumnBinding(source_name,
+column_index, header_span_id), ...)`. Each binding selects one zero-based data column
+and one existing embedded `pdf_text_spans.id`; `source_name` must equal the entire span
+text exactly. This deliberately small contract does not compose multi-span labels,
+reconstruct grouped cells, or discover headers. A caller may choose an exact Japanese
+label span without the separate English subtitle. Header-row and column-binding modes
+are mutually exclusive; the existing header-row API, outputs and IDs are unchanged.
+
+All supplied bindings are validated before any semantic records are appended. Names,
+columns and span IDs must be distinct. The span/line/block/evidence chain must exist
+uniquely, use embedded text and valid contained PDF-point bboxes, and resolve to the
+target table's document/page. The header span must be above the data grid and horizontally
+contained in its explicitly selected column on every row (using the existing 0.25 pt
+containment tolerance). Missing, mismatched, duplicate or ambiguous evidence fails closed.
+`all_non_key` requires an explicit binding for every non-key column; partial mappings
+should instead list selected property names. No source text, geometry or extraction
+record is altered. The caller remains responsible for the interpretation and key scope;
+use a source-backed composite key when numbers repeat across types or table fragments.
+
+In column-binding mode, key headers and headers of emitted non-empty properties also
+receive exact `pdf_text_span` semantic bindings. Follow their `source_id` with
+`QueryCore.get_pdf_text_span()` for the original header text/document/page/bbox; property
+`source_binding_id` still points to its data `pdf_table_cell`, including authoritative
+cell-span links. Keep source-specific mapping definitions and validation output local
+when the source document is local-only.
+
 An entity ID is the SHA-256 encoding of the JSON tuple `(mapping_id, source_namespace,
 entity_class, exact_key_values)`, prefixed by `semantic-pdf-`. Key text is neither trimmed
 nor normalized for identity (whitespace is examined only to decide whether a key is

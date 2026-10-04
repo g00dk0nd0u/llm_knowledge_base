@@ -25,6 +25,7 @@ _LAZY_EXPORTS = {
     "update_pdf_project_database": (".project_pdf_update", "update_pdf_project_database"),
     "SemanticTableAdapterReport": (".semantic_table_adapter", "SemanticTableAdapterReport"),
     "SemanticTableMapping": (".semantic_table_adapter", "SemanticTableMapping"),
+    "SemanticTableColumnBinding": (".semantic_table_adapter", "SemanticTableColumnBinding"),
     "apply_semantic_table_mapping": (".semantic_table_adapter", "apply_semantic_table_mapping"),
 }
 
@@ -49,6 +50,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "SemanticTableAdapterReport",
     "SemanticTableMapping",
+    "SemanticTableColumnBinding",
     "QueryCore",
     "QueryCoreError",
     "build_database",

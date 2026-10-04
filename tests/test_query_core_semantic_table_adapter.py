@@ -9,6 +9,7 @@ from tools.query_core import QueryCore
 from tools.query_core.build import build_database
 from tools.query_core.errors import QueryCoreError
 from tools.query_core.semantic_table_adapter import (
+    SemanticTableColumnBinding,
     SemanticTableMapping,
     apply_semantic_table_mapping,
 )
@@ -170,6 +171,149 @@ def test_fatal_later_row_collision_leaves_records_exactly_unchanged() -> None:
     with pytest.raises(QueryCoreError, match="duplicate record ID"):
         apply_semantic_table_mapping(records, _mapping())
 
+    assert records == before
+
+
+def _external_header_records(rows=None):
+    if rows is None:
+        rows = [["TYPE-A", "D-001", "", "㻿ound-A"], ["TYPE-㻿", "D-001", "LOCK-B", ""]]
+    records = _records(
+        ["建具種別", "建具番号", "電気錠", "遮音性能"],
+        rows,
+    )
+    # Keep the original embedded header evidence, outside an independently
+    # extracted complete data grid. No merged cells or reconstruction involved.
+    records["pdf_tables"][0].update(row_count=len(rows), y_min=1.0)
+    header_ids = {c["id"] for c in records["pdf_table_cells"] if c["row_index"] == 0}
+    records["pdf_table_cells"] = [c for c in records["pdf_table_cells"] if c["id"] not in header_ids]
+    records["pdf_table_cell_spans"] = [l for l in records["pdf_table_cell_spans"]
+                                       if l["cell_id"] not in header_ids]
+    for cell in records["pdf_table_cells"]:
+        cell["row_index"] -= 1
+    return records
+
+
+def _external_mapping(**overrides):
+    values = dict(
+        header_rows=(), key_columns=("建具種別", "建具番号"), label_column="建具種別",
+        property_columns=("電気錠", "遮音性能"),
+        column_bindings=tuple(SemanticTableColumnBinding(name, index, f"span-{index}")
+                              for index, name in enumerate(
+                                  ("建具種別", "建具番号", "電気錠", "遮音性能"))),
+    )
+    values.update(overrides)
+    return _mapping(**values)
+
+
+def test_explicit_external_header_composite_key_source_navigation_and_reorder(tmp_path):
+    records = _external_header_records()
+    before = deepcopy(records)
+    report = apply_semantic_table_mapping(records, _external_mapping())
+    assert report.as_dict() == dict(imported=2, skipped=0, ambiguous=[], errors=[])
+    assert all(records[name] == collection for name, collection in before.items())
+    assert {(p["source_name"], p["source_value"]) for p in records["semantic_properties"]} == {
+        ("遮音性能", "㻿ound-A"), ("電気錠", "LOCK-B")}
+    reordered = _external_header_records([["TYPE-㻿", "D-001", "LOCK-B", ""],
+                                          ["TYPE-A", "D-001", "", "㻿ound-A"]])
+    apply_semantic_table_mapping(reordered, _external_mapping())
+    assert {e["label"]: e["id"] for e in records["semantic_entities"]} == {
+        e["label"]: e["id"] for e in reordered["semantic_entities"]}
+    database = build_database(records, tmp_path / "external.sqlite")
+    with QueryCore(database) as core:
+        for entity in records["semantic_entities"]:
+            view = core.get_semantic_entity(entity["id"])
+            assert {b["source_kind"] for b in view["bindings"]} == {
+                "pdf_table_cell", "pdf_text_span"}
+            header_bindings = [b for b in view["bindings"] if b["source_kind"] == "pdf_text_span"]
+            assert len(header_bindings) == 3  # two keys plus one non-empty property
+            for binding in header_bindings:
+                target = core.get_pdf_text_span(binding["source_id"])["navigation"]
+                assert target["document"]["id"] == "document"
+                assert target["pdf_page"] == 1 and target["can_zoom"]
+
+
+def test_explicit_external_header_duplicate_and_missing_keys_fail_closed():
+    records = _external_header_records([["TYPE-㻿", "D-001", "A", ""],
+                                       ["TYPE-㻿", "D-001", "B", ""],
+                                       ["TYPE-A", "", "C", ""]])
+    report = apply_semantic_table_mapping(records, _external_mapping())
+    assert report.imported == 0 and report.skipped == 3
+    assert [i.row_index for i in report.ambiguous] == [0, 1]
+    assert [i.row_index for i in report.errors] == [2]
+    assert "semantic_entities" not in records
+
+
+@pytest.mark.parametrize("defect", [
+    "span_missing", "span_duplicate", "line_missing", "block_missing", "evidence_missing",
+    "page_missing", "document_missing", "source_text", "unicode_repair", "provenance",
+    "block_page", "evidence_document", "evidence_page", "column", "column_bool",
+    "column_outside", "header_inside_grid", "bbox_nan", "bbox_inverted", "bbox_space",
+    "parent_bbox", "duplicate_name", "duplicate_column", "duplicate_span", "duplicate_cell",
+    "missing_cell", "mixed_paths", "unbound_property", "unbound_all_non_key",
+    "misaligned_column", "data_column_shift", "evidence_page_bool", "page_size",
+])
+def test_explicit_external_header_bad_evidence_is_atomic(defect):
+    from dataclasses import replace
+
+    records, mapping = _external_header_records(), _external_mapping()
+    binding = mapping.column_bindings[0]
+    if defect.endswith("_missing") and defect != "evidence_missing":
+        collection = {"span": "pdf_text_spans", "line": "pdf_text_lines",
+                      "block": "pdf_text_blocks", "page": "pdf_pages",
+                      "document": "documents"}[defect.removesuffix("_missing")]
+        records[collection].pop(0)
+    elif defect == "span_duplicate":
+        records["pdf_text_spans"].append(deepcopy(records["pdf_text_spans"][0]))
+    elif defect == "evidence_missing":
+        records["evidence"].pop(0)
+    elif defect in {"source_text", "unicode_repair"}:
+        binding = replace(binding, source_name="建具種別 " if defect == "source_text" else "Sound")
+    elif defect == "provenance":
+        records["pdf_text_spans"][0]["provenance"] = "inferred"
+    elif defect == "block_page":
+        records["pdf_text_blocks"][0]["page_id"] = "other-page"
+    elif defect == "evidence_page_bool":
+        records["evidence"][0]["pdf_page"] = True
+    elif defect == "page_size":
+        records["pdf_pages"][0]["width_points"] = float("nan")
+    elif defect.startswith("evidence_"):
+        records["evidence"][0]["document_id" if defect == "evidence_document" else "pdf_page"] = (
+            "other-document" if defect == "evidence_document" else 2)
+    elif defect in {"column", "column_bool", "column_outside"}:
+        binding = replace(binding, column_index={"column": -1, "column_bool": True,
+                                                "column_outside": 99}[defect])
+    elif defect == "header_inside_grid":
+        records["pdf_tables"][0]["y_min"] = 0.0
+    elif defect in {"bbox_nan", "bbox_inverted", "bbox_space"}:
+        records["pdf_text_spans"][0]["x_min" if defect != "bbox_space" else "coordinate_space"] = {
+            "bbox_nan": float("nan"), "bbox_inverted": 99, "bbox_space": "mm"}[defect]
+    elif defect == "parent_bbox":
+        records["evidence"][0]["x_max"] = 0.5
+    elif defect == "misaligned_column":
+        binding = replace(binding, column_index=2)
+    elif defect == "data_column_shift":
+        records["pdf_table_cells"][4]["x_min"] = 0.5
+    elif defect.startswith("duplicate_") and defect != "duplicate_cell":
+        second = mapping.column_bindings[1]
+        field_name = {"duplicate_name": "source_name", "duplicate_column": "column_index",
+                      "duplicate_span": "header_span_id"}[defect]
+        second = replace(second, **{field_name: getattr(binding, field_name)})
+        mapping = replace(mapping, column_bindings=(binding, second, *mapping.column_bindings[2:]))
+    elif defect == "duplicate_cell":
+        records["pdf_table_cells"].append(deepcopy(records["pdf_table_cells"][0]))
+    elif defect == "missing_cell":
+        records["pdf_table_cells"].pop()
+    elif defect == "mixed_paths":
+        mapping = replace(mapping, header_rows=(0,))
+    elif defect == "unbound_property":
+        mapping = replace(mapping, property_columns=("missing",))
+    elif defect == "unbound_all_non_key":
+        mapping = replace(mapping, property_columns="all_non_key",
+                          column_bindings=mapping.column_bindings[:-1])
+    mapping = replace(mapping, column_bindings=(binding, *mapping.column_bindings[1:]))
+    before = deepcopy(records)
+    with pytest.raises(QueryCoreError):
+        apply_semantic_table_mapping(records, mapping)
     assert records == before
 
 
