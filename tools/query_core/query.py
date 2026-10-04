@@ -6,6 +6,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from tools.pdf_pipeline.constants import TABLE_EPSILON
+
 from .errors import QueryCoreError
 from .drawing_references import validate_drawing_references
 from .geometry import (
@@ -880,10 +882,10 @@ def _validate_pdf_table_rows(connection: sqlite3.Connection) -> None:
                                    ("x_min", "y_min", "x_max", "y_max"))
                         or link["x_min"] >= link["x_max"]
                         or link["y_min"] >= link["y_max"]
-                        or link["x_min"] < cell["x_min"]
-                        or link["y_min"] < cell["y_min"]
-                        or link["x_max"] > cell["x_max"]
-                        or link["y_max"] > cell["y_max"]):
+                        or link["x_min"] < cell["x_min"] - TABLE_EPSILON
+                        or link["y_min"] < cell["y_min"] - TABLE_EPSILON
+                        or link["x_max"] > cell["x_max"] + TABLE_EPSILON
+                        or link["y_max"] > cell["y_max"] + TABLE_EPSILON):
                     raise QueryCoreError(
                         "PDF table cell span is not authoritative for its page and bbox"
                     )

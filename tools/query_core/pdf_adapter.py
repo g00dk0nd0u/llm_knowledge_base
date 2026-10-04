@@ -8,6 +8,8 @@ import math
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from tools.pdf_pipeline.constants import TABLE_EPSILON
+
 from .build import build_database
 from .errors import QueryCoreError
 from .pdf_pipeline_contract import created_from, require_matching_marker, require_pipeline_version
@@ -409,7 +411,8 @@ def _append_tables(
                 if span.get("order_index") != si or not isinstance(span.get("text"), str) or not span["text"]:
                     raise QueryCoreError("table cell span_ref does not resolve")
                 sb = _bbox(span.get("bbox"), "referenced span")
-                if sb[0] < cb[0] or sb[1] < cb[1] or sb[2] > cb[2] or sb[3] > cb[3]:
+                if (sb[0] < cb[0] - TABLE_EPSILON or sb[1] < cb[1] - TABLE_EPSILON
+                        or sb[2] > cb[2] + TABLE_EPSILON or sb[3] > cb[3] + TABLE_EPSILON):
                     raise QueryCoreError("table cell span_ref lies outside cell bbox")
                 resolved.append((bi, li, si, span["text"], _id("pdf-span", identity, revision, page, bi, li, si)))
             if resolved != sorted(resolved, key=lambda item: item[:3]) or len({item[4] for item in resolved}) != len(resolved):
