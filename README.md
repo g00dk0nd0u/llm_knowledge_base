@@ -473,3 +473,11 @@ This project overlaps with topics often described as:
 - evidence-backed LLM retrieval.
 
 The implementation deliberately stays source-driven and framework-independent rather than adopting any one RAG, knowledge-graph, BIM, or LLM framework wholesale.
+
+### Vision execution and synthetic review loop
+
+[Phase 5 completion / Phase 6A operating guide](docs/vision-execution-review-loop.md)
+explains network-free planning, V0–V3 evidence rendering, optional OpenAI Responses
+execution, fake-provider E2E and source-traced human review packets. Live execution
+requires explicit opt-in and a model; source facts and Query Core authority stay
+unchanged. Real-document validation in Issue #47 remains pending.

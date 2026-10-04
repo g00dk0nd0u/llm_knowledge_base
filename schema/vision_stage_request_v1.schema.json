@@ -1,0 +1,165 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "stage": {
+      "enum": [
+        "V0",
+        "V2"
+      ]
+    },
+    "instruction": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "$ref": "vision_inspection_request_v1.schema.json"
+      },
+      "minItems": 1,
+      "maxItems": 2
+    },
+    "relation": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "relation_type": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "source_refs": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "drawing_reference",
+                      "semantic_entity"
+                    ]
+                  },
+                  "id": {
+                    "type": "string",
+                    "pattern": "\\S"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "id"
+                ]
+              }
+            }
+          },
+          "required": [
+            "relation_type",
+            "source_refs"
+          ]
+        }
+      ]
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^vision-stage-request-[a-f0-9]{64}$"
+    }
+  },
+  "required": [
+    "contract_version",
+    "stage",
+    "instruction",
+    "inputs",
+    "relation",
+    "request_id"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "stage": {
+            "const": "V0"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "inputs": {
+            "maxItems": 1,
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "vision_inspection_request_v1.schema.json"
+                },
+                {
+                  "properties": {
+                    "input_scope": {
+                      "const": "page"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "relation": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "inputs": {
+            "minItems": 2
+          },
+          "relation": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "relation_type": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "source_refs": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "drawing_reference",
+                        "semantic_entity"
+                      ]
+                    },
+                    "id": {
+                      "type": "string",
+                      "pattern": "\\S"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "relation_type",
+              "source_refs"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
