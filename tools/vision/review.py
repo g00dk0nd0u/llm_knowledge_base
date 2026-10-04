@@ -106,10 +106,77 @@ def _page_projection(candidate):
     return result
 
 
+def _v3_surfaces(core, candidates, protected_ids):
+    """Union only exact stored cells in one table row; retain every member.
+
+    Page identity or proximity alone never establishes membership. Explicit
+    reference endpoints remain separate exact inputs. Mixed/non-cell candidates
+    fail closed to their original surface.
+    """
+    groups, unchanged = {}, []
+    cells = {}
+    for candidate in candidates:
+        occurrences = [r for r in candidate['source_refs'] if r['kind'] == 'drawing_occurrence']
+        keys = set()
+        valid = bool(occurrences) and candidate['input_scope'] == 'region'
+        for ref in occurrences:
+            if ref.get('source_kind') != 'pdf_table_cell':
+                valid = False
+                break
+            cell_id = ref['source_id']
+            if cell_id not in cells:
+                cells[cell_id] = core.get_pdf_table_cell(cell_id)
+            cell = cells[cell_id]
+            if (cell is None or cell['bbox'] != candidate['bbox']
+                    or cell['document'] != candidate['document']
+                    or cell['pdf_page'] != candidate['pdf_page']
+                    or cell['coordinate_space'] != candidate['coordinate_space']
+                    or cell['row_span'] != 1):
+                valid = False
+                break
+            keys.add((candidate['document']['id'], candidate['pdf_page'],
+                      cell['table']['table_id'], cell['row_index']))
+        if not valid or len(keys) != 1 or candidate['candidate_id'] in protected_ids:
+            unchanged.append(candidate)
+        else:
+            groups.setdefault(next(iter(keys)), []).append(candidate)
+    replacements = []
+    for key in sorted(groups):
+        members = sorted(groups[key], key=lambda c: c['candidate_id'])
+        if len(members) == 1:
+            unchanged.extend(members)
+            continue
+        boxes = [c['bbox'] for c in members]
+        bbox = [min(b[0] for b in boxes), min(b[1] for b in boxes),
+                max(b[2] for b in boxes), max(b[3] for b in boxes)]
+        refs = {_id('', ref): ref for c in members for ref in c['source_refs']}
+        aggregate = dict(
+            input_scope='region', document=deepcopy(members[0]['document']),
+            pdf_page=key[1], bbox=bbox, bbox_quality=None,
+            coordinate_space='pdf_points_top_left', navigation=None,
+            evidence_class='deterministic_derived', provenance='exact_table_row_union_v1',
+            aggregation_key=dict(document_id=key[0], pdf_page=key[1],
+                                 table_id=key[2], row_index=key[3]),
+            members=deepcopy(members), source_refs=[refs[k] for k in sorted(refs)],
+            routing_reasons=sorted({'exact_table_row_union_v1'} | {
+                reason for c in members for reason in c['routing_reasons']}))
+        # Includes exact member IDs, geometry, navigation and provenance, never
+        # iteration order, an LLM choice or a nearest-geometry calculation.
+        aggregate['candidate_id'] = _id('vision-candidate-', aggregate)
+        unchanged.append(aggregate)
+        replacements.extend(dict(stage='V3', candidate_id=c['candidate_id'],
+                                 replacement_candidate_id=aggregate['candidate_id'],
+                                 reason='exact_table_row_union_v1') for c in members)
+    # Reference inputs lead final inspection, followed by canonical surface IDs.
+    return sorted(unchanged, key=lambda c: (c['candidate_id'] not in protected_ids,
+                                           c['candidate_id'])), replacements
+
+
 def plan_review(core, entity_id, *, model, provider='none', stages=('V1', 'V2', 'V3'),
                 instruction='Inspect for discrepancies and uncertainty; cite only supplied evidence.',
-                dpi=300):
+                dpi=300, policy='focused'):
     """No network, image I/O or writes; every scheduled send is explicit."""
+    _require(policy in ('focused', 'exhaustive'), 'invalid review policy')
     _text(model, 'model')
     _text(provider, 'provider')
     _text(instruction, 'instruction')
@@ -124,10 +191,21 @@ def plan_review(core, entity_id, *, model, provider='none', stages=('V1', 'V2', 
         for ref_id, surface_id in context['reference_targets'].items():
             if any(r['kind'] == 'evidence' and r['id'] == surface_id for r in candidate['source_refs']):
                 candidate['source_refs'].append(dict(kind='drawing_reference', id=ref_id, side='target'))
+    resolved_refs = [r for r in context['drawing_references']
+                     if r['resolution_state'] in ('exact', 'resolved_deterministically')]
+    evidence_candidates = {r['id']: c for c in candidates for r in c['source_refs']
+                           if r['kind'] == 'evidence'}
+    protected_ids = set()
+    for ref in resolved_refs:
+        for evidence_id in (ref['source']['evidence']['id'],
+                            context['reference_targets'].get(ref['id'])):
+            candidate = evidence_candidates.get(evidence_id)
+            if candidate:
+                protected_ids.add(candidate['candidate_id'])
     jobs, skipped = [], []
-    def add(stage, surfaces, relation=None):
+    def add(stage, surfaces, relation=None, reason='exact_candidate'):
         content = dict(stage=stage, candidates=deepcopy(surfaces), relation=relation)
-        jobs.append(dict(content, job_id=_id('vision-job-', content)))
+        jobs.append(dict(content, job_id=_id('vision-job-', content), selection_reason=reason))
     if 'V0' in stages:
         pages = {}
         for candidate in candidates:
@@ -141,6 +219,7 @@ def plan_review(core, entity_id, *, model, provider='none', stages=('V1', 'V2', 
                 pages[page['candidate_id']] = page
         for page in pages.values():
             add('V0', [page])
+    selective_v3 = 'V3' in stages and policy == 'focused' and bool(resolved_refs)
     for candidate in candidates:
         if 'V1' in stages:
             if candidate['input_scope'] == 'region':
@@ -148,14 +227,20 @@ def plan_review(core, entity_id, *, model, provider='none', stages=('V1', 'V2', 
             else:
                 skipped.append(dict(stage='V1', candidate_id=candidate['candidate_id'],
                                     reason='page_has_no_context_bbox'))
-        if 'V3' in stages:
+        if 'V3' in stages and not selective_v3:
             add('V3', [candidate])
+    replacements = []
+    if selective_v3:
+        v3_candidates, replacements = _v3_surfaces(core, candidates, protected_ids)
+        skipped.extend(replacements)
+        for candidate in v3_candidates:
+            reason = ('explicit_reference_endpoint' if candidate['candidate_id'] in protected_ids
+                      else candidate.get('provenance', 'exact_candidate'))
+            add('V3', [candidate], reason=reason)
     cooccurrence = dict(limit=MAX_V2_COOCCURRENCE_JOBS, eligible_count=0, scheduled_count=0,
-                        omitted_count=0, reason=None)
+                        omitted_count=0, suppressed_count=0, reason=None)
     if 'V2' in stages:
         explicit_pairs = set()
-        evidence_candidates = {r['id']: c for c in candidates for r in c['source_refs']
-                               if r['kind'] == 'evidence'}
         for ref in context['drawing_references']:
             source = evidence_candidates.get(ref['source']['evidence']['id'])
             target_id = context['reference_targets'].get(ref['id'])
@@ -172,7 +257,7 @@ def plan_review(core, entity_id, *, model, provider='none', stages=('V1', 'V2', 
             explicit_pairs.add(pair)
             relation = dict(relation_type=ref['relation_type'],
                             source_refs=[dict(kind='drawing_reference', id=ref['id'])])
-            add('V2', [source, dest], relation)
+            add('V2', [source, dest], relation, reason='resolved_explicit_relation')
         # Shared entity occurrences are compared only after explicit pairs. The
         # count is algebraic; combinations is lazy and stops at the named limit.
         direct = [c for c in candidates if any(r['kind'] == 'drawing_occurrence'
@@ -181,27 +266,35 @@ def plan_review(core, entity_id, *, model, provider='none', stages=('V1', 'V2', 
         duplicate_count = sum(a in direct_ids and b in direct_ids for a, b in explicit_pairs)
         eligible = len(direct) * (len(direct) - 1) // 2 - duplicate_count
         scheduled = 0
-        for left, right in combinations(direct, 2):
-            if scheduled >= MAX_V2_COOCCURRENCE_JOBS:
-                break
-            pair = tuple(sorted((left['candidate_id'], right['candidate_id'])))
-            if pair in explicit_pairs:
-                continue
-            relation = dict(relation_type='semantic_entity_cooccurrence',
-                            source_refs=[dict(kind='semantic_entity', id=entity_id)])
-            add('V2', [left, right], relation)
-            scheduled += 1
-        omitted = eligible - scheduled
+        suppressed = eligible if policy == 'focused' and resolved_refs else 0
+        if not (policy == 'focused' and resolved_refs):
+            for left, right in combinations(direct, 2):
+                if scheduled >= MAX_V2_COOCCURRENCE_JOBS:
+                    break
+                pair = tuple(sorted((left['candidate_id'], right['candidate_id'])))
+                if pair in explicit_pairs:
+                    continue
+                relation = dict(relation_type='semantic_entity_cooccurrence',
+                                source_refs=[dict(kind='semantic_entity', id=entity_id)])
+                add('V2', [left, right], relation, reason='bounded_cooccurrence_fallback')
+                scheduled += 1
+        omitted = eligible - scheduled - suppressed
+        reason = ('explicit_relation_first' if suppressed else
+                  'deterministic_cooccurrence_limit' if omitted else None)
         cooccurrence.update(eligible_count=eligible, scheduled_count=scheduled, omitted_count=omitted,
-                            reason='deterministic_cooccurrence_limit' if omitted else None)
-        if omitted:
+                            suppressed_count=suppressed, reason=reason)
+        if omitted or suppressed:
             skipped.append(dict(stage='V2', **cooccurrence))
     if not jobs:
         skipped.append(dict(reason='no_candidates' if not candidates else 'all_selected_stages_skipped'))
     content = dict(contract_version=1, semantic_entity_id=entity_id, provider=provider, model=model,
-                   stages=list(stages), instruction=instruction, dpi=dpi, context=context,
+                   stages=list(stages), instruction=instruction, dpi=dpi, policy=policy, context=context,
                    candidates=candidates, jobs=jobs, skipped=skipped,
                    status='ready' if jobs else 'insufficient_evidence', v2_cooccurrence=cooccurrence,
+                   v3_selection=dict(eligible_count=len(candidates) if 'V3' in stages else 0,
+                                     scheduled_count=sum(j['stage'] == 'V3' for j in jobs),
+                                     aggregated_member_count=len(replacements),
+                                     reason='exact_table_row_union_v1' if replacements else None),
                    provider_calls_planned=len(jobs) if provider != 'none' else 0,
                    network_calls_planned=len(jobs) if provider not in ('none', 'fake') else 0,
                    requires_live_opt_in=provider not in ('none', 'fake'))
@@ -213,7 +306,7 @@ def execute_review(core, plan, sources, *, root, database, output=Path('artifact
     """Regenerate the whole plan before render/send, returning a source-faithful packet."""
     fresh = plan_review(core, plan['semantic_entity_id'], model=plan['model'],
                         provider=plan['provider'], stages=plan['stages'],
-                        instruction=plan['instruction'], dpi=plan['dpi'])
+                        instruction=plan['instruction'], dpi=plan['dpi'], policy=plan.get('policy', 'exhaustive'))
     _require(fresh == plan, 'review plan changed; replan required')
     _require(isinstance(sources, dict), 'source mapping required')
     _require(type(live) is bool, 'invalid live opt-in')

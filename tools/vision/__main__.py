@@ -19,6 +19,7 @@ def main(argv=None):
     parser.add_argument('--model', required=True)
     parser.add_argument('--provider', choices=('none', 'fake', 'openai'), default='none')
     parser.add_argument('--stages', nargs='+', choices=('V0', 'V1', 'V2', 'V3'), default=['V1', 'V2', 'V3'])
+    parser.add_argument('--policy', choices=('focused', 'exhaustive'), default='focused')
     parser.add_argument('--root', type=Path, default=Path.cwd())
     parser.add_argument('--source', action='append', default=[], metavar='DOCUMENT_ID=PDF')
     parser.add_argument('--dpi', type=int, default=300)
@@ -36,7 +37,7 @@ def main(argv=None):
             sources[key] = Path(value)
         with QueryCore(args.root / args.database) as core:
             plan = plan_review(core, args.entity, model=args.model, provider=args.provider,
-                               stages=args.stages, dpi=args.dpi)
+                               stages=args.stages, dpi=args.dpi, policy=args.policy)
             if args.action == 'plan':
                 print(json.dumps(plan, ensure_ascii=False, indent=2, allow_nan=False))
                 return 0

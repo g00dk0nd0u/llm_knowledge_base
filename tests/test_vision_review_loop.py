@@ -89,7 +89,7 @@ def test_door_and_plan_section_complete_review_flow(proof):
     properties = packet['plan']['context']['properties']
     assert {p['source_value'] for p in properties if p['source_name'] == '電気錠'} == {'EL160', 'EL560'}
     relations = [j['relation'] for j in packet['plan']['jobs'] if j['stage'] == 'V2']
-    assert {'callout_to', 'section_cut_to', 'semantic_entity_cooccurrence'} <= {r['relation_type'] for r in relations}
+    assert {'callout_to', 'section_cut_to'} == {r['relation_type'] for r in relations}
     assert any(s.get('reference_id') == 'reference-ambiguous' for s in plan['skipped'])
     assert any(r['resolution_state'] == 'ambiguous' for r in packet['plan']['context']['drawing_references'])
     for observation in packet['observations']:

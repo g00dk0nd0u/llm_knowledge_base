@@ -21,8 +21,11 @@
    references, and collects target evidence or recorded sheet-page navigation.
    Shared semantic bindings permit deterministic cooccurrence comparisons;
    they never establish inferred drawing-reference facts. Explicit pairs are
-   prioritized/deduplicated; cooccurrence scheduling has a fixed deterministic
-   limit of 32. `execute_review` regenerates the plan, verifies all source assignments, renders into ignored
+   prioritized/deduplicated. The default focused policy suppresses generic
+   cooccurrences when a resolved reference exists; the exhaustive opt-in retains
+   the old bounded schedule. Focused V3 unions exact cells in a recorded table row
+   while preserving every original member and reference endpoint. `execute_review`
+   regenerates the plan, verifies all source assignments, renders into ignored
    artifacts, constructs requests, optionally runs a provider and returns a
    transient source-traced review packet.
 5. **Operating safety and proof:** CLI plan/execute, fake-provider E2E and OpenAI
@@ -45,15 +48,51 @@ selected semantic entity
 | --- | --- | --- |
 | V0 | Distinct whole source pages, deduplicated with combined source refs | Derived page/sheet triage only |
 | V1 | Region candidates with the existing fixed 144 pt margin | Nearby context inspection; page-only candidates are explicitly skipped |
-| V2 | Resolved explicit drawing-reference pairs and selected-entity cooccurrences | Comparison; unresolved/ambiguous or missing distinct targets are skipped and preserved |
-| V3 | Exact candidate bbox or recorded page | Final evidence inspection |
+| V2 | Resolved explicit pairs; bounded cooccurrences only as fallback or exhaustive opt-in | Comparison; unresolved/ambiguous or missing distinct targets are skipped and preserved |
+| V3 | Exact reference endpoints, original candidates and eligible exact table-row unions | Final inspection with complete member trace |
 
-`MAX_V2_COOCCURRENCE_JOBS = 32` bounds cooccurrence jobs for every provider,
-including fake/none. Explicit resolved pairs are scheduled first; the same unordered
-pair is never repeated as cooccurrence. `v2_cooccurrence` records limit, eligible,
-scheduled and omitted counts; omitted comparisons get an aggregate skipped reason.
-Eligibility counts are algebraic and pair iteration stops at the limit. The planner
-never materializes all pairs or individual skipped rows for omitted comparisons.
+`policy="focused"` is the API/CLI default. Any recorded `exact` or
+`resolved_deterministically` drawing reference disables generic V2 cooccurrences,
+even when its surfaces cannot form a distinct pair. Each valid explicit unordered
+pair is scheduled once. Ambiguous/unresolved references never produce explicit
+pairs. With no resolved reference, the previous bounded cooccurrence fallback
+remains. `policy="exhaustive"` / `--policy exhaustive` retains the previous job
+order, inputs and job IDs, including the fixed 32-job generic bound and all V3
+candidates. Policy participates in `plan_id` and execution regenerates that policy;
+old saved plans need replanning. Existing function arguments remain compatible.
+
+`v2_cooccurrence` exposes algebraic eligible, scheduled, suppressed and omitted
+counts. Eligible = scheduled + suppressed + omitted. Suppression uses the named
+`explicit_relation_first` reason and never iterates the suppressed pairs. The
+fallback/exhaustive limit uses `deterministic_cooccurrence_limit`; iteration stays
+lazy and does not materialize omitted pairs. Every job has a `selection_reason`.
+Provider/network budgets count actual scheduled jobs, including aggregated V3 jobs.
+
+Focused V3 compaction applies only when a resolved reference exists. Candidates
+with only stored `pdf_table_cell` occurrences can join when their exact document,
+page, table ID and row index match and each cell spans one row. The planner verifies
+stored cell geometry/document/page against the routed surface. Non-cell/mixed
+occurrences, inconsistent cells, singleton groups and all resolved reference
+endpoints keep their original surfaces. Exact duplicate bboxes were already deduped
+by routing; page equality, proximity and bbox containment alone never select or
+discard evidence. Headers and source text-block evidence stay separate even if
+visually overlapping.
+
+A union has the min/max enclosing bbox of its members. It is explicitly
+`deterministic_derived` with `exact_table_row_union_v1` provenance and unknown bbox
+quality. Its canonical ID hashes the aggregation key and sorted complete member
+records, including geometry/navigation/source refs; no source ID or value is
+rewritten. Each aggregate stores `members`, combined `source_refs` and routing
+reasons. Its primary navigation is null because navigation belongs to its exact
+members. Original context/candidates remain intact. `skipped` maps every replaced
+member ID to its aggregate ID, and `v3_selection` reports eligible/scheduled/member
+counts and the named reason. Resolved endpoints lead the focused V3 sequence.
+
+These are transient review surfaces rendered through the existing internal
+regenerated-candidate path. Phase 5 public render entry points, request/observation
+schemas and golden IDs remain unchanged; contracts carry the aggregate's ordinary
+region identity while full member trace stays in the local plan/packet. Query Core
+schema/version and Revit SnapshotContract are unchanged.
 
 Zero candidates or all selected stages skipped produce a plan and packet with
 `insufficient_evidence`. Execution starts no renderer/provider and the CLI exits 1.
@@ -107,7 +146,7 @@ Network-free preview (no PNG writes, no source-file reads, no provider imports):
 ```bash
 python -S -m tools.vision plan --database artifacts/project.sqlite \
   --entity SELECTED_ENTITY_ID --provider openai --model EXPLICIT_MODEL \
-  --stages V0 V1 V2 V3
+  --stages V0 V1 V2 V3 --policy focused
 ```
 
 Fake proof execution / render-only execution:
@@ -201,15 +240,72 @@ partial/malformed output and rejected provider confidence.
 
 Run focused/full pytest, the three existing `python -S` smokes, a `tools.vision`
 stdlib import smoke, compileall, diff check and the PDF pipeline twice. CI includes
-the full tests and triggers on `tools/vision/**` changes. The checkout currently
-contains no manifest-managed source PDFs; both repository pipeline runs therefore
-report `processed=0 unchanged=0 removed=0`. Synthetic tests perform actual PDF
+the full tests and triggers on `tools/vision/**` changes. The original synthetic checkout
+contained no manifest-managed source PDFs; its two repository pipeline runs
+reported `processed=0 unchanged=0 removed=0`. Synthetic tests perform actual PDF
 rendering; zero-file pipeline runs do not establish real-document validation.
 
 Live smoke is **SKIPPED** (no configured API key; no paid request made).
 `SCHEMA_VERSION=2`, `SnapshotContract.Version=1`, prior Phase 5A–5F schemas and
-public golden outputs remain unchanged. Issue #47 real-document validation stays
-pending: actual drawing conventions, source coverage, reviewer usefulness,
+public golden outputs remain unchanged. At that synthetic milestone, Issue #47
+real-document validation was pending: actual drawing conventions, source coverage, reviewer usefulness,
 provider interpretation quality and real BIM/PDF evidence alignment require real
 source documents and human review. The synthetic executable flow is complete;
 it does not claim those real-document findings.
+
+## Phase 6 review selectivity proof
+
+Authorized local PDF proof reconstructed two distinct schedule entities sharing
+one number, with explicitly recorded schedule-to-elevation relations. The mapping
+and relation assignments were caller supplied from embedded source evidence; no
+new relation discovery or source text repair was added. Input PDF, mappings,
+extracted records, candidate/source identity inventory, before/after plans, PNGs
+and fake packets stay ignored/local-only.
+
+Each entity had 14 direct bindings/occurrences (seven data cells and seven header
+spans), five sparse source properties, and nine collected evidence records. Four
+header evidence bboxes exactly duplicate their span occurrence, leaving 19 routed
+regions: seven cells, seven header spans and five additional evidence surfaces.
+Eighteen are on the schedule page and one is the explicit elevation target.
+The row source block and header blocks overlap smaller surfaces but have distinct
+source identities/geometry and are preserved. Fourteen occurrence candidates
+create 91 eligible generic pairs; the explicit pair uses separate source/target
+evidence surfaces. The old planner sent one explicit pair plus 32 generic pairs,
+omitting 59 by its bound.
+
+| Per entity, all four stages at 72 DPI | Base / exhaustive | Focused |
+| --- | ---: | ---: |
+| Original routed regions | 19 | 19 |
+| V0 | 2 | 2 |
+| V1 | 19 | 19 |
+| V2 explicit | 1 | 1 |
+| V2 generic | 32 | 0 |
+| V3 | 19 | 13 |
+| Total scheduled jobs | 73 | 35 |
+
+Focused V2 suppresses all 91 eligible generic pairs. V3 replaces seven same-row
+cells with one union and keeps the other 12 surfaces, including both relation
+endpoints. Expanding V3 members gives exactly the original candidate set. Base and
+exhaustive job IDs/inputs/order were compared directly and matched. Source context,
+properties, original bboxes/navigation, PDF/DB hashes and source assignments were
+unchanged. Before/after fake execution completed with `status=ok`, complete
+request/observation counts and `human_review_required=true`. OpenAI live calls: 0.
+
+The generic combinatorial planning blocker is removed for explicit-relation
+reviews. V1 still inspects all regions, and headers/overlapping text-block V3
+surfaces remain conservative. No human usefulness assessment, live model quality
+or real BIM-to-PDF alignment is established by fake execution. These remain
+real-review validation work; Issue #40 is not updated or closed by this change.
+
+Selectivity regression validation: focused pytest 770 passed; full pytest 1,310
+passed; all four Python 3.12 `-S` smokes, real SQLite `-S` CLI plans for both
+policies, compileall and diff check passed. Tests include suppression without pair
+iteration, absent/ambiguous/unresolved fallback, multiple/deduplicated references,
+resolved nondistinct surfaces, stable policy IDs, exhaustive execution, exact row
+geometry and member/source-ref/navigation preservation, row/page isolation,
+protected endpoints and exact mock live budget accounting.
+
+Two repository Pipeline v2 runs also passed with the ignored real input present:
+first `processed=1 unchanged=0 removed=0`, then
+`processed=0 unchanged=1 removed=0`. The second run preserved all local
+source/knowledge/manifest bytes and produced no additional tracked changes.
