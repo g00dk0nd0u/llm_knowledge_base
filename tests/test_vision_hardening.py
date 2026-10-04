@@ -63,7 +63,7 @@ def test_120_direct_candidates_are_bounded_lazy_and_explicit_pairs_win(large_cas
             yield pair
     monkeypatch.setattr(review, 'combinations', bounded_iterator)
     with QueryCore(large_case['database']) as core:
-        plan = plan_review(core, 'selected-region', model='test', provider='fake', stages=['V2'])
+        plan = plan_review(core, 'selected-region', model='test', provider='fake', stages=['V2'], policy='exhaustive')
     direct = [c for c in plan['candidates'] if any(r['kind'] == 'drawing_occurrence' for r in c['source_refs'])]
     assert len(direct) == 120
     expected = 120 * 119 // 2 - 1
@@ -71,7 +71,7 @@ def test_120_direct_candidates_are_bounded_lazy_and_explicit_pairs_win(large_cas
     assert summary == dict(limit=MAX_V2_COOCCURRENCE_JOBS, eligible_count=expected,
                            scheduled_count=MAX_V2_COOCCURRENCE_JOBS,
                            omitted_count=expected - MAX_V2_COOCCURRENCE_JOBS,
-                           reason='deterministic_cooccurrence_limit')
+                           suppressed_count=0, reason='deterministic_cooccurrence_limit')
     assert len(plan['jobs']) == MAX_V2_COOCCURRENCE_JOBS + 1
     assert plan['jobs'][0]['relation']['source_refs'] == [{'kind': 'drawing_reference', 'id': 'large-reference-0'}]
     assert any(s.get('reason') == 'explicit_pair_already_scheduled' for s in plan['skipped'])
