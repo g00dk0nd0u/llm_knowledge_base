@@ -75,6 +75,17 @@ def _table_bundle(tmp_path: Path) -> tuple[Path, Path, Path]:
     )
 
 
+def test_table_producer_and_validators_share_neutral_tolerance() -> None:
+    from tools import table_geometry
+    from tools.pdf_pipeline import pipeline
+    from tools.query_core import pdf_adapter, query
+
+    assert table_geometry.TABLE_EPSILON == 0.25
+    assert pipeline.TABLE_EPSILON is table_geometry.TABLE_EPSILON
+    assert pdf_adapter.TABLE_EPSILON is table_geometry.TABLE_EPSILON
+    assert query.TABLE_EPSILON is table_geometry.TABLE_EPSILON
+
+
 def test_v2_ruled_table_persists_authoritative_cells_and_round_trips(tmp_path: Path) -> None:
     source, knowledge, database = _table_bundle(tmp_path)
     with sqlite3.connect(database) as connection:

@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from tools.pdf_pipeline.constants import TABLE_EPSILON
+from tools.table_geometry import TABLE_EPSILON
 
 from .errors import QueryCoreError
 from .drawing_references import validate_drawing_references

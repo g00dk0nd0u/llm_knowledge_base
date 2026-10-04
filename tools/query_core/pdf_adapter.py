@@ -8,7 +8,7 @@ import math
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from tools.pdf_pipeline.constants import TABLE_EPSILON
+from tools.table_geometry import TABLE_EPSILON
 
 from .build import build_database
 from .errors import QueryCoreError

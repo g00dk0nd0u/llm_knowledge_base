@@ -65,7 +65,10 @@ direct = run(
         sys.executable,
         "-S",
         "-c",
-        "from tools.query_core import QueryCore, QueryCoreError; print('ok')",
+        "from tools.query_core import QueryCore, QueryCoreError; import sys; "
+        "assert not any(name == 'tools.pdf_pipeline' or "
+        "name.startswith('tools.pdf_pipeline.') for name in sys.modules); "
+        "print('ok')",
     ],
 )
 assert direct.stdout.decode("utf-8").splitlines() == ["ok"]

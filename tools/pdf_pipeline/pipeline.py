@@ -15,8 +15,10 @@ from typing import Any
 
 import pymupdf as fitz
 
+from tools.table_geometry import TABLE_EPSILON
+
 from . import PIPELINE_VERSION
-from .constants import LOW_TEXT_THRESHOLD, MANY_DRAWINGS_THRESHOLD, TABLE_EPSILON
+from .constants import LOW_TEXT_THRESHOLD, MANY_DRAWINGS_THRESHOLD
 
 MANAGED_MARKER = ".pdf-pipeline-v2"
 LEGACY_MANAGED_MARKER = ".pdf-pipeline-v1"

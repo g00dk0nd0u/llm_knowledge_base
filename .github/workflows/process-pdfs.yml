@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "projects/**/source/**/*.pdf"
+      - "tools/table_geometry.py"
       - "tools/pdf_pipeline/**"
       - "tools/query_core/**"
       - "tools/vision/**"
@@ -17,6 +18,7 @@ on:
     branches: [main]
     paths:
       - "projects/**/source/**/*.pdf"
+      - "tools/table_geometry.py"
       - "tools/pdf_pipeline/**"
       - "tools/query_core/**"
       - "tools/vision/**"
