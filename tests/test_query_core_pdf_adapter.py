@@ -75,6 +75,17 @@ def _table_bundle(tmp_path: Path) -> tuple[Path, Path, Path]:
     )
 
 
+def test_table_producer_and_validators_share_neutral_tolerance() -> None:
+    from tools import table_geometry
+    from tools.pdf_pipeline import pipeline
+    from tools.query_core import pdf_adapter, query
+
+    assert table_geometry.TABLE_EPSILON == 0.25
+    assert pipeline.TABLE_EPSILON is table_geometry.TABLE_EPSILON
+    assert pdf_adapter.TABLE_EPSILON is table_geometry.TABLE_EPSILON
+    assert query.TABLE_EPSILON is table_geometry.TABLE_EPSILON
+
+
 def test_v2_ruled_table_persists_authoritative_cells_and_round_trips(tmp_path: Path) -> None:
     source, knowledge, database = _table_bundle(tmp_path)
     with sqlite3.connect(database) as connection:
@@ -111,6 +122,66 @@ def test_v2_ruled_table_persists_authoritative_cells_and_round_trips(tmp_path: P
         assert cell is not None
         assert cell["source_spans"]
         assert core.search_pdf_table_cells("Header")[0]["cell_id"] == cell["cell_id"]
+
+
+def test_pipeline_table_with_subpoint_span_overflow_builds_and_validates(tmp_path: Path) -> None:
+    """Reproduce a real Pipeline v2 grid rejected by stricter Query Core readers."""
+    source = tmp_path / "projects/example/source/edge.pdf"
+    source.parent.mkdir(parents=True)
+    with fitz.open() as document:
+        page = document.new_page(width=300, height=200)
+        for x in (40, 140, 240):
+            page.draw_line((x, 40), (x, 160))
+        for y in (40, 100, 160):
+            page.draw_line((40, y), (240, y))
+        font = fitz.Font("helv")
+        page.insert_text((55, 100.18 + font.descender * 10), "Edge", fontsize=10)
+        document.save(source)
+    process_all(tmp_path)
+    manifest = json.loads((tmp_path / "projects/example/manifest.json").read_text())
+    knowledge = tmp_path / manifest["documents"][0]["knowledge_path"]
+    sidecar = json.loads((knowledge / "pages/p0001.json").read_text())
+    cell = sidecar["tables"][0]["cells"][0]
+    ref = cell["span_refs"][0]
+    span = sidecar["text_blocks"][ref["block_index"]]["lines"][ref["line_index"]]["spans"][ref["span_index"]]
+    assert 0 < span["bbox"][3] - cell["bbox"][3] < 0.25
+    database = build_pdf_database(tmp_path, knowledge, tmp_path / "edge.sqlite")
+    validate_database(database)
+    with QueryCore(database) as core:
+        result = core.search_pdf_table_cells("Edge")[0]
+        assert result["text"] == "Edge"
+        assert result["source_spans"][0]["bbox"] == span["bbox"]
+        assert result["bbox"] == cell["bbox"]
+
+
+@pytest.mark.parametrize("edge", range(4))
+@pytest.mark.parametrize("overflow", [0.25, 0.2501])
+def test_table_containment_tolerance_matches_pipeline_in_adapter_and_database(
+    tmp_path: Path, edge: int, overflow: float
+) -> None:
+    _source, knowledge, database = _table_bundle(tmp_path)
+    sidecar_path = knowledge / "pages/p0001.json"
+    sidecar = json.loads(sidecar_path.read_text())
+    cell = sidecar["tables"][0]["cells"][0]
+    ref = cell["span_refs"][0]
+    span = sidecar["text_blocks"][ref["block_index"]]["lines"][ref["line_index"]]["spans"][ref["span_index"]]
+    span["bbox"][edge] = cell["bbox"][edge] + (-overflow if edge < 2 else overflow)
+    sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+    with sqlite3.connect(database) as connection:
+        column = ("x_min", "y_min", "x_max", "y_max")[edge]
+        connection.execute(
+            f"UPDATE pdf_text_spans SET {column}=? WHERE text='Header'",
+            (span["bbox"][edge],),
+        )
+    if overflow <= 0.25:
+        rebuilt = build_pdf_database(tmp_path, knowledge, tmp_path / "edge-rebuilt.sqlite")
+        validate_database(rebuilt)
+        validate_database(database)
+    else:
+        with pytest.raises(QueryCoreError, match="span_ref lies outside cell bbox"):
+            build_pdf_database(tmp_path, knowledge, tmp_path / "invalid-edge.sqlite")
+        with pytest.raises(QueryCoreError, match="span is not authoritative"):
+            validate_database(database)
 
 
 @pytest.mark.parametrize("damage", ["span_ref", "cell_text"])

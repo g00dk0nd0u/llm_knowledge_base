@@ -15,13 +15,14 @@ from typing import Any
 
 import pymupdf as fitz
 
+from tools.table_geometry import TABLE_EPSILON
+
 from . import PIPELINE_VERSION
 from .constants import LOW_TEXT_THRESHOLD, MANY_DRAWINGS_THRESHOLD
 
 MANAGED_MARKER = ".pdf-pipeline-v2"
 LEGACY_MANAGED_MARKER = ".pdf-pipeline-v1"
 MANAGED_MARKERS = {"1": LEGACY_MANAGED_MARKER, "2": MANAGED_MARKER}
-TABLE_EPSILON = 0.25
 RENDER_ROOTS = frozenset({".tmp", ".cache", "artifacts", "vision", "renders", "tiles"})
 
 

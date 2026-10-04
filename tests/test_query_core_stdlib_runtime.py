@@ -11,6 +11,20 @@ from pathlib import Path
 from tools.query_core.build import build_database
 
 
+def test_neutral_table_geometry_imports_no_producer_or_consumer() -> None:
+    result = subprocess.run(
+        [
+            sys.executable, "-S", "-c",
+            "import tools.table_geometry; import sys; "
+            "assert tools.table_geometry.TABLE_EPSILON == 0.25; "
+            "assert not any(name.startswith(('tools.pdf_pipeline', 'tools.query_core', "
+            "'fitz', 'pymupdf', 'jsonschema')) for name in sys.modules)",
+        ],
+        check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def _runtime_database(path: Path) -> Path:
     return build_database(
         {
@@ -46,6 +60,8 @@ def test_public_runtime_import_is_stdlib_only() -> None:
             "-c",
             "from tools.query_core import QueryCore, QueryCoreError; "
             "import sys; "
+            "assert not any(name == 'tools.pdf_pipeline' or "
+            "name.startswith('tools.pdf_pipeline.') for name in sys.modules); "
             "assert 'fitz' not in sys.modules; "
             "assert 'jsonschema' not in sys.modules; "
             "assert 'tools.query_core.package' not in sys.modules; "
@@ -74,8 +90,13 @@ def test_cli_sqlite_search_with_spaces_and_japanese_is_stdlib_only(
             [
                 sys.executable,
                 "-S",
-                "-m",
-                "tools.query_core",
+                "-c",
+                "from tools.query_core.cli import main; import sys; "
+                "assert main(sys.argv[1:]) == 0; "
+                "assert not any(name == 'tools.pdf_pipeline' or "
+                "name.startswith('tools.pdf_pipeline.') for name in sys.modules); "
+                "assert not any(name.startswith(('fitz', 'pymupdf', 'jsonschema')) "
+                "for name in sys.modules)",
                 "search",
                 str(database),
                 query,
