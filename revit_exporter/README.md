@@ -130,6 +130,14 @@ Linked occurrence geometry is transformed to host coordinates before centralized
 Revit-unit conversion to millimetres. Linked rooms/spaces likewise retain one shared
 source identity regardless of how many times their model is placed.
 
+Door/window FromRoom and ToRoom relationships use the exported View's `VIEW_PHASE`,
+via `get_FromRoom(phase)` and `get_ToRoom(phase)` in C#. The Revit 2025 API reference
+defines these as named Phase-indexed properties:
+[FromRoom(Phase)](https://github.com/ADN-DevTech/revit-api-chms/blob/main/html/2025/html/c4a37990-0603-50e0-ca97-1cd5449940dd.htm)
+and [ToRoom(Phase)](https://github.com/ADN-DevTech/revit-api-chms/blob/main/html/2025/html/94e34f74-b6d1-2e4b-df44-b93aac5543c6.htm).
+The parameterless properties refer to the last project phase and are not used as a
+fallback. Missing exported-view phase context remains a warning with no relationship.
+
 The exporter collects elements in placed host views plus a bounded model-context
 category set, types, useful instance/type parameters, levels, rooms/spaces, finish-face
 spatial boundaries (including distinct Room/Space and boundary-source link
@@ -228,7 +236,8 @@ For **each** installed version (2025, 2026, 2027):
   linked-model drawing topology is also outside Phase 3B2c.
 * GitHub CI builds/tests the Autodesk-independent Core, checks host restore graphs,
   and compiles a standard-library import probe from the shared source with implicit
-  usings disabled. The probe does not compile the Autodesk-dependent host source. Hosts
+  usings disabled. Plain C# scope probes also check identifiers taken from the boundary
+  and annotation source. These probes do not compile Autodesk-dependent host source. Hosts
   require local compilation against matching installed `RevitAPI.dll` and
   `RevitAPIUI.dll`, and cannot be run in CI without licensed local installations.
 * Phase B1 exports source data only; it contains no geometry-derived adjacency,

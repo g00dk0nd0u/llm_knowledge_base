@@ -641,7 +641,7 @@ internal sealed class RevitSnapshotExporter
                 _warnings.Add(new("phase_context_unavailable", "FromRoom/ToRoom requires the exported view phase.", family.UniqueId));
                 return;
             }
-            foreach (var (relation, room) in new[] { ("from_space", family.FromRoom[phase]), ("to_space", family.ToRoom[phase]) })
+            foreach (var (relation, room) in new[] { ("from_space", family.get_FromRoom(phase)), ("to_space", family.get_ToRoom(phase)) })
             {
                 if (room is null) continue;
                 Add("relationships", Obj(("id", StableIds.Hash("relationship", elementId, relation, room.UniqueId, phase.UniqueId)),
@@ -743,9 +743,9 @@ internal sealed class RevitSnapshotExporter
         sourceModelId = null; sourceUniqueId = null; sourceLinkInstanceId = null;
         if (segment.LinkElementId == ElementId.InvalidElementId)
         {
-            var source = document.GetElement(segment.ElementId);
-            if (source is null) return;
-            sourceModelId = modelId; sourceUniqueId = source.UniqueId;
+            var currentDocumentSource = document.GetElement(segment.ElementId);
+            if (currentDocumentSource is null) return;
+            sourceModelId = modelId; sourceUniqueId = currentDocumentSource.UniqueId;
             sourceLinkInstanceId = boundaryLinkId;
             return;
         }
@@ -764,13 +764,13 @@ internal sealed class RevitSnapshotExporter
         }
         var linkedDocument = sourceLink.GetLinkDocument();
         if (linkedDocument is null || !_sourceModelIds.TryGetValue(linkedDocument, out var linkedModelId)
-            || linkedDocument.GetElement(segment.LinkElementId) is not Element source)
+            || linkedDocument.GetElement(segment.LinkElementId) is not Element linkedDocumentSource)
         {
             _warnings.Add(new("linked_boundary_source_unresolved",
                 "The linked document or boundary-producing element could not be resolved.", sourceLink.UniqueId));
             return;
         }
-        sourceModelId = linkedModelId; sourceUniqueId = source.UniqueId; sourceLinkInstanceId = sourceLinkId;
+        sourceModelId = linkedModelId; sourceUniqueId = linkedDocumentSource.UniqueId; sourceLinkInstanceId = sourceLinkId;
     }
 
     private static string BoundaryCurveKind(Curve curve) => curve.GetType().Name switch
@@ -788,7 +788,7 @@ internal sealed class RevitSnapshotExporter
             try
             {
                 var view = _document.GetElement(pair.Key) as View; if (view is null) continue;
-                var semantic = element is Dimension dimension ? DimensionSemanticFor(dimension) : DimensionSemantic.Unsupported;
+                var semantic = element is Dimension semanticDimension ? DimensionSemanticFor(semanticDimension) : DimensionSemantic.Unsupported;
                 var kind = element switch
                 {
                     SpotDimension when semantic == DimensionSemantic.SpotElevation => "spot_elevation",
@@ -796,8 +796,8 @@ internal sealed class RevitSnapshotExporter
                     SpotDimension => "dimension",
                     TextNote => "text_annotation", IndependentTag => "tag", Grid => "grid_reference", _ => "dimension"
                 };
-                var text = element switch { TextNote note => note.Text, IndependentTag tag => tag.TagText, Grid grid => grid.Name,
-                    Dimension dimension => dimension.ValueString ?? dimension.Name, _ => element.Name };
+                var text = element switch { TextNote note => note.Text, IndependentTag textTag => textTag.TagText, Grid grid => grid.Name,
+                    Dimension textDimension => textDimension.ValueString ?? textDimension.Name, _ => element.Name };
                 var annotationId = Id("annotation", _hostModelId, element.UniqueId);
                 var normalized = element is Dimension d ? NormalizeDimension(d.Value, semantic, element.UniqueId) : new NormalizedDimension(null, null);
                 Add("annotations", Obj(("id", annotationId), ("kind", kind), ("semantic_type", semantic.ToString().ToLowerInvariant()),
@@ -806,8 +806,8 @@ internal sealed class RevitSnapshotExporter
                     ("source_unique_id", element.UniqueId), ("view_id", Id("view", _hostModelId, view.UniqueId)),
                     ("provenance", Provenance), ("confidence", null), ("evidence_id", null)));
                 AddSearch("annotation", annotationId, text ?? "");
-                if (element is Dimension dimension) AddDimensionDetails(dimension, annotationId, semantic);
-                if (element is IndependentTag tag) AddTagReferences(tag, annotationId);
+                if (element is Dimension detailDimension) AddDimensionDetails(detailDimension, annotationId, semantic);
+                if (element is IndependentTag referenceTag) AddTagReferences(referenceTag, annotationId);
                 foreach (var p in pair.Value)
                     Add("entity_appearances", Obj(("id", StableIds.Hash("appearance", annotationId, p.Sheet.UniqueId, p.View.UniqueId)),
                         ("entity_kind", "annotation"), ("entity_id", annotationId), ("sheet_id", Id("sheet", _hostModelId, p.Sheet.UniqueId)),

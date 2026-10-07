@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 
@@ -170,5 +171,77 @@ public static class StandardImports
     }
 }
 """, encoding="utf-8")
+    result = run(project, "-restore", "-t:Build")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_room_relations_keep_explicit_exported_view_phase():
+    shared = ROOT / "revit_exporter/src/Revit.Shared/ExportOfflineKnowledgeCommand.cs"
+    method = shared.read_text(encoding="utf-8").split("private void AddRoomRelations(")[1].split("private void AddParameters(")[0]
+    assert "BuiltInParameter.VIEW_PHASE" in method
+    assert "phase_context_unavailable" in method
+    assert 'family.get_FromRoom(phase)' in method
+    assert 'family.get_ToRoom(phase)' in method
+    assert '("phase_source_unique_id", phase.UniqueId)' in method
+    assert not re.search(r"family\.(?:FromRoom|ToRoom)\b", method)
+
+
+@pytest.mark.parametrize("scope", ["boundary", "annotation"])
+def test_shared_source_pattern_names_in_plain_csharp_scopes(tmp_path, scope):
+    """Use source identifiers in plain C# probes; no Revit types or API behavior."""
+    run = msbuild_with_sdk(tmp_path, 8)
+    shared = ROOT / "revit_exporter/src/Revit.Shared/ExportOfflineKnowledgeCommand.cs"
+    source = shared.read_text(encoding="utf-8")
+
+    def identifier(pattern, method):
+        match = re.search(pattern, method)
+        assert match is not None, pattern
+        return match.group(1)
+
+    if scope == "boundary":
+        method = source.split("private void ResolveBoundarySource(")[1].split("private static string BoundaryCurveKind(")[0]
+        current = identifier(r"var (\w+) = document\.GetElement\(segment\.ElementId\);", method)
+        linked = identifier(r"linkedDocument\.GetElement\(segment\.LinkElementId\) is not Element (\w+)", method)
+        body = f"""
+    public static object? Boundary(object? candidate, bool currentDocument)
+    {{
+        if (currentDocument)
+        {{
+            var {current} = new object();
+            return {current};
+        }}
+        if (candidate is not object {linked}) return null;
+        return {linked};
+    }}
+"""
+    else:
+        method = source.split("private void AddAnnotations()")[1].split("private void AddDimensionDetails(")[0]
+        semantic = identifier(r"var semantic = element is Dimension (\w+) \? DimensionSemanticFor\(\1\)", method)
+        text_tag = identifier(r"IndependentTag (\w+) => \1\.TagText", method)
+        text_dimension = identifier(r"Dimension (\w+) => \1\.ValueString \?\? \1\.Name", method)
+        detail = identifier(r"if \(element is Dimension (\w+)\) AddDimensionDetails\(\1, annotationId, semantic\)", method)
+        reference = identifier(r"if \(element is IndependentTag (\w+)\) AddTagReferences\(\1, annotationId\)", method)
+        body = f"""
+    public static void Annotation(object element)
+    {{
+        var semantic = element is int {semantic} ? {semantic} : 0;
+        var text = element switch {{ string {text_tag} => {text_tag},
+            int {text_dimension} => {text_dimension}.ToString(), _ => "" }};
+        GC.KeepAlive(semantic);
+        GC.KeepAlive(text);
+        if (element is int {detail}) GC.KeepAlive({detail});
+        if (element is string {reference}) GC.KeepAlive({reference});
+    }}
+"""
+    project = tmp_path / "PlainScopes.csproj"
+    project.write_text(
+        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+        '<TargetFramework>net8.0</TargetFramework><ImplicitUsings>disable</ImplicitUsings>'
+        '<Nullable>enable</Nullable><TreatWarningsAsErrors>true</TreatWarningsAsErrors>'
+        '</PropertyGroup></Project>', encoding="utf-8",
+    )
+    (tmp_path / "PlainScopes.cs").write_text(
+        "using System;\npublic static class PlainScopes\n{\n" + body + "}\n", encoding="utf-8",
+    )
     result = run(project, "-restore", "-t:Build")
     assert result.returncode == 0, result.stdout + result.stderr
