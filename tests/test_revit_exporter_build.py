@@ -138,3 +138,37 @@ def test_core_default_multitarget_contract_and_sdk8_failure_without_selection(tm
                      f"-p:RestoreGraphOutputPath={tmp_path / 'unselected.json'}")
     assert unselected.returncode != 0
     assert "NETSDK1045" in unselected.stdout + unselected.stderr
+
+
+def test_shared_source_standard_imports_compile_without_implicit_usings(tmp_path):
+    """Compile the shared source's standard imports, without Autodesk API stubs."""
+    run = msbuild_with_sdk(tmp_path, 8)
+    shared = ROOT / "revit_exporter/src/Revit.Shared/ExportOfflineKnowledgeCommand.cs"
+    imports = "\n".join(
+        line for line in shared.read_text(encoding="utf-8").splitlines()
+        if line.startswith("using System")
+    )
+    project = tmp_path / "StandardImports.csproj"
+    project.write_text(
+        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+        '<TargetFramework>net8.0</TargetFramework><ImplicitUsings>disable</ImplicitUsings>'
+        '<Nullable>enable</Nullable><TreatWarningsAsErrors>true</TreatWarningsAsErrors>'
+        '</PropertyGroup></Project>', encoding="utf-8",
+    )
+    (tmp_path / "StandardImports.cs").write_text(imports + """
+
+public static class StandardImports
+{
+    public static IReadOnlyList<string> Collect()
+    {
+        Func<IEnumerable<string>> collect = () => Directory.EnumerateFiles(Path.GetTempPath());
+        List<string> files = collect().Where(File.Exists).Select(Path.GetFullPath).ToList();
+        var groups = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        groups.Add("files", new HashSet<string>(files));
+        if (groups.Count == 0) throw new InvalidOperationException();
+        return files;
+    }
+}
+""", encoding="utf-8")
+    result = run(project, "-restore", "-t:Build")
+    assert result.returncode == 0, result.stdout + result.stderr

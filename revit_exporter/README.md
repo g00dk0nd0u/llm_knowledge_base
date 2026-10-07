@@ -226,7 +226,9 @@ For **each** installed version (2025, 2026, 2027):
 * Linked tag/reference resolution is conservative when the API cannot safely resolve it.
 * Exact reference-marker PDF bboxes and ordinary section topology are not available;
   linked-model drawing topology is also outside Phase 3B2c.
-* GitHub CI builds/tests only the Autodesk-independent Core. Autodesk-dependent hosts
+* GitHub CI builds/tests the Autodesk-independent Core, checks host restore graphs,
+  and compiles a standard-library import probe from the shared source with implicit
+  usings disabled. The probe does not compile the Autodesk-dependent host source. Hosts
   require local compilation against matching installed `RevitAPI.dll` and
   `RevitAPIUI.dll`, and cannot be run in CI without licensed local installations.
 * Phase B1 exports source data only; it contains no geometry-derived adjacency,
