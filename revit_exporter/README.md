@@ -19,6 +19,19 @@ explicit; in particular, the build helper never guesses between the two 2026 lin
 The profile table is intentionally extensible, but no unverified 2025/.NET 10 host is
 provided.
 
+The CLI passes the selected profile's Core framework as the global MSBuild property
+`RevitCoreTargetFramework` (for example, `net8.0`). This limits the referenced Core's
+restore and build graph to that framework. The 2025/`net8` and 2026/`net8` profiles
+therefore need only the .NET 8 SDK; they do not restore or evaluate `net10.0`.
+The 2026/`net10` and 2027/`net10` profiles require the .NET 10 SDK and fail in CLI
+preflight if it is absent. Host frameworks, assembly names and Autodesk references
+are unchanged.
+
+Core development builds without this property retain the default
+`net8.0;net10.0` multi-target graph and the SDK/runtime prerequisites used by CI.
+To build only Core's .NET 8 graph on an SDK 8-only machine, use
+`dotnet build revit_exporter/src/LlmKnowledgeBase.Revit.Core/LlmKnowledgeBase.Revit.Core.csproj -p:RevitCoreTargetFramework=net8.0`.
+
 Install the matching Revit and SDK on Windows. Hosts reference `RevitAPI.dll` and
 `RevitAPIUI.dll` from `RevitInstallDir` (`C:\Program Files\Autodesk\Revit YYYY` by
 default), with `Private=false`; a missing assembly is a build error. Shared DTO,
