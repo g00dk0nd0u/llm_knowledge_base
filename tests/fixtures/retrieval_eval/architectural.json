@@ -1,0 +1,88 @@
+{
+  "format": "architectural-retrieval-cases",
+  "version": 1,
+  "cases": [
+    {
+      "case_id": "exact-door",
+      "human_question": "Find Door D-101.",
+      "task_category": "entity",
+      "baseline": {"operation": "search_semantic_entities", "arguments": {"query": "D-101", "entity_class": "Door"}},
+      "expected": {"status": "exact_unique", "semantic_entity_ids": ["semantic-door-101"]}
+    },
+    {
+      "case_id": "sparse-lock-and-door-room",
+      "human_question": "Find the door with schedule lock EL160 and its source-backed Room relationship.",
+      "task_category": "property-spatial-context",
+      "baseline": {"operation": "semantic_discovery_context", "arguments": {"query": "EL160", "entity_class": "Door"}},
+      "expected": {
+        "status": "ok", "semantic_entity_ids": ["semantic-door-101"],
+        "document_identities": ["source/door-schedule.pdf"],
+        "evidence_ids": ["evidence-door-101-schedule"],
+        "source_references": [{"kind": "semantic_property", "id": "property-door-101-lock"}],
+        "evidence": [
+          {"evidence_id": "evidence-door-101-schedule"},
+          {"document_identity": "source/door-schedule.pdf", "pdf_page": 1, "source_reference": {"kind": "entity_appearance", "id": "appearance-door-model"}},
+          {"document_identity": "source/door-schedule.pdf", "pdf_page": 1, "source_reference": {"kind": "entity_appearance", "id": "appearance-door-schedule"}}
+        ],
+        "checks": [
+          {"path": ["context", "properties"], "contains": {"source_name": "電気錠", "source_value": "EL160", "scope": "schedule", "source_binding_ref": "binding-door-101-schedule"}},
+          {"path": ["context", "properties"], "contains": {"source_name": "電気錠", "source_value": "EL560", "scope": "instance", "parameter_id": "parameter-door-101-lock"}},
+          {"path": ["context", "relationships"], "contains": {"id": "relationship-door-space", "relation_type": "to_space", "target_kind": "space", "target_id": "space-101"}}
+        ]
+      }
+    },
+    {
+      "case_id": "room-level",
+      "human_question": "Which Level contains the source Room Office 101?",
+      "task_category": "spatial-context",
+      "baseline": {"operation": "get_semantic_spatial_context", "arguments": {"entity_id": "semantic-space-101"}},
+      "expected": {"status": "ok", "semantic_entity_ids": ["semantic-space-101"], "source_references": [{"kind": "level", "id": "level-01"}], "checks": [
+        {"path": ["spatial_contexts", 0, "spatial_context", "level", "id"], "equals": "level-01"},
+        {"path": ["relationships"], "contains": {"relation_type": "belongs_to_level", "source_id": "space-101", "target_id": "level-01"}}
+      ]}
+    },
+    {
+      "case_id": "plan-occurrence",
+      "human_question": "Find D-101 in the model Plan view on A-601.",
+      "task_category": "drawing-location",
+      "baseline": {"operation": "get_architectural_evidence_context", "arguments": {"semantic_entity_id": "semantic-door-101"}},
+      "expected": {"status": "ok", "semantic_entity_ids": ["semantic-door-101"], "evidence": [
+        {"document_identity": "source/door-schedule.pdf", "sheet_id": "sheet-door", "sheet_number": "A-601", "view_id": "view-door-model", "pdf_page": 1, "bbox": [10.0, 20.0, 200.0, 80.0], "coordinate_space": "pdf_points_top_left", "source_reference": {"kind": "entity_appearance", "id": "appearance-door-model"}}
+      ], "checks": [{"path": ["drawing_occurrences"], "contains": {"appearance_kind": "model", "view_type": "Plan", "appearance_id": "appearance-door-model"}}]}
+    },
+    {
+      "case_id": "schedule-page-only",
+      "human_question": "Find D-101's schedule occurrence; its source supports page-only navigation.",
+      "task_category": "drawing-location",
+      "baseline": {"operation": "get_architectural_evidence_context", "arguments": {"semantic_entity_id": "semantic-door-101"}},
+      "expected": {"status": "ok", "evidence": [
+        {"document_identity": "source/door-schedule.pdf", "pdf_page": 1, "view_id": "view-door-schedule", "bbox": null, "source_reference": {"kind": "entity_appearance", "id": "appearance-door-schedule"}}
+      ], "checks": [{"path": ["drawing_occurrences"], "contains": {"appearance_kind": "schedule", "bbox": null, "bbox_quality": "page_only", "navigation": {"can_zoom": false}}}]}
+    },
+    {
+      "case_id": "ambiguous-even-with-limit-one",
+      "human_question": "Select D-102 only if discovery establishes a unique identity.",
+      "task_category": "state",
+      "baseline": {"operation": "semantic_discovery_context", "arguments": {"query": "D-102", "limit": 1}},
+      "expected": {"status": "multiple_exact", "checks": [{"path": ["context"], "equals": null}]}
+    },
+    {
+      "case_id": "contains-never-selected",
+      "baseline": {"operation": "semantic_discovery_context", "arguments": {"query": "D-10"}},
+      "expected": {"status": "candidates", "checks": [{"path": ["context"], "equals": null}]}
+    },
+    {
+      "case_id": "no-match",
+      "baseline": {"operation": "semantic_discovery_context", "arguments": {"query": "D-999"}},
+      "expected": {"status": "no_match", "evidence": [], "checks": [{"path": ["context"], "equals": null}]}
+    },
+    {
+      "case_id": "insufficient-spatial-evidence",
+      "baseline": {"operation": "get_semantic_spatial_context", "arguments": {"entity_id": "semantic-door-102"}},
+      "expected": {"status": "insufficient_data", "checks": [
+        {"path": ["spatial_contexts"], "equals": []},
+        {"path": ["semantic_entity", "resolution_state"], "equals": "ambiguous"}
+      ]}
+    }
+  ]
+}

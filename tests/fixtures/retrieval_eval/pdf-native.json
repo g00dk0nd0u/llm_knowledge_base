@@ -1,0 +1,23 @@
+{
+  "format": "architectural-retrieval-cases", "version": 1,
+  "cases": [{
+    "case_id": "pdf-native-door-sparse-properties",
+    "human_question": "Find the D-105 door schedule row and its exact source cells, without a Revit host.",
+    "task_category": "pdf-table",
+    "baseline": {"operation": "semantic_discovery_context", "arguments": {"query": "D-105", "entity_class": "Door"}},
+    "expected": {
+      "status": "ok", "document_identities": ["source/test.pdf"], "pdf_pages": [1],
+      "evidence": [
+        {"document_identity": "source/test.pdf", "pdf_page": 1, "bbox": [0, 1, 1, 2], "coordinate_space": "pdf_points_top_left", "source_reference": {"kind": "pdf_table_cell", "id": "cell-1-0"}},
+        {"source_reference": {"kind": "pdf_table", "id": "table-1"}},
+        {"source_reference": {"kind": "pdf_table_cell", "id": "cell-1-1"}},
+        {"source_reference": {"kind": "pdf_table_cell", "id": "cell-1-3"}}
+      ],
+      "checks": [
+        {"path": ["context", "properties"], "contains": {"source_name": "電気錠", "source_value": "EL560", "scope": "schedule", "provenance": "pdf_table_mapping:proof-v1"}},
+        {"path": ["context", "properties"], "contains": {"source_name": "ガラス厚", "source_value": "8mm"}},
+        {"path": ["context", "spatial_contexts"], "equals": []}
+      ]
+    }
+  }]
+}

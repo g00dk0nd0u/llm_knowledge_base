@@ -1,0 +1,17 @@
+{
+  "format": "architectural-retrieval-cases", "version": 1,
+  "cases": [
+    {
+      "case_id": "explicit-text-search",
+      "baseline": {"operation": "search_text", "arguments": {"query": "D-105"}},
+      "expected": {"status": "returned", "source_references": [{"kind": "pdf_text_block", "id": "block-2"}]}
+    },
+    {
+      "case_id": "explicit-pdf-text-search",
+      "baseline": {"operation": "search_pdf_text", "arguments": {"query": "D-105"}},
+      "expected": {"status": "returned", "source_references": [{"kind": "pdf_text_block", "id": "block-2"}], "evidence": [
+        {"document_identity": "source/test.pdf", "pdf_page": 1, "evidence_id": "evidence-2", "bbox": [0, 1, 1, 2], "coordinate_space": "pdf_points_top_left"}
+      ]}
+    }
+  ]
+}
