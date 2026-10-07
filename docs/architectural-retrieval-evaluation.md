@@ -6,6 +6,43 @@ architectural facts. Runtime dependencies are Python 3.12 standard library only.
 No evaluation tables are added to SQLite; Query Core schema v2 and Revit snapshot
 contract v1 remain unchanged.
 
+## Architectural framing
+
+Architectural information is intentionally distributed across source media with
+different information characteristics. Revit, IFC, PDFs, schedules,
+specifications, details, and consultant documents must not individually be
+assumed to contain the complete architectural truth. Source authority means
+keeping each claim inspectable in its native source and provenance.
+
+| Source/context example | Information characteristics |
+|---|---|
+| Revit / IFC | Elements, types, spatial relations, parameters, geometry |
+| Sheet / View | Edited publication and communication context |
+| Detail / Callout | Localized construction and design information |
+| Schedule | Classification, aggregation, codes, performance information |
+| Specification | Textual requirements, conditions, exceptions |
+| Legend / Keynote | Mapping between graphical notation and meaning |
+| Issued PDF | Revision-specific published evidence |
+| Consultant documents | Discipline-specific evidence |
+
+These examples describe information roles; they do not define a fixed ontology
+or require source-format labels in evaluation cases.
+
+A semantic/architectural entity is primarily a cross-source identity and
+comparison anchor, not a Source of Truth. Door D-105 may connect Revit, Plan,
+Door Schedule, Detail, and Specification evidence. Those source-native facts and
+their provenance remain separately inspectable rather than being collapsed into
+one authoritative synthesized record.
+
+Different sources or revisions may legitimately expose conflicting claims.
+Cross-format integration must preserve those claims and their evidence so a
+human reviewer can inspect the discrepancy. This foundation does not resolve
+conflicts or silently replace one source's claim with another's.
+
+The goal is not to reconstruct a complete digital twin, but to reconstruct the
+information relationships a human reviewer needs to inspect. Evaluation therefore
+measures access to the relevant source facts, relationships, and evidence locations.
+
 ```bash
 python -S -m tools.retrieval_eval run \
   --database artifacts/project.sqlite \
@@ -155,6 +192,24 @@ overlap is allowed; recall counts declared expectations, not a one-to-one matchi
 assignment. There is no overall approval score or nDCG/graded relevance in v1.
 Latency is not recorded; canonical JSON has no timestamps, elapsed time, absolute
 database path, or timing-dependent IDs.
+
+## Cross-format evidence coverage
+
+The existing v1 `expected.evidence` list can express multiple expected locations
+and source references for the same architectural question. A future permitted
+real case may require Revit/source-fact evidence alongside a Plan occurrence,
+Schedule evidence, Detail evidence, and Specification evidence. Each expected
+unit retains its own source identity and any genuinely known location.
+
+For returned navigation-backed evidence units, existing precision, recall, and
+coverage measure which expected units were retrieved, which are missing, and
+which unexpected units were returned. Model-only source facts without navigation
+can be checked through `expected.source_references` and native-payload `checks`;
+they must not be assigned invented PDF locations to enter the evidence-set metric.
+
+No new `cross_format_coverage` metric or source-format schema is needed in v1.
+Explicit source-class grouping should be considered only if later real datasets
+demonstrate that the existing expected-evidence contract is insufficient.
 
 ## Proof fixtures and later real cases
 
