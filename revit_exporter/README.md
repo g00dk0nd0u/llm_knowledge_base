@@ -211,6 +211,93 @@ does not change the common snapshot contract.
 
 ## Required real-Revit smoke test (not performed by CI)
 
+### Separate, bounded PDF diagnostics
+
+**Diagnose PDF Export (max 2 sheets)** is a separate External Tools command. It
+does not call `OfflineExportService.Run` or create a knowledge package. The normal
+**Export Offline Knowledge Package** command and Clarity's unattended entry point
+ignore all `LLM_KB_PDF_DIAG_*` variables and retain their full printable-Sheet export
+and existing Sheet-order/PDF-page mapping.
+
+Configure the diagnostic command with process environment variables:
+
+| Variable | Contract |
+| --- | --- |
+| `LLM_KB_PDF_DIAG_SHEET_NUMBERS` | Required: one or two comma-separated, distinct Sheet numbers. Delimiter whitespace is trimmed; lookup is otherwise exact and case-sensitive, in the specified order. Missing, ambiguous, placeholder, or unprintable Sheets fail before export; no replacement is selected. |
+| `LLM_KB_PDF_DIAG_MODE` | Required: exactly `default` or `saved`. Missing or invalid modes fail. |
+| `LLM_KB_PDF_DIAG_SETUP_NAME` | Required for `saved`: the exact, case-sensitive name of an existing `ExportPDFSettings`. A missing setting records available names and fails without fallback. Ignored by `default`. |
+
+`default` constructs `new PDFExportOptions()`. `saved` reads a copy using
+`ExportPDFSettings.GetOptions()`, without modifying or creating a settings element.
+Both then set only `Combine=true`, `FileName="drawing"`, and
+`SetExportInBackground(false)` before one real `Document.Export` call. The Revit
+2025 API confirms [GetOptions returns a copy and requires FileName to be reset](https://github.com/ADN-DevTech/revit-api-chms/blob/main/html/2025/html/f5d51aa8-71ae-0526-1668-e0d97eb8315e.htm)
+and provides [SetExportInBackground(bool)](https://github.com/ADN-DevTech/revit-api-chms/blob/main/html/2025/html/c130e24c-eca7-3211-2905-2ee1769dde6f.htm).
+[Document.Export accepts an ordered list of Sheet/View IDs](https://github.com/ADN-DevTech/revit-api-chms/blob/main/html/2025/html/93d66d57-c20e-a103-39a1-77bc2ea05183.htm).
+Vector processing is reported as `vector_when_possible` when `AlwaysUseRaster`
+is false; this does not assert that every object in the output is vector data.
+
+Each attempt writes to a unique local
+`<LLM_KB_EXPORT_ROOT>/pdf-diagnostics/<timestamp>-<guid>/` directory; the default
+root is `Documents/LlmKnowledgeBaseExports`. This directory is separate from
+completed `<project>/<run>` packages and is never promoted into one. It contains
+`pdf_diagnostic_report.json` and, if emitted, the diagnostic PDF. No Snapshot,
+SQLite, Enhanced PDF, or publication manifest is generated. Keep these files local;
+if placing them inside this checkout, use ignored `revit_exporter/local/`.
+
+The report records Revit version/build, requested and selected Sheet numbers,
+ElementIds, count/order, setup lookup and available names, options before and after
+the three overrides, output folder, whether export was called, its nullable return
+value, exception type/message/stack trace/details, PDF existence and sizes. A thrown
+export has `export_return_value=null`; a returned `false` stays false. False return,
+missing/empty `drawing.pdf`, or an exception fails the command even if a partial PDF
+exists. Reporting I/O failures also fail and identify the original export exception.
+There are no retries, per-Sheet fallback, or document modification/save/synchronize
+operations. Validation failures are reported where the output folder can be created;
+if the folder itself is inaccessible, the command displays that I/O failure.
+
+#### Revit 2025.4 comparison on the real machine
+
+The user has verified the existing PR's host build (zero warnings/errors), add-in
+loading, and command launch. Normal API PDF export throws `InternalException` even
+under `C:\Temp\LlmKnowledgeBaseExports`; the native UI successfully exports
+`Admin CD.31` and `G6.001` with `PDF Export Setup Settings 1` (ISO A3, Landscape,
+Fit to Page, Vector, Background OFF). The root cause is still unknown. This
+diagnostic command is not a permanent PDF-export fix. Its host build and API execution
+must be checked against the installed Autodesk DLLs; CI does not perform either.
+
+Close Revit before rebuilding/updating its manifest. In PowerShell, from the checkout:
+
+```powershell
+git fetch origin
+git switch fix/revit-net8-core-framework-selection
+git pull --ff-only origin fix/revit-net8-core-framework-selection
+python -m tools.revit_exporter build --version 2025 --runtime net8 --manifest "$env:APPDATA\Autodesk\Revit\Addins\2025\LlmKnowledgeBase.Revit.addin"
+
+$env:LLM_KB_EXPORT_ROOT = "C:\Temp\LlmKnowledgeBaseExports"
+$env:LLM_KB_PDF_DIAG_SHEET_NUMBERS = "Admin CD.31,G6.001"
+$env:LLM_KB_PDF_DIAG_MODE = "default"
+Start-Process "C:\Program Files\Autodesk\Revit 2025\Revit.exe"
+```
+
+Open the same project and invoke **Diagnose PDF Export (max 2 sheets)** once. Retain
+the report even if the command fails. Close Revit without saving or synchronizing
+changes for this diagnostic, then use the same PowerShell session:
+
+```powershell
+$env:LLM_KB_PDF_DIAG_MODE = "saved"
+$env:LLM_KB_PDF_DIAG_SETUP_NAME = "PDF Export Setup Settings 1"
+Start-Process "C:\Program Files\Autodesk\Revit 2025\Revit.exe"
+```
+
+Open the same project and run the diagnostic once again. Revit must be launched from
+this shell after setting the variables: changing another shell's environment does
+not change an already-running Revit process. Compare the two JSON reports, including
+the actual saved options rather than assuming they match the UI. Do not test all
+Sheets or adopt an inferred permanent fix before reviewing these two results.
+
+### Complete package smoke test
+
 For **each** installed version (2025, 2026, 2027):
 
 1. Build its host against installed Autodesk DLLs.
