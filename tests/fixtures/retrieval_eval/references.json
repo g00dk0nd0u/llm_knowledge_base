@@ -1,0 +1,18 @@
+{
+  "format": "architectural-retrieval-cases", "version": 1,
+  "cases": [
+    {
+      "case_id": "explicit-reference",
+      "baseline": {"operation": "get_drawing_reference", "arguments": {"reference_id": "eval-resolved"}},
+      "expected": {"status": "exact", "evidence": [
+        {"document_identity": "synthetic-drawings-v1", "pdf_page": 3, "evidence_id": "ev-corridor"},
+        {"document_identity": "synthetic-drawings-v1", "pdf_page": 2, "sheet_number": "A-421", "view_id": "view-roof"}
+      ], "checks": [{"path": ["target", "navigation", "bbox"], "equals": null}]}
+    },
+    {
+      "case_id": "ambiguous-reference",
+      "baseline": {"operation": "get_drawing_reference", "arguments": {"reference_id": "eval-ambiguous"}},
+      "expected": {"status": "ambiguous", "evidence": [{"evidence_id": "ev-corridor"}], "checks": [{"path": ["target"], "equals": null}]}
+    }
+  ]
+}
