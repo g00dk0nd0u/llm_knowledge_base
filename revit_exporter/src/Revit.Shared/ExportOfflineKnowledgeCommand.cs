@@ -6,6 +6,7 @@ using Autodesk.Revit.UI;
 using LlmKnowledgeBase.Revit.Core;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text.Json.Nodes;
@@ -28,7 +29,9 @@ public sealed class ExportOfflineKnowledgeCommand : IExternalCommand
         catch (Exception error)
         {
             message = error.Message;
-            TaskDialog.Show("Offline Knowledge Export failed", error.ToString());
+            var logError = error.Data["export_failure_log_error"];
+            TaskDialog.Show("Offline Knowledge Export failed", error.ToString()
+                + (logError is null ? "" : $"\n\nFailure log could not be written:\n{logError}"));
             return Result.Failed;
         }
     }
@@ -78,6 +81,9 @@ internal sealed class RevitSnapshotExporter
 
     public string Export()
     {
+        var elapsed = Stopwatch.StartNew();
+        var stage = "read_revit_version";
+        string? revitVersion = null;
         var project = SafeName(string.IsNullOrWhiteSpace(_document.Title) ? "untitled" : _document.Title);
         var root = _options.ExportRoot ?? Environment.GetEnvironmentVariable("LLM_KB_EXPORT_ROOT");
         var baseDirectory = string.IsNullOrWhiteSpace(root)
@@ -86,44 +92,70 @@ internal sealed class RevitSnapshotExporter
         var run = DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssfffZ");
         var finalDirectory = Path.Combine(baseDirectory, project, run);
         var staging = finalDirectory + ".tmp";
-        Directory.CreateDirectory(staging);
         try
         {
+            revitVersion = _document.Application.VersionNumber;
+            stage = "create_staging_directory";
+            Directory.CreateDirectory(staging);
+            stage = "collect_sheets";
             var sheets = CollectSheets();
             if (sheets.Count == 0) throw new InvalidOperationException("No non-placeholder printable sheets were found.");
             var pdf = Path.Combine(staging, "drawing.pdf");
+            stage = "pdf_export";
             ExportPdf(staging, pdf, sheets);
+            stage = "pdf_hash";
             var sha = ExportFiles.Sha256(pdf);
+            stage = "document_identity";
             var identity = DocumentIdentityResolver.Resolve(_document);
             _hostModelId = StableIds.Hash("model", identity.Kind, identity.Value);
             _sourceModelIds[_document] = _hostModelId;
             _documentId = StableIds.Document(identity.Kind, identity.Value);
+            stage = "snapshot_initialization";
             _snapshot = SnapshotContract.Create(project, $"Revit {_document.Application.VersionNumber}", identity.Value, sha);
+            stage = "document_records";
             AddDocumentAndModels(identity, sha);
+            stage = "sheet_view_placements";
             AddSheetsViewsAndPlacements(sheets);
+            stage = "drawing_references";
             AddDrawingReferences();
+            stage = "levels";
             AddLevels(_document, _hostModelId);
-            if (_options.IncludeLinks) AddLinks();
+            if (_options.IncludeLinks)
+            {
+                stage = "links";
+                AddLinks();
+            }
+            stage = "host_elements";
             CollectHostElements();
+            stage = "spatial_elements";
             AddSpatialElements(_document, _hostModelId);
+            stage = "schedule_membership";
             AddScheduleMembership();
+            stage = "spatial_boundaries";
             AddSpatialBoundaries(_document, _hostModelId, null, Transform.Identity);
+            stage = "annotations";
             AddAnnotations();
+            stage = "flush_elements";
             FlushElements();
+            stage = "sort_records";
             SortRecords();
             var snapshotFile = Path.Combine(staging, "revit_snapshot.json");
+            stage = "write_snapshot";
             ExportFiles.WriteJson(snapshotFile, _snapshot);
+            stage = "write_manifest";
             var manifest = new ExportManifest("revit-exporter/1.0", _document.Application.VersionNumber,
                 identity.Value, DateTimeOffset.UtcNow, "drawing.pdf", sha, "revit_snapshot.json",
                 sheets.Count, Count("elements"), Count("spaces"), Count("annotations"), Count("geometries"), _warnings);
             ExportFiles.WriteJson(Path.Combine(staging, "export_manifest.json"), manifest);
+            stage = "publish_run";
             Directory.Move(staging, finalDirectory);
             return finalDirectory;
         }
-        catch
+        catch (Exception error)
         {
-            if (Directory.Exists(staging))
-                ExportFiles.WriteJson(Path.Combine(staging, "export_failure.json"), new { successful = false, warnings = _warnings });
+            elapsed.Stop();
+            LocalExportLog.TryWriteFailure(Path.Combine(staging, "export_failure.json"),
+                stage, error, elapsed.Elapsed.TotalMilliseconds, revitVersion, _warnings);
             throw;
         }
     }

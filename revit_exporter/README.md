@@ -53,6 +53,14 @@ machine path. `LLM_KB_EXPORT_ROOT` may set the export root. Otherwise exports go
 A `.tmp` staging directory is promoted only after PDF, snapshot, and manifest are
 written. The command never starts a transaction or changes/saves/synchronizes the RVT.
 
+On failure, `export_failure.json` retains the existing warnings and adds the failed
+processing `stage`, `exception_type`, `exception_message`, `stack_trace`, Stopwatch
+`elapsed_ms`, and `revit_version`. Stages distinguish PDF export, source collection,
+snapshot/manifest writing, and run promotion. Failure-log I/O errors are secondary
+metadata on the original exception (`export_failure_log_error`); the manual command
+displays them, and the UI-free Clarity caller receives the same original exception.
+Successful normal exports add no event-file writes or per-element logging.
+
 Run **Export Offline Knowledge Package**, then finalize:
 
 ```bash
@@ -241,7 +249,7 @@ Each attempt writes to a unique local
 `<LLM_KB_EXPORT_ROOT>/pdf-diagnostics/<timestamp>-<guid>/` directory; the default
 root is `Documents/LlmKnowledgeBaseExports`. This directory is separate from
 completed `<project>/<run>` packages and is never promoted into one. It contains
-`pdf_diagnostic_report.json` and, if emitted, the diagnostic PDF. No Snapshot,
+`diagnostic_events.jsonl`, `pdf_diagnostic_report.json` and, if emitted, the diagnostic PDF. No Snapshot,
 SQLite, Enhanced PDF, or publication manifest is generated. Keep these files local;
 if placing them inside this checkout, use ignored `revit_exporter/local/`.
 
@@ -255,6 +263,40 @@ exists. Reporting I/O failures also fail and identify the original export except
 There are no retries, per-Sheet fallback, or document modification/save/synchronize
 operations. Validation failures are reported where the output folder can be created;
 if the folder itself is inaccessible, the command displays that I/O failure.
+
+The JSONL event log is written incrementally. Each compact UTF-8 line contains
+`utc_timestamp` (UTC), `event`, `stage`, and minimal operational `data`. Its sequence
+is `diagnostic_started`, `sheets_selected`, `pdf_options_ready`,
+`pdf_export_started`, then `pdf_export_completed` (API returned true) or
+`pdf_export_failed` (API threw or returned false), and `diagnostic_finished`.
+Input validation failures skip export events. A true API return is not sufficient
+for overall success: the PDF must also exist and be nonempty. The final event records
+the overall outcome; the summary retains the actual nullable API return separately.
+
+Each event append writes the bytes, calls `FileStream.Flush(true)`, and closes the
+file before proceeding. In particular, failure to flush `pdf_export_started`
+prevents the API call. Events already written can survive abrupt process termination
+even when the final JSON report is absent. Missing completion events indicate an
+incomplete attempt, not a proven cause of failure. No complete persistence guarantee
+is made for OS/storage failures. A test forcibly terminates a real .NET process
+after actual Core logger writes; it does not execute or simulate Revit APIs.
+
+Stopwatch durations in the summary's `timings_ms` are `sheet_acquisition_ms`,
+`pdf_options_ms`, `pdf_export_ms`, and `diagnostic_total_ms`; phases never attempted
+remain null. Failed acquisition/options phases record their partial duration.
+PDF time measures only the one `Document.Export` call, including a throwing call;
+event I/O is outside that timer. Summary total time runs through summary preparation;
+the final event's `elapsed_ms` additionally includes summary writing, excluding its
+own final append. The clocks add no sleeps or background tasks.
+
+Summary and final-event writes are attempted independently. Their failures never
+replace an existing export exception; secondary details are attached as
+`pdf_diagnostic_log_error` and shown by the command. A logging failure alone also
+fails the command. New events contain only version, phase, count, option flags/enums,
+timing and outcome; no Sheet names/IDs, setup names, model/geometry/parameter content
+or exception messages are duplicated into them. The existing detailed summary and
+required exception text remain local and can contain source identities/paths. There
+are no network sends, new dependencies, per-element logs, or Query Core changes.
 
 #### Revit 2025.4 comparison on the real machine
 

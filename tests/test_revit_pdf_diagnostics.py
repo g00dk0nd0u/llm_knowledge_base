@@ -1,10 +1,15 @@
 """Host source/registration contracts; these do not execute or compile Autodesk APIs."""
 
 from pathlib import Path
+import json
 import re
+import shutil
+import subprocess
 import xml.etree.ElementTree as ET
 
 import pytest
+
+from tests.test_revit_exporter_build import CORE, msbuild_with_sdk
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -93,7 +98,108 @@ def test_reports_diagnostic_source_settings_export_outcome_exception_and_files_o
         assert f'["{field}"]' in DIAGNOSTIC
     assert 'report["exception"] = DescribeException(error);' in DIAGNOSTIC
     assert 'report["successful"] = false;' in DIAGNOSTIC
-    assert 'ExportFiles.WriteJson(reportPath, report);' in DIAGNOSTIC.split("finally")[1]
+    assert 'ExportFiles.WriteJson(reportPath, report);' in DIAGNOSTIC.rsplit("finally", 1)[1]
     for forbidden in ("OfflineExportService", "RevitSnapshotExporter", "SnapshotContract", "export_manifest",
                       "revit_snapshot", "enhanced.pdf", "sqlite", "Directory.Move", "File.Move"):
         assert forbidden not in DIAGNOSTIC
+
+
+def test_diagnostic_events_are_bounded_and_flushed_before_the_real_export():
+    log_source = (ROOT / "revit_exporter/src/LlmKnowledgeBase.Revit.Core/LocalExportLog.cs").read_text()
+    assert '"diagnostic_events.jsonl"' in DIAGNOSTIC
+    assert "stream.Write(bytes);" in log_source
+    assert "stream.Flush(flushToDisk: true);" in log_source
+    assert "using var stream = new FileStream" in log_source
+    assert "FileMode.Append" in log_source
+    for event in (
+        "diagnostic_started", "sheets_selected", "pdf_options_ready", "pdf_export_started",
+        "pdf_export_completed", "pdf_export_failed", "diagnostic_finished",
+    ):
+        assert DIAGNOSTIC.count(f'"{event}"') == 1
+    started = DIAGNOSTIC.index('LocalExportLog.AppendEvent(eventsPath, "pdf_export_started"')
+    assert started < DIAGNOSTIC.index('report["export_called"] = true;') < DIAGNOSTIC.index("document.Export(")
+    # Normal successful exports get no event-file writes or diagnostic env dependencies.
+    assert "AppendEvent" not in NORMAL
+    assert "diagnostic_events" not in NORMAL
+
+
+def test_stopwatch_times_api_call_separately_from_event_file_io_and_records_failed_calls():
+    assert "using System.Diagnostics;" in DIAGNOSTIC
+    assert "Stopwatch.StartNew()" in DIAGNOSTIC
+    for field in ("sheet_acquisition_ms", "pdf_options_ms", "pdf_export_ms", "diagnostic_total_ms"):
+        assert f'["{field}"]' in DIAGNOSTIC
+    export = DIAGNOSTIC.split('report["export_called"] = true;')[1].split('stage = "pdf_validation";')[0]
+    start, call, stop = map(export.index, (
+        "phaseElapsed.Restart();", "document.Export(folder, ids, options)", "phaseElapsed.Stop();",
+    ))
+    assert start < call < stop
+    assert "AppendEvent" not in export[start:stop]
+    assert 'timings["pdf_export_ms"] = phaseElapsed.Elapsed.TotalMilliseconds;' in export.split("finally")[1]
+
+
+def test_normal_failure_stage_timing_and_logging_preserve_original_exception():
+    export = NORMAL.split("public string Export()")[1].split("private List<ViewSheet> CollectSheets()")[0]
+    assert "Stopwatch.StartNew()" in export
+    assert 'stage = "pdf_export";' in export
+    assert 'stage = "write_snapshot";' in export
+    assert 'stage = "write_manifest";' in export
+    assert 'stage = "publish_run";' in export
+    failure = export.split("catch (Exception error)")[1]
+    assert "elapsed.Stop();" in failure
+    assert "LocalExportLog.TryWriteFailure(" in failure
+    assert "stage, error, elapsed.Elapsed.TotalMilliseconds, revitVersion, _warnings" in failure
+    assert "throw;" in failure
+    assert "throw new" not in failure
+    assert "ExportFiles.WriteJson" not in failure
+    diagnostic_finish = DIAGNOSTIC.rsplit("finally", 1)[1].split("return reportPath;")[0]
+    assert "LocalExportLog.WriteBestEffort(failure," in diagnostic_finish
+    assert "if (failure is null &&" in diagnostic_finish
+
+
+def test_flushed_events_survive_abrupt_termination_of_a_real_dotnet_process(tmp_path):
+    """Test the actual Core logger, not a mocked Revit export or an Autodesk host."""
+    run = msbuild_with_sdk(tmp_path, 8)
+    project = tmp_path / "LogCrashProbe.csproj"
+    project.write_text(
+        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+        '<TargetFramework>net8.0</TargetFramework><OutputType>Exe</OutputType>'
+        '</PropertyGroup><ItemGroup><ProjectReference Include="'
+        + str(CORE) + '" /></ItemGroup></Project>', encoding="utf-8",
+    )
+    (tmp_path / "Program.cs").write_text('''
+using System;
+using System.Threading;
+using LlmKnowledgeBase.Revit.Core;
+
+var events = new[] { "diagnostic_started", "sheets_selected", "pdf_options_ready", "pdf_export_started" };
+foreach (var name in events) LocalExportLog.AppendEvent(args[0], name, "logger_probe");
+Console.WriteLine("flushed");
+Console.Out.Flush();
+Thread.Sleep(Timeout.Infinite);
+''', encoding="utf-8")
+    build = run(project, "-restore", "-t:Build", "-p:RevitCoreTargetFramework=net8.0")
+    assert build.returncode == 0, build.stdout + build.stderr
+    path = tmp_path / "diagnostic_events.jsonl"
+    process = subprocess.Popen(
+        [shutil.which("dotnet"), str(tmp_path / "bin/Debug/net8.0/LogCrashProbe.dll"), str(path)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        assert process.stdout.readline().strip() == "flushed"
+        before = path.read_bytes()
+        assert len(before.splitlines()) == 4
+        process.kill()  # No normal exit/finally; no OS/storage failure is simulated.
+        process.wait(timeout=10)
+        assert process.returncode != 0
+        assert path.read_bytes() == before
+        records = [json.loads(line) for line in before.decode("utf-8").splitlines()]
+        assert [record["event"] for record in records] == [
+            "diagnostic_started", "sheets_selected", "pdf_options_ready", "pdf_export_started",
+        ]
+        assert all(record["stage"] == "logger_probe" for record in records)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+        process.stdout.close()
+        process.stderr.close()
