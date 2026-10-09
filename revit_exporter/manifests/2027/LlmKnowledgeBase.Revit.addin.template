@@ -8,4 +8,12 @@
     <VendorId>LLMK</VendorId>
     <VendorDescription>LLM Knowledge Base offline exporter</VendorDescription>
   </AddIn>
+  <AddIn Type="Command">
+    <Name>Diagnose PDF Export (max 2 sheets)</Name>
+    <Assembly>{{ASSEMBLY_PATH}}</Assembly>
+    <AddInId>8D56ED5A-1D6B-4B4E-A027-000000000005</AddInId>
+    <FullClassName>LlmKnowledgeBase.Revit.DiagnosePdfExportCommand</FullClassName>
+    <VendorId>LLMK</VendorId>
+    <VendorDescription>LLM Knowledge Base PDF diagnostics only</VendorDescription>
+  </AddIn>
 </RevitAddIns>

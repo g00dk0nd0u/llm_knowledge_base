@@ -45,7 +45,12 @@ def build(version: str, runtime: str, install: Path, configuration: str, manifes
     if required not in sdk_majors():
         raise SystemExit(f"A .NET {required} SDK is required for Revit {version}; install it and ensure dotnet is on PATH.")
     project = ROOT / "revit_exporter" / "src" / project_name / f"{project_name}.csproj"
-    subprocess.run(["dotnet", "build", str(project), "--configuration", configuration, f"-p:RevitInstallDir={install}"], check=True)
+    subprocess.run(
+        ["dotnet", "build", str(project), "--configuration", configuration,
+         f"-p:RevitInstallDir={install}",
+         f"-p:RevitCoreTargetFramework={framework.removesuffix('-windows')}"],
+        check=True,
+    )
     assembly = project.parent / "bin" / configuration / framework / f"{project_name}.dll"
     if not assembly.is_file():
         raise SystemExit(f"Build completed but expected assembly is missing: {assembly}")
