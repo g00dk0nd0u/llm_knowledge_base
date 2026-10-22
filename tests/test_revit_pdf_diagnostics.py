@@ -58,7 +58,10 @@ def test_diagnostic_has_one_real_synchronous_export_after_strict_validation():
     assert parse < selection < acquisition < combine < filename < background < call
     assert 'sheet => !sheet.IsPlaceholder && sheet.CanBePrinted' in DIAGNOSTIC
     assert "var ids = sheets.Select(sheet => sheet.Id).ToList();" in DIAGNOSTIC
-    assert "[Transaction(TransactionMode.ReadOnly)]" in DIAGNOSTIC
+    assert "[Transaction(TransactionMode.Manual)]" in DIAGNOSTIC
+    assert "[Transaction(TransactionMode.ReadOnly)]" in NORMAL
+    assert DIAGNOSTIC.index("transaction.Start()") < call
+    assert "transaction.RollBack()" in DIAGNOSTIC
     assert 'if (options.GetExportInBackground())' in DIAGNOSTIC
     assert 'if (!exported) throw new InvalidOperationException' in DIAGNOSTIC
     assert "File.Exists(expectedPdf)" in DIAGNOSTIC
@@ -80,8 +83,7 @@ def test_saved_options_are_copied_without_creation_mutation_or_fallback():
     assert 'throw new InvalidOperationException' in method
     assert "catch" not in method
     assert "ExportPDFSettings.Create(" not in DIAGNOSTIC
-    assert not re.search(r"\b(?:SetOptions|Save|SynchronizeWithCentral|Commit|Start)\s*\(", DIAGNOSTIC)
-    assert "new Transaction" not in DIAGNOSTIC
+    assert not re.search(r"\b(?:SetOptions|Save|SaveAs|SynchronizeWithCentral|Commit)\s*\(", DIAGNOSTIC)
 
 
 def test_reports_diagnostic_source_settings_export_outcome_exception_and_files_only():
@@ -94,6 +96,9 @@ def test_reports_diagnostic_source_settings_export_outcome_exception_and_files_o
         "zoom_percentage", "always_use_raster", "background", "output_folder", "export_called",
         "export_return_value", "successful", "type", "message", "stack_trace", "details",
         "expected_pdf_exists", "pdf_files", "size_bytes",
+        "transaction", "initial_status", "start_return_status", "status_after_start",
+        "status_before_rollback", "rollback_attempted", "rollback_return_status", "end_status",
+        "rollback_succeeded", "rollback_skipped_reason", "dispose_succeeded", "cleanup_exceptions",
     ):
         assert f'["{field}"]' in DIAGNOSTIC
     assert 'report["exception"] = DescribeException(error);' in DIAGNOSTIC
@@ -114,6 +119,7 @@ def test_diagnostic_events_are_bounded_and_flushed_before_the_real_export():
     for event in (
         "diagnostic_started", "sheets_selected", "pdf_options_ready", "pdf_export_started",
         "pdf_export_completed", "pdf_export_failed", "diagnostic_finished",
+        "transaction_starting", "transaction_started", "transaction_rollback_started", "transaction_finished",
     ):
         assert DIAGNOSTIC.count(f'"{event}"') == 1
     started = DIAGNOSTIC.index('LocalExportLog.AppendEvent(eventsPath, "pdf_export_started"')

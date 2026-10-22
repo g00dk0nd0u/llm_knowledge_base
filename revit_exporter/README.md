@@ -245,6 +245,22 @@ and provides [SetExportInBackground(bool)](https://github.com/ADN-DevTech/revit-
 Vector processing is reported as `vector_when_possible` when `AlwaysUseRaster`
 is false; this does not assert that every object in the output is vector data.
 
+Only the diagnostic command uses `TransactionMode.Manual`. Autodesk's
+[TransactionAttribute guide](https://help.autodesk.com/cloudhelp/2024/ENU/Revit-API/files/Revit_API_Developers_Guide/Introduction/Add_In_Integration/Revit_API_Revit_API_Developers_Guide_Introduction_Add_In_Integration_Attributes_html.html)
+states that `ReadOnly` forbids starting transactions during the command. After Sheet/options
+validation it explicitly starts one Revit `Transaction`, requires both the Start
+return value and `GetStatus()` to be `Started`, and executes the one export inside
+it. A `finally` block explicitly calls `RollBack()` on a started transaction on
+both success and failure, then independently attempts disposal. It never commits,
+edits model elements, saves, or synchronizes. This follows the transaction/export/
+rollback structure of the [Autodesk PDF export sample](https://aps.autodesk.com/blog/design-automation-revit-2022-now-support-exporting-pdf-directly).
+The [official RollBack contract](https://help.autodesk.com/cloudhelp/2026/ENU/Revit-API-MainReference/files/html/bd1e69e9-961e-1c07-f70a-a29b90c6eb97.htm)
+permits rollback only in `Started` and requires checking its result. An unstarted
+or already-ended transaction records why explicit rollback was skipped. A pending
+or otherwise unconfirmed rollback fails diagnostics; it is not reported as success.
+Normal Exporter and Clarity transaction handling remain unchanged pending real
+diagnostic results.
+
 Each attempt writes to a unique local
 `<LLM_KB_EXPORT_ROOT>/pdf-diagnostics/<timestamp>-<guid>/` directory; the default
 root is `Documents/LlmKnowledgeBaseExports`. This directory is separate from
@@ -260,15 +276,28 @@ value, exception type/message/stack trace/details, PDF existence and sizes. A th
 export has `export_return_value=null`; a returned `false` stays false. False return,
 missing/empty `drawing.pdf`, or an exception fails the command even if a partial PDF
 exists. Reporting I/O failures also fail and identify the original export exception.
+The `transaction` object additionally records initial, Start-return, post-start,
+pre-rollback and final statuses, whether rollback was attempted, its return status,
+confirmed success, disposal result, the original exception and per-operation cleanup
+exceptions. Rollback/status/disposal or cleanup-event failures cannot replace an
+existing Start/Export exception or its stack; secondary details are also attached as
+`pdf_diagnostic_transaction_error` and displayed by the command. Cleanup failures
+alone fail the command. A failed status read or event append does not prevent the
+subsequent rollback/disposal attempts.
 There are no retries, per-Sheet fallback, or document modification/save/synchronize
 operations. Validation failures are reported where the output folder can be created;
 if the folder itself is inaccessible, the command displays that I/O failure.
 
 The JSONL event log is written incrementally. Each compact UTF-8 line contains
 `utc_timestamp` (UTC), `event`, `stage`, and minimal operational `data`. Its sequence
-is `diagnostic_started`, `sheets_selected`, `pdf_options_ready`,
-`pdf_export_started`, then `pdf_export_completed` (API returned true) or
-`pdf_export_failed` (API threw or returned false), and `diagnostic_finished`.
+starts with `diagnostic_started`, `sheets_selected`, `pdf_options_ready`,
+`transaction_starting`, `transaction_started`, `pdf_export_started` and
+`pdf_export_completed` when the API returns true, or `pdf_export_failed` when it
+throws or returns false. The failure event is attempted before reentering Revit
+for cleanup. Cleanup emits `transaction_rollback_started` and `transaction_finished`
+while preserving the original failure stage.
+`diagnostic_finished` records the final outcome. Transaction events contain status
+and outcome fields and exception types; detailed exceptions remain in the JSON report.
 Input validation failures skip export events. A true API return is not sufficient
 for overall success: the PDF must also exist and be nonempty. The final event records
 the overall outcome; the summary retains the actual nullable API return separately.
@@ -304,7 +333,10 @@ The user has verified the existing PR's host build (zero warnings/errors), add-i
 loading, and command launch. Normal API PDF export throws `InternalException` even
 under `C:\Temp\LlmKnowledgeBaseExports`; the native UI successfully exports
 `Admin CD.31` and `G6.001` with `PDF Export Setup Settings 1` (ISO A3, Landscape,
-Fit to Page, Vector, Background OFF). The root cause is still unknown. This
+Fit to Page, Vector, Background OFF). The current Journal places the exception in
+Revit's internal `Transaction::Transaction(...)` during `Document.Export()` while
+the diagnostic command used `TransactionMode.ReadOnly`. The Manual/explicit-rollback
+diagnostic tests this transaction-context hypothesis; the root cause is still unknown. This
 diagnostic command is not a permanent PDF-export fix. Its host build and API execution
 must be checked against the installed Autodesk DLLs; CI does not perform either.
 
