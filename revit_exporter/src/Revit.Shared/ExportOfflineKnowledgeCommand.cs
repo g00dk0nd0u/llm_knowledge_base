@@ -4,6 +4,11 @@ using Autodesk.Revit.DB.Architecture;
 using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.UI;
 using LlmKnowledgeBase.Revit.Core;
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
 using System.Text.Json.Nodes;
 
 namespace LlmKnowledgeBase.Revit;
@@ -24,7 +29,9 @@ public sealed class ExportOfflineKnowledgeCommand : IExternalCommand
         catch (Exception error)
         {
             message = error.Message;
-            TaskDialog.Show("Offline Knowledge Export failed", error.ToString());
+            var logError = error.Data["export_failure_log_error"];
+            TaskDialog.Show("Offline Knowledge Export failed", error.ToString()
+                + (logError is null ? "" : $"\n\nFailure log could not be written:\n{logError}"));
             return Result.Failed;
         }
     }
@@ -74,6 +81,9 @@ internal sealed class RevitSnapshotExporter
 
     public string Export()
     {
+        var elapsed = Stopwatch.StartNew();
+        var stage = "read_revit_version";
+        string? revitVersion = null;
         var project = SafeName(string.IsNullOrWhiteSpace(_document.Title) ? "untitled" : _document.Title);
         var root = _options.ExportRoot ?? Environment.GetEnvironmentVariable("LLM_KB_EXPORT_ROOT");
         var baseDirectory = string.IsNullOrWhiteSpace(root)
@@ -82,44 +92,70 @@ internal sealed class RevitSnapshotExporter
         var run = DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssfffZ");
         var finalDirectory = Path.Combine(baseDirectory, project, run);
         var staging = finalDirectory + ".tmp";
-        Directory.CreateDirectory(staging);
         try
         {
+            revitVersion = _document.Application.VersionNumber;
+            stage = "create_staging_directory";
+            Directory.CreateDirectory(staging);
+            stage = "collect_sheets";
             var sheets = CollectSheets();
             if (sheets.Count == 0) throw new InvalidOperationException("No non-placeholder printable sheets were found.");
             var pdf = Path.Combine(staging, "drawing.pdf");
+            stage = "pdf_export";
             ExportPdf(staging, pdf, sheets);
+            stage = "pdf_hash";
             var sha = ExportFiles.Sha256(pdf);
+            stage = "document_identity";
             var identity = DocumentIdentityResolver.Resolve(_document);
             _hostModelId = StableIds.Hash("model", identity.Kind, identity.Value);
             _sourceModelIds[_document] = _hostModelId;
             _documentId = StableIds.Document(identity.Kind, identity.Value);
+            stage = "snapshot_initialization";
             _snapshot = SnapshotContract.Create(project, $"Revit {_document.Application.VersionNumber}", identity.Value, sha);
+            stage = "document_records";
             AddDocumentAndModels(identity, sha);
+            stage = "sheet_view_placements";
             AddSheetsViewsAndPlacements(sheets);
+            stage = "drawing_references";
             AddDrawingReferences();
+            stage = "levels";
             AddLevels(_document, _hostModelId);
-            if (_options.IncludeLinks) AddLinks();
+            if (_options.IncludeLinks)
+            {
+                stage = "links";
+                AddLinks();
+            }
+            stage = "host_elements";
             CollectHostElements();
+            stage = "spatial_elements";
             AddSpatialElements(_document, _hostModelId);
+            stage = "schedule_membership";
             AddScheduleMembership();
+            stage = "spatial_boundaries";
             AddSpatialBoundaries(_document, _hostModelId, null, Transform.Identity);
+            stage = "annotations";
             AddAnnotations();
+            stage = "flush_elements";
             FlushElements();
+            stage = "sort_records";
             SortRecords();
             var snapshotFile = Path.Combine(staging, "revit_snapshot.json");
+            stage = "write_snapshot";
             ExportFiles.WriteJson(snapshotFile, _snapshot);
+            stage = "write_manifest";
             var manifest = new ExportManifest("revit-exporter/1.0", _document.Application.VersionNumber,
                 identity.Value, DateTimeOffset.UtcNow, "drawing.pdf", sha, "revit_snapshot.json",
                 sheets.Count, Count("elements"), Count("spaces"), Count("annotations"), Count("geometries"), _warnings);
             ExportFiles.WriteJson(Path.Combine(staging, "export_manifest.json"), manifest);
+            stage = "publish_run";
             Directory.Move(staging, finalDirectory);
             return finalDirectory;
         }
-        catch
+        catch (Exception error)
         {
-            if (Directory.Exists(staging))
-                ExportFiles.WriteJson(Path.Combine(staging, "export_failure.json"), new { successful = false, warnings = _warnings });
+            elapsed.Stop();
+            LocalExportLog.TryWriteFailure(Path.Combine(staging, "export_failure.json"),
+                stage, error, elapsed.Elapsed.TotalMilliseconds, revitVersion, _warnings);
             throw;
         }
     }
@@ -637,7 +673,7 @@ internal sealed class RevitSnapshotExporter
                 _warnings.Add(new("phase_context_unavailable", "FromRoom/ToRoom requires the exported view phase.", family.UniqueId));
                 return;
             }
-            foreach (var (relation, room) in new[] { ("from_space", family.FromRoom[phase]), ("to_space", family.ToRoom[phase]) })
+            foreach (var (relation, room) in new[] { ("from_space", family.get_FromRoom(phase)), ("to_space", family.get_ToRoom(phase)) })
             {
                 if (room is null) continue;
                 Add("relationships", Obj(("id", StableIds.Hash("relationship", elementId, relation, room.UniqueId, phase.UniqueId)),
@@ -739,9 +775,9 @@ internal sealed class RevitSnapshotExporter
         sourceModelId = null; sourceUniqueId = null; sourceLinkInstanceId = null;
         if (segment.LinkElementId == ElementId.InvalidElementId)
         {
-            var source = document.GetElement(segment.ElementId);
-            if (source is null) return;
-            sourceModelId = modelId; sourceUniqueId = source.UniqueId;
+            var currentDocumentSource = document.GetElement(segment.ElementId);
+            if (currentDocumentSource is null) return;
+            sourceModelId = modelId; sourceUniqueId = currentDocumentSource.UniqueId;
             sourceLinkInstanceId = boundaryLinkId;
             return;
         }
@@ -760,13 +796,13 @@ internal sealed class RevitSnapshotExporter
         }
         var linkedDocument = sourceLink.GetLinkDocument();
         if (linkedDocument is null || !_sourceModelIds.TryGetValue(linkedDocument, out var linkedModelId)
-            || linkedDocument.GetElement(segment.LinkElementId) is not Element source)
+            || linkedDocument.GetElement(segment.LinkElementId) is not Element linkedDocumentSource)
         {
             _warnings.Add(new("linked_boundary_source_unresolved",
                 "The linked document or boundary-producing element could not be resolved.", sourceLink.UniqueId));
             return;
         }
-        sourceModelId = linkedModelId; sourceUniqueId = source.UniqueId; sourceLinkInstanceId = sourceLinkId;
+        sourceModelId = linkedModelId; sourceUniqueId = linkedDocumentSource.UniqueId; sourceLinkInstanceId = sourceLinkId;
     }
 
     private static string BoundaryCurveKind(Curve curve) => curve.GetType().Name switch
@@ -784,7 +820,7 @@ internal sealed class RevitSnapshotExporter
             try
             {
                 var view = _document.GetElement(pair.Key) as View; if (view is null) continue;
-                var semantic = element is Dimension dimension ? DimensionSemanticFor(dimension) : DimensionSemantic.Unsupported;
+                var semantic = element is Dimension semanticDimension ? DimensionSemanticFor(semanticDimension) : DimensionSemantic.Unsupported;
                 var kind = element switch
                 {
                     SpotDimension when semantic == DimensionSemantic.SpotElevation => "spot_elevation",
@@ -792,8 +828,8 @@ internal sealed class RevitSnapshotExporter
                     SpotDimension => "dimension",
                     TextNote => "text_annotation", IndependentTag => "tag", Grid => "grid_reference", _ => "dimension"
                 };
-                var text = element switch { TextNote note => note.Text, IndependentTag tag => tag.TagText, Grid grid => grid.Name,
-                    Dimension dimension => dimension.ValueString ?? dimension.Name, _ => element.Name };
+                var text = element switch { TextNote note => note.Text, IndependentTag textTag => textTag.TagText, Grid grid => grid.Name,
+                    Dimension textDimension => textDimension.ValueString ?? textDimension.Name, _ => element.Name };
                 var annotationId = Id("annotation", _hostModelId, element.UniqueId);
                 var normalized = element is Dimension d ? NormalizeDimension(d.Value, semantic, element.UniqueId) : new NormalizedDimension(null, null);
                 Add("annotations", Obj(("id", annotationId), ("kind", kind), ("semantic_type", semantic.ToString().ToLowerInvariant()),
@@ -802,8 +838,8 @@ internal sealed class RevitSnapshotExporter
                     ("source_unique_id", element.UniqueId), ("view_id", Id("view", _hostModelId, view.UniqueId)),
                     ("provenance", Provenance), ("confidence", null), ("evidence_id", null)));
                 AddSearch("annotation", annotationId, text ?? "");
-                if (element is Dimension dimension) AddDimensionDetails(dimension, annotationId, semantic);
-                if (element is IndependentTag tag) AddTagReferences(tag, annotationId);
+                if (element is Dimension detailDimension) AddDimensionDetails(detailDimension, annotationId, semantic);
+                if (element is IndependentTag referenceTag) AddTagReferences(referenceTag, annotationId);
                 foreach (var p in pair.Value)
                     Add("entity_appearances", Obj(("id", StableIds.Hash("appearance", annotationId, p.Sheet.UniqueId, p.View.UniqueId)),
                         ("entity_kind", "annotation"), ("entity_id", annotationId), ("sheet_id", Id("sheet", _hostModelId, p.Sheet.UniqueId)),
