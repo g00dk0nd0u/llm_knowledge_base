@@ -72,11 +72,32 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--revit-install-dir", type=Path)
     command.add_argument("--configuration", default="Release", choices=("Debug", "Release"))
     command.add_argument("--manifest", type=Path, help="write a machine-local .addin file")
+    command = commands.add_parser("dev-pdf", help="build, register, launch and monitor bounded PDF diagnostics on Windows")
+    command.add_argument("--version", choices=("2025", "2026", "2027"), required=True)
+    command.add_argument("--runtime", choices=("net8", "net10"), required=True)
+    command.add_argument("--revit-install-dir", type=Path)
+    command.add_argument("--sheets", required=True, help="one or two exact, comma-separated Sheet numbers")
+    command.add_argument("--mode", choices=("default", "saved"), required=True)
+    command.add_argument("--setup-name", help="exact existing PDF export setting name (saved mode only)")
+    command.add_argument("--output-root", type=Path, required=True, help="local parent for a unique dev-pdf session directory")
+    command.add_argument("--timeout", type=float, default=900, help="monitoring timeout in seconds, including model opening (default: 900)")
     return root
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    if args.command == "dev-pdf":
+        from . import dev_pdf
+        import xml.etree.ElementTree as ET
+
+        try:
+            return dev_pdf.run(args)
+        except (ValueError, OSError, subprocess.SubprocessError, ET.ParseError) as error:
+            print(f"dev-pdf stopped: {error}", file=sys.stderr)
+            return 2
+        except KeyboardInterrupt:
+            print("dev-pdf interrupted; no Revit process was terminated.", file=sys.stderr)
+            return 130
     if args.command == "build":
         try:
             build(args.version, args.runtime, args.revit_install_dir or default_install(args.version), args.configuration, args.manifest)

@@ -340,35 +340,86 @@ diagnostic tests this transaction-context hypothesis; the root cause is still un
 diagnostic command is not a permanent PDF-export fix. Its host build and API execution
 must be checked against the installed Autodesk DLLs; CI does not perform either.
 
-Close Revit before rebuilding/updating its manifest. In PowerShell, from the checkout:
+#### One-command local diagnostic runner (Windows, Python 3.12+)
+
+Update the checkout yourself before running; `dev-pdf` never runs Git commands.
+Revit, the matching Autodesk API DLLs, and the profile's .NET SDK must already be
+installed (see the build prerequisites above). From the repository root, run:
 
 ```powershell
-git fetch origin
-git switch fix/revit-net8-core-framework-selection
-git pull --ff-only origin fix/revit-net8-core-framework-selection
-python -m tools.revit_exporter build --version 2025 --runtime net8 --manifest "$env:APPDATA\Autodesk\Revit\Addins\2025\LlmKnowledgeBase.Revit.addin"
-
-$env:LLM_KB_EXPORT_ROOT = "C:\Temp\LlmKnowledgeBaseExports"
-$env:LLM_KB_PDF_DIAG_SHEET_NUMBERS = "Admin CD.31,G6.001"
-$env:LLM_KB_PDF_DIAG_MODE = "default"
-Start-Process "C:\Program Files\Autodesk\Revit 2025\Revit.exe"
+python -m tools.revit_exporter dev-pdf --version 2025 --runtime net8 --sheets "Admin CD.31" --mode saved --setup-name "PDF Export Setup Settings 1" --output-root "C:\Temp\LlmKnowledgeBaseExports"
 ```
 
-Open the same project and invoke **Diagnose PDF Export (max 2 sheets)** once. Retain
-the report even if the command fails. Close Revit without saving or synchronizing
-changes for this diagnostic, then use the same PowerShell session:
+For the default-options comparison, close Revit manually and run:
 
 ```powershell
-$env:LLM_KB_PDF_DIAG_MODE = "saved"
-$env:LLM_KB_PDF_DIAG_SETUP_NAME = "PDF Export Setup Settings 1"
-Start-Process "C:\Program Files\Autodesk\Revit 2025\Revit.exe"
+python -m tools.revit_exporter dev-pdf --version 2025 --runtime net8 --sheets "Admin CD.31,G6.001" --mode default --output-root "C:\Temp\LlmKnowledgeBaseExports" --timeout 1800
 ```
 
-Open the same project and run the diagnostic once again. Revit must be launched from
-this shell after setting the variables: changing another shell's environment does
-not change an already-running Revit process. Compare the two JSON reports, including
-the actual saved options rather than assuming they match the UI. Do not test all
-Sheets or adopt an inferred permanent fix before reviewing these two results.
+The CLI checks Windows and the local installation, refuses to proceed while **any**
+`Revit.exe` is running, reuses the existing Release build, and registers
+`%APPDATA%\Autodesk\Revit\Addins\<version>\LlmKnowledgeBase.Revit.addin`.
+An existing registration for these same two commands is updated; an unrelated
+manifest at that path or another manifest registering either command stops the
+runner with a conflict message. Resolve conflicts manually. XML paths are escaped,
+and the DLL and registered paths are verified before launch.
+Use `--revit-install-dir "D:\Autodesk\Revit 2025"` for a nonstandard installation.
+Version/runtime combinations are the same as `build`; Revit 2025 requires `net8`.
+
+Once Revit opens, **open the model**, then click **Add-Ins > External Tools >
+Diagnose PDF Export (max 2 sheets)** once. Revit may also show its own first-run,
+add-in trust, model-opening, or diagnostic-result dialogs; respond normally.
+There is no UI automation. Do not click the normal full Exporter command.
+The CLI waits and prints Revit version/build, exact selected Sheet numbers/count,
+PDF mode/setup, Start and Rollback statuses, nullable `Document.Export` result,
+PDF names/sizes, timings, exceptions/cleanup errors, and the absolute log folder.
+Missing or unprintable Sheets and unavailable saved settings fail without substitution.
+
+Every invocation creates a new `<output-root>/dev-pdf-<unique>/` session directory
+and passes it as `LLM_KB_EXPORT_ROOT` **only to the launched Revit process**. Other
+inherited `LLM_KB_*` configuration is removed from that child's environment; the
+shell and persistent user/system environment are untouched. The unchanged C# command
+writes beneath that session's `pdf-diagnostics/<timestamp>-<guid>/`. Only that
+session is monitored; old logs are never selected, deleted or overwritten. Multiple
+diagnostic attempts in one session are ambiguous and cannot be reported as success.
+
+Success requires the complete JSON report **and** flushed final JSONL event,
+confirmed Transaction Start, true export return, a nonempty `drawing.pdf` matching
+the reported size, confirmed Rollback and disposal in both report and event log,
+and no exception, cleanup or logging failure. A PDF alone never proves success.
+Partial JSON/JSONL is retried while the process runs; a finished event with a
+missing/invalid report is reported as incomplete. Timeout and process exit report
+whether logs are incomplete and the last available phase evidence. No missing
+completion is interpreted as proof of a particular Revit failure.
+
+| Exit code | Result |
+| --- | --- |
+| `0` | Complete diagnostic success including Rollback confirmation |
+| `1` | Completed diagnostic failed or safety evidence did not confirm success |
+| `2` | Input, preflight, build, registration or launch error |
+| `3` | Monitoring timeout (default 900 seconds; `--timeout` includes model opening) |
+| `4` | Launched Revit exited before complete logs were available |
+| `5` | Final event received but report/logs are incomplete or invalid |
+| `130` | Ctrl+C stopped the runner |
+
+After monitoring, new `journal*.txt` files under
+`%LOCALAPPDATA%\Autodesk\Revit\Autodesk Revit <version>\Journals` are copied to
+`<session>/journals/` without overwriting files. Files present before launch are
+excluded even if later modified. These are explicitly labeled **Journal candidate
+snapshots**: Revit provides no PID link here, other sessions could create files,
+and Revit may still be writing. Keep the original journal for final inspection;
+missing/locked journals are reported separately and do not prove PDF failure.
+JSON/JSONL stay in the diagnostic directory without another copy. All logs remain
+local; the runner makes no external sends. Reports and Journals may contain project
+paths or sensitive model information.
+
+Timeout and Ctrl+C leave Revit running. Close it manually before another invocation.
+The runner never kills processes, saves/synchronizes/edits a model, automatically
+selects all Sheets, or changes normal Exporter/Clarity/Query Core behavior. Close
+without saving or synchronizing diagnostic changes. This is a diagnostic workflow,
+not a confirmed permanent fix; compare `default` and `saved` on the real machine.
+CI tests orchestration with mocked Windows/Revit dependencies and existing pure
+Core tests; it does **not** compile against Autodesk DLLs or execute Revit/PDF APIs.
 
 ### Complete package smoke test
 
