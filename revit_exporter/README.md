@@ -360,8 +360,13 @@ The CLI checks Windows and the local installation, refuses to proceed while **an
 `Revit.exe` is running, reuses the existing Release build, and registers
 `%APPDATA%\Autodesk\Revit\Addins\<version>\LlmKnowledgeBase.Revit.addin`.
 An existing registration for these same two commands is updated; an unrelated
-manifest at that path or another manifest registering either command stops the
-runner with a conflict message. Resolve conflicts manually. XML paths are escaped,
+manifest at that path or another readable manifest registering either command stops the
+runner with a conflict message. Unreadable or malformed third-party .addin files
+(including empty files, permission errors and incompatible XML encodings) produce
+path-specific WARNING messages and are left unchanged. Their registrations cannot
+be verified for conflicts; investigate those warnings separately. The managed
+LlmKnowledgeBase.Revit.addin and its template remain strictly validated.
+Resolve confirmed conflicts manually. XML paths are escaped,
 and the DLL and registered paths are verified before launch.
 Use `--revit-install-dir "D:\Autodesk\Revit 2025"` for a nonstandard installation.
 Version/runtime combinations are the same as `build`; Revit 2025 requires `net8`.

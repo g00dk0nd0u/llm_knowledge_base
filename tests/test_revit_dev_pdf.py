@@ -383,6 +383,65 @@ def test_conflicting_manifest_never_overwritten(windows_run, scope):
     assert builds == launches == []
 
 
+
+@pytest.mark.parametrize("failure", ["empty", "permission", "encoding"])
+def test_unreadable_third_party_manifest_warns_without_modifying_it(windows_run, monkeypatch, capsys, failure):
+    args, _, _, launches = windows_run
+    folder = Path(os.environ["APPDATA"]) / "Autodesk/Revit/Addins/2025"
+    folder.mkdir(parents=True)
+    foreign = folder / "external-vendor.addin"
+    if failure == "empty":
+        foreign.write_bytes(b"")
+    elif failure == "encoding":
+        foreign.write_bytes(b'<?xml version="1.0" encoding="UTF-16"?><RevitAddIns/>')
+    else:
+        foreign.write_bytes(b"<RevitAddIns/>")
+        original_parse = ET.parse
+
+        def fail_for_foreign(source, *a, **kw):
+            if Path(source) == foreign:
+                raise PermissionError(13, "Permission denied", str(foreign))
+            return original_parse(source, *a, **kw)
+
+        monkeypatch.setattr(dev.ET, "parse", fail_for_foreign)
+
+    original = foreign.read_bytes()
+    assert dev.run(args) == 0
+    captured = capsys.readouterr()
+    assert "WARNING:" in captured.err
+    assert str(foreign) in captured.err
+    assert "conflicts remain unverified" in captured.err
+    assert foreign.read_bytes() == original
+    assert len(launches) == 1
+
+
+def test_unreadable_foreign_does_not_bypass_readable_conflict(windows_run, capsys):
+    args, _, builds, launches = windows_run
+    folder = Path(os.environ["PROGRAMDATA"]) / "Autodesk/Revit/Addins/2025"
+    folder.mkdir(parents=True)
+    (folder / "a-empty.addin").write_bytes(b"")
+    other = folder / "z-conflict.addin"
+    other.write_text(
+        (ROOT / "revit_exporter/manifests/2025/LlmKnowledgeBase.Revit.addin.template").read_text(),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Conflicting add-in registration"):
+        dev.run(args)
+    assert builds == [] and launches == []
+    assert "a-empty.addin" in capsys.readouterr().err
+
+
+def test_invalid_managed_manifest_fails_with_its_path(windows_run):
+    args, _, builds, launches = windows_run
+    target = Path(os.environ["APPDATA"]) / "Autodesk/Revit/Addins/2025/LlmKnowledgeBase.Revit.addin"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"")
+    with pytest.raises(ValueError, match="Cannot validate managed LlmKnowledgeBase manifest") as error:
+        dev.run(args)
+    assert str(target) in str(error.value)
+    assert builds == [] and launches == []
+    assert target.read_bytes() == b""
+
 def test_journal_collection_only_new_files_and_no_overwrite(tmp_path, capsys):
     journals = tmp_path / "Journals"
     journals.mkdir()

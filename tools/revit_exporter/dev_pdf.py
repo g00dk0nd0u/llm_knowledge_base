@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
@@ -73,7 +74,17 @@ def manifest_plan(root: Path, version: str) -> tuple[Path, ET.Element]:
         directories.append(Path(os.environ["PROGRAMDATA"]) / "Autodesk/Revit/Addins" / version)
     for folder in directories:
         for path in folder.glob("*.addin"):
-            existing = ET.parse(path).getroot()
+            try:
+                existing = ET.parse(path).getroot()
+            except (ET.ParseError, OSError, UnicodeError) as error:
+                if path == target:
+                    raise ValueError(f"Cannot validate managed LlmKnowledgeBase manifest {path}: {error}") from error
+                print(
+                    f"WARNING: Cannot inspect third-party Revit manifest {path}: {error}. "
+                    "Its AddInId/FullClassName conflicts remain unverified.",
+                    file=sys.stderr,
+                )
+                continue
             entries = {((item.findtext("AddInId") or "").upper(), item.findtext("FullClassName")) for item in existing.findall("AddIn")}
             if path == target:
                 if entries != identities or len(existing.findall("AddIn")) != len(identities):
