@@ -43,6 +43,8 @@ def completed(run_root, *, successful=True):
     for event in events:
         if event["event"] in ("transaction_starting", "transaction_rollback_started"):
             event["data"] = None  # LocalExportLog.AppendEvent without a data argument
+    events[4]["data"] = dict(start_return_status="Started", status="Started")
+    events[6]["data"] = dict(export_return_value=True, elapsed_ms=100)
     events[-2]["data"] = dict(tx, exception_type=None, cleanup_exception_type=None)
     events[-1]["data"] = dict(successful=successful, elapsed_ms=201, exception_type=None)
     write_logs(folder, report, events)
@@ -271,7 +273,7 @@ def windows_run(tmp_path, monkeypatch):
     install.mkdir()
     (install / "Revit.exe").touch()
     args.revit_install_dir = install
-    monkeypatch.setattr(dev, "os", SimpleNamespace(name="nt", environ=os.environ))
+    monkeypatch.setattr(dev, "os", SimpleNamespace(name="nt", environ=os.environ, path=os.path))
     monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
     monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "ProgramData"))
@@ -527,3 +529,217 @@ def test_build_preflight_exit_is_reported_as_preflight_error(windows_run, monkey
     with pytest.raises(ValueError, match="Release build preflight failed: A .NET 8 SDK"):
         dev.run(args)
     assert launches == []
+
+
+@pytest.mark.parametrize("event_name,data", [
+    ("transaction_started", {"start_return_status": "Pending", "status": "Pending"}),
+    ("pdf_export_completed", {"export_return_value": False}),
+    ("transaction_finished", {"rollback_attempted": False}),
+])
+def test_contradictory_event_evidence_cannot_succeed(tmp_path, event_name, data):
+    folder, report, events = completed(tmp_path)
+    next(event for event in events if event["event"] == event_name)["data"].update(data)
+    write_logs(folder, report, events)
+    assert dev.success_problems(dev.read_logs(tmp_path))
+
+
+@pytest.mark.parametrize("boundary", ["exit", "timeout"])
+def test_logs_completed_during_stop_check_are_reloaded(tmp_path, monkeypatch, boundary):
+    folder, report, events = completed(tmp_path)
+    (folder / dev.REPORT).unlink()
+    (folder / dev.EVENTS).write_text(json.dumps(events[0]) + "\n", encoding="utf-8")
+    ticks = iter([0, 2])
+    monkeypatch.setattr(dev.time, "monotonic", lambda: next(ticks))
+    def poll():
+        write_logs(folder, report, events)
+        return 0 if boundary == "exit" else None
+    assert dev.monitor(tmp_path, SimpleNamespace(poll=poll), 1)[0] == "success"
+
+
+@pytest.mark.parametrize("encoding", ["unknown-vendor-encoding", "UTF-32"])
+def test_unknown_encoding_third_party_manifest_warns(windows_run, capsys, encoding):
+    args, _, _, launches = windows_run
+    foreign = Path(os.environ["APPDATA"]) / "Autodesk/Revit/Addins/2025/vendor.addin"
+    foreign.parent.mkdir(parents=True)
+    content = f'<?xml version="1.0" encoding="{encoding}"?><RevitAddIns/>'.encode("ascii")
+    foreign.write_bytes(content)
+    assert dev.run(args) == 0
+    assert len(launches) == 1
+    assert foreign.read_bytes() == content
+    assert "vendor.addin" in capsys.readouterr().err
+
+
+def inspect_cli(session):
+    return cli.main(["inspect-pdf", "--session", str(session)])
+
+
+def test_offline_inspection_requires_no_host_and_does_not_change_files(tmp_path, monkeypatch, capsys):
+    completed(tmp_path)
+    before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in tmp_path.rglob("*") if path.is_file()}
+    env_before = dict(os.environ)
+    def forbidden(*args, **kwargs):
+        pytest.fail("offline inspection must not build, launch or collect journals")
+    monkeypatch.setattr(cli, "build", forbidden)
+    monkeypatch.setattr(dev, "revit_pids", forbidden)
+    monkeypatch.setattr(dev, "child_environment", forbidden)
+    monkeypatch.setattr(dev, "collect_journals", forbidden)
+    monkeypatch.setattr(dev.subprocess, "Popen", forbidden)
+    monkeypatch.setattr(dev.subprocess, "run", forbidden)
+    assert inspect_cli(tmp_path) == 0
+    output = capsys.readouterr().out
+    for text in ("Result: success", "Revit: 2025", "Admin CD.31", "Document.Export:", "Transaction Start:", "Transaction Rollback:", "Timings (ms):", "Exception:", str(tmp_path.resolve())):
+        assert text in output
+    assert {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert dict(os.environ) == env_before
+
+
+@pytest.mark.parametrize("failure", ["api_exception", "rollback_pending", "rollback_unconfirmed", "missing_pdf", "event_failed", "failed_event_present"])
+def test_offline_failures_cannot_be_pdf_only_success(tmp_path, capsys, failure):
+    folder, report, events = completed(tmp_path)
+    if failure == "api_exception":
+        report.update(successful=False, export_return_value=None,
+                      exception={"type": "Autodesk.Revit.Exceptions.InternalException", "message": "API export failed"})
+        events[-1]["data"]["successful"] = False
+    elif failure == "rollback_pending":
+        report["transaction"].update(rollback_succeeded=False, rollback_return_status="Pending", end_status="Pending")
+    elif failure == "rollback_unconfirmed":
+        report["transaction"]["rollback_succeeded"] = False
+    elif failure == "missing_pdf":
+        (folder / "drawing.pdf").unlink()
+    elif failure == "event_failed":
+        events[-1]["data"]["successful"] = False
+    else:
+        events.insert(6, dict(event="pdf_export_failed", data={"export_return_value": False}))
+    write_logs(folder, report, events)
+    assert inspect_cli(tmp_path) == 1
+    output = capsys.readouterr().out
+    assert "Result: failed" in output
+    if failure == "api_exception":
+        assert "InternalException" in output and "API export failed" in output
+    elif failure.startswith("rollback"):
+        assert "Transaction Rollback not confirmed" in output
+
+
+def test_inspection_after_timeout_sees_later_completed_logs(tmp_path, monkeypatch, capsys):
+    folder, report, events = completed(tmp_path)
+    (folder / dev.REPORT).unlink()
+    (folder / dev.EVENTS).write_text(json.dumps(events[0]) + "\n", encoding="utf-8")
+    ticks = iter([0, 2])
+    monkeypatch.setattr(dev.time, "monotonic", lambda: next(ticks))
+    assert dev.monitor(tmp_path, SimpleNamespace(poll=lambda: None), 1)[0] == "timeout"
+    assert inspect_cli(tmp_path) == 5
+    write_logs(folder, report, events)
+    assert inspect_cli(tmp_path) == 0
+    assert "Result: success" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("name,content", [
+    (dev.REPORT, b"{"), (dev.REPORT, b"[]"), (dev.REPORT, b"null"),
+    (dev.REPORT, b"\xff"), (dev.REPORT, b"[" * 2000),
+    (dev.EVENTS, b'{"event":'), (dev.EVENTS, b"\xff"),
+    (dev.EVENTS, b"[]\n"), (dev.EVENTS, b"[" * 2000),
+])
+def test_offline_corrupt_logs_are_incomplete(tmp_path, capsys, name, content):
+    folder, _, _ = completed(tmp_path)
+    (folder / name).write_bytes(content)
+    assert inspect_cli(tmp_path) == 5
+    output = capsys.readouterr().out
+    assert "Result: incomplete" in output
+    assert "incomplete/invalid" in output
+
+
+@pytest.mark.parametrize("missing", [dev.REPORT, dev.EVENTS, "both"])
+def test_offline_missing_logs_are_incomplete(tmp_path, capsys, missing):
+    folder, _, _ = completed(tmp_path)
+    for name in (dev.REPORT, dev.EVENTS) if missing == "both" else (missing,):
+        (folder / name).unlink()
+    assert inspect_cli(tmp_path) == 5
+    assert "Logs: incomplete" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("kind", ["missing", "file"])
+def test_offline_nonexistent_or_non_directory_session(tmp_path, capsys, kind):
+    session = tmp_path / "no-session"
+    if kind == "file":
+        session.touch()
+    assert inspect_cli(session) == 2
+    assert "Session directory does not exist or is not a directory" in capsys.readouterr().err
+    assert not (session / "pdf-diagnostics").exists()
+
+
+@pytest.mark.parametrize("legacy", ["no_transaction", "empty_transaction", "no_timing", "old_event_outcome", "no_events", "transaction_string"])
+def test_old_log_formats_show_available_values_and_unverified_evidence(tmp_path, capsys, legacy):
+    folder, report, events = completed(tmp_path)
+    if legacy == "no_transaction":
+        del report["transaction"]
+    elif legacy == "empty_transaction":
+        report["transaction"] = {}
+    elif legacy == "no_timing":
+        del report["timings_ms"]
+    elif legacy == "old_event_outcome":
+        events[-1]["data"] = {"succeeded": True}
+    elif legacy == "transaction_string":
+        report["transaction"] = "ReadOnly"
+    write_logs(folder, report, events)
+    if legacy == "no_events":
+        (folder / dev.EVENTS).unlink()
+    assert inspect_cli(tmp_path) == 5
+    output = capsys.readouterr().out
+    assert "Result: incomplete" in output and "Revit: 2025" in output
+    if "transaction" in legacy:
+        assert "Unverified: Transaction Start" in output
+        assert "Unverified: Transaction Rollback" in output
+    elif legacy == "no_timing":
+        assert "Unverified: processing time" in output
+    else:
+        assert "events incomplete/invalid" in output
+
+
+def test_offline_empty_and_ambiguous_sessions(tmp_path, capsys):
+    assert inspect_cli(tmp_path) == 5
+    assert "diagnostic not started" in capsys.readouterr().out
+    completed(tmp_path)
+    (tmp_path / "pdf-diagnostics" / "another-attempt").mkdir()
+    assert inspect_cli(tmp_path) == 5
+    assert "ambiguous: 2" in capsys.readouterr().out
+
+
+def test_final_event_report_read_race_is_retried_at_monitor_boundary(tmp_path, monkeypatch):
+    folder, _, _ = completed(tmp_path)
+    original = Path.read_text
+    reads = []
+    def read(path, *args, **kwargs):
+        if path == folder / dev.REPORT:
+            reads.append(path)
+            if len(reads) == 1:
+                return "{"
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "read_text", read)
+    assert dev.monitor(tmp_path, SimpleNamespace(poll=lambda: None), 1)[0] == "success"
+    assert len(reads) == 2
+
+
+def test_recorded_output_path_is_never_resolved_or_opened(tmp_path, monkeypatch):
+    folder, report, events = completed(tmp_path)
+    recorded = tmp_path / "outside-session"
+    report["output_folder"] = str(recorded)
+    write_logs(folder, report, events)
+    original = Path.resolve
+    def resolve(path, *args, **kwargs):
+        assert path != recorded, "log metadata must not trigger filesystem access"
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "resolve", resolve)
+    assert dev.inspect(tmp_path) == 1
+
+
+@pytest.mark.parametrize("case,code", [("success", 0), ("incomplete", 5), ("missing", 2)])
+def test_offline_cli_runs_with_stdlib_only(tmp_path, case, code):
+    import sys
+    if case == "success":
+        completed(tmp_path)
+    session = tmp_path / "missing" if case == "missing" else tmp_path
+    result = subprocess.run([
+        sys.executable, "-S", "-m", "tools.revit_exporter", "inspect-pdf", "--session", str(session),
+    ], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == code
+    assert "Traceback" not in result.stderr

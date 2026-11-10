@@ -246,6 +246,9 @@ and monitors a diagnostic for one or two explicitly named Sheets. See the
 for arguments and safety limits. A successful PDF alone is insufficient; the
 runner also requires confirmed transaction rollback. Real-Revit verification
 remains separate from CI.
+Use `python -m tools.revit_exporter inspect-pdf --session "<session-folder>"` to
+re-read the diagnostic results offline, including after a timeout, without Revit
+or the .NET SDK. See the [offline inspection instructions](revit_exporter/README.md#inspect-an-existing-diagnostic-session-offline).
 
 ## Design principles
 

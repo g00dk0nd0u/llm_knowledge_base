@@ -1,4 +1,4 @@
-"""Local Windows PDF diagnostic orchestration. Standard library only; no Revit API calls."""
+"""Local PDF diagnostic inspection and Windows orchestration. Standard library only."""
 from __future__ import annotations
 
 import csv
@@ -17,6 +17,11 @@ import xml.etree.ElementTree as ET
 COMMAND = "Diagnose PDF Export (max 2 sheets)"
 REPORT = "pdf_diagnostic_report.json"
 EVENTS = "diagnostic_events.jsonl"
+TRANSACTION_FIELDS = {
+    "Start": ("start_return_status", "status_after_start"),
+    "Rollback": ("rollback_attempted", "rollback_return_status", "end_status", "rollback_succeeded"),
+    "disposal/cleanup": ("dispose_succeeded", "exception", "cleanup_exceptions"),
+}
 
 
 def sheet_numbers(value: str) -> str:
@@ -73,10 +78,10 @@ def manifest_plan(root: Path, version: str) -> tuple[Path, ET.Element]:
     if os.environ.get("PROGRAMDATA"):
         directories.append(Path(os.environ["PROGRAMDATA"]) / "Autodesk/Revit/Addins" / version)
     for folder in directories:
-        for path in folder.glob("*.addin"):
+        for path in sorted(folder.glob("*.addin")):
             try:
                 existing = ET.parse(path).getroot()
-            except (ET.ParseError, OSError, UnicodeError) as error:
+            except (ET.ParseError, OSError, ValueError, LookupError) as error:
                 if path == target:
                     raise ValueError(f"Cannot validate managed LlmKnowledgeBase manifest {path}: {error}") from error
                 print(
@@ -147,7 +152,7 @@ def read_logs(run_root: Path) -> Logs:
         report = json.loads((folder / REPORT).read_text(encoding="utf-8"))
         if not isinstance(report, dict):
             raise ValueError("report must be an object")
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, RecursionError) as error:
         problems.append(f"report incomplete/invalid: {error}")
         report = None
     try:
@@ -165,7 +170,7 @@ def read_logs(run_root: Path) -> Logs:
         if not isinstance(events[-1].get("data"), dict) or type(events[-1]["data"].get("successful")) is not bool:
             raise ValueError("final event has no boolean outcome")
         terminal = True
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, RecursionError) as error:
         problems.append(f"events incomplete/invalid: {error}")
     if report is not None:
         try:
@@ -183,6 +188,9 @@ def validate_report(report: dict) -> None:
             raise ValueError(f"missing/invalid report field: {key}")
     if not isinstance(report.get("transaction"), dict) or not isinstance(report.get("timings_ms"), dict):
         raise ValueError("missing/invalid transaction or timings_ms")
+    missing = [field for fields in TRANSACTION_FIELDS.values() for field in fields if field not in report["transaction"]]
+    if missing:
+        raise ValueError(f"missing transaction evidence; cannot verify: {', '.join(missing)}")
     for key in ("sheets", "pdf_files"):
         if not isinstance(report.get(key), list) or any(not isinstance(item, dict) for item in report[key]):
             raise ValueError(f"missing/invalid {key}")
@@ -216,8 +224,14 @@ def success_problems(logs: Logs) -> list[str]:
     required = ["diagnostic_started", "transaction_started", "pdf_export_started", "pdf_export_completed", "transaction_rollback_started", "transaction_finished", "diagnostic_finished"]
     if any(names.count(name) != 1 for name in required) or [name for name in names if name in required] != required:
         problems.append("required completion events missing or out of order")
+    started = next((item.get("data") for item in events if item["event"] == "transaction_started"), None) or {}
+    exported = next((item.get("data") for item in events if item["event"] == "pdf_export_completed"), None) or {}
+    if started.get("start_return_status") != "Started" or started.get("status") != "Started":
+        problems.append("transaction_started does not confirm Start")
+    if exported.get("export_return_value") is not True or "pdf_export_failed" in names:
+        problems.append("export events do not confirm successful Document.Export")
     finished = next((item["data"] for item in events if item["event"] == "transaction_finished"), None) or {}
-    if (finished.get("rollback_succeeded") is not True or finished.get("end_status") != "RolledBack"
+    if (finished.get("rollback_attempted") is not True or finished.get("rollback_succeeded") is not True or finished.get("end_status") != "RolledBack"
             or finished.get("rollback_return_status") != "RolledBack" or finished.get("dispose_succeeded") is not True
             or finished.get("exception_type") or finished.get("cleanup_exception_type")):
         problems.append("transaction_finished does not confirm clean rollback")
@@ -239,7 +253,8 @@ def success_problems(logs: Logs) -> list[str]:
             (not report.get("setup_name") or report.get("setup_name") != report.get("requested_setup_name"))):
         problems.append("PDF mode/setup does not match the request")
     try:
-        same_folder = Path(report["output_folder"]).resolve() == logs.folder.resolve()
+        # Compare recorded metadata without resolving or opening a log-supplied path.
+        same_folder = os.path.normcase(os.path.abspath(report["output_folder"])) == os.path.normcase(str(logs.folder.resolve()))
     except (OSError, ValueError):
         same_folder = False
     if not same_folder:
@@ -247,18 +262,40 @@ def success_problems(logs: Logs) -> list[str]:
     return problems
 
 
+def result_status(logs: Logs) -> str:
+    if not logs.complete:
+        return "incomplete"
+    return "failed" if success_problems(logs) else "success"
+
+
+def inspect(session: Path) -> int:
+    if not session.is_dir():
+        raise ValueError(f"Session directory does not exist or is not a directory: {session}")
+    session = session.resolve()
+    logs = read_logs(session)
+    status = result_status(logs)
+    display(status, logs, session)
+    return {"success": 0, "failed": 1, "incomplete": 5}[status]
+
+
 def monitor(run_root: Path, process, timeout: float) -> tuple[str, Logs]:
     deadline = time.monotonic() + timeout
     while True:
         logs = read_logs(run_root)
         if logs.complete:
-            return ("failed" if success_problems(logs) else "success"), logs
-        if logs.terminal:
-            return "incomplete", logs
-        if process.poll() is not None:
-            return "revit_exited", logs
-        if time.monotonic() >= deadline:
-            return "timeout", logs
+            return result_status(logs), logs
+        stopped = "incomplete" if logs.terminal else None
+        if stopped is None:
+            if process.poll() is not None:
+                stopped = "revit_exited"
+            elif time.monotonic() >= deadline:
+                stopped = "timeout"
+        if stopped is not None:
+            # The writer may finish between the first read and poll/deadline checks.
+            logs = read_logs(run_root)
+            if logs.complete or logs.terminal:
+                return result_status(logs), logs
+            return stopped, logs
         time.sleep(min(0.5, max(0, deadline - time.monotonic())))
 
 
@@ -278,6 +315,12 @@ def display(status: str, logs: Logs, run_root: Path) -> None:
     print(f"PDF mode: {report.get('mode')}; setup: {report.get('setup_name') or report.get('requested_setup_name')}")
     tx = report.get("transaction")
     tx = tx if isinstance(tx, dict) else {}
+    for name, fields in TRANSACTION_FIELDS.items():
+        missing = [field for field in fields if field not in tx]
+        if missing:
+            print(f"Unverified: Transaction {name}; missing evidence: {', '.join(missing)}")
+    if not isinstance(report.get("timings_ms"), dict):
+        print("Unverified: processing time; missing/invalid timings_ms")
     print(f"Transaction Start: return={tx.get('start_return_status')}, status={tx.get('status_after_start')}")
     print(f"Document.Export: called={report.get('export_called')}, return={report.get('export_return_value')}")
     print(f"PDF: expected_exists={report.get('expected_pdf_exists')}; files={json.dumps(report.get('pdf_files'), ensure_ascii=False)}")

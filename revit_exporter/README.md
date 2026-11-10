@@ -363,7 +363,7 @@ An existing registration for these same two commands is updated; an unrelated
 manifest at that path or another readable manifest registering either command stops the
 runner with a conflict message. Unreadable or malformed third-party .addin files
 (including empty files, permission errors and incompatible XML encodings) produce
-path-specific WARNING messages and are left unchanged. Their registrations cannot
+path-specific WARNING messages (including unknown encoding names) and are left unchanged. Their registrations cannot
 be verified for conflicts; investigate those warnings separately. The managed
 LlmKnowledgeBase.Revit.addin and its template remain strictly validated.
 Resolve confirmed conflicts manually. XML paths are escaped,
@@ -425,6 +425,53 @@ without saving or synchronizing diagnostic changes. This is a diagnostic workflo
 not a confirmed permanent fix; compare `default` and `saved` on the real machine.
 CI tests orchestration with mocked Windows/Revit dependencies and existing pure
 Core tests; it does **not** compile against Autodesk DLLs or execute Revit/PDF APIs.
+
+#### Inspect an existing diagnostic session offline
+
+Re-read a session after the diagnostic finishes, or after the runner timed out:
+
+```powershell
+python -m tools.revit_exporter inspect-pdf --session "C:\Temp\LlmKnowledgeBaseExports\dev-pdf-xxxx"
+```
+
+`--session` is the **Session folder** printed by `dev-pdf`, containing
+`pdf-diagnostics/<timestamp>-<guid>/`; it is not the individual attempt folder.
+Inspection runs on Windows or another OS with Python 3.12+ and the standard library
+only. It does not require or start Revit, .NET SDK, or Autodesk DLLs. It reads the
+existing JSON report, JSONL events and the local `drawing.pdf` size, then uses the
+same summary and success checks as the live runner. Start/Export/Rollback event
+payloads must agree with successful report evidence. A failed export event cannot
+be overridden by a successful report. It never saves, edits, deletes, copies or
+uploads logs/PDFs, changes environment variables, registers manifests, or collects
+new Journals. The recorded `output_folder` is compared as metadata; it is never
+opened or resolved as an additional filesystem location.
+
+| Exit code | Inspection result |
+| --- | --- |
+| `0` | Complete success with PDF and confirmed Start/Rollback/disposal |
+| `1` | Completed diagnostic failure or contradictory/unconfirmed success evidence |
+| `2` | Invalid arguments or session directory missing/unavailable/not a directory |
+| `5` | Logs missing, partial, corrupt, ambiguous, or required report fields unavailable |
+| `130` | Inspection interrupted |
+
+Inspection takes one local snapshot and does not wait for Revit. If logs are still
+being written, run it again after completion; the next invocation reads the new
+contents, including logs completed after a monitoring timeout. A timeout does not
+permanently mark a session as failed. The live monitor also re-reads once before
+returning at an exit/timeout boundary to catch logs finalized during that check.
+
+Older reports retain their available PDF/exception/timing values in the summary.
+Missing Transaction Start, Rollback, disposal/cleanup or timing fields are explicitly
+marked **Unverified**; old reports are not upgraded or assumed successful. Multiple
+attempt folders remain ambiguous: inspection never chooses the latest or an old
+successful attempt automatically. The output-folder comparison remains strict;
+moving/copying a session to a different path or OS can produce a recorded-path
+mismatch. It does not repair that mismatch by editing the report.
+
+Reports, exception details and Journals can include sensitive model information.
+The summary is printed only to the local console; redirect it only to a location
+you intend to keep private. The command makes no network requests. Actual Revit
+PDF output, Rollback and Journal attribution remain pending real-machine validation.
 
 ### Complete package smoke test
 
