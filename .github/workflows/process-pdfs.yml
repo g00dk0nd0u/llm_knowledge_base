@@ -57,6 +57,14 @@ jobs:
         run: python -S -m tests.pdf_report_stdlib_smoke
       - name: Standard-library-only Project Query Bundle smoke
         run: python -S -m tests.project_bundle_stdlib_smoke
+      - name: Standard-library-only PDF diagnostic CLI help
+        run: |
+          python -S -m tools.revit_exporter dev-pdf --help
+          python -S -m tools.revit_exporter inspect-pdf --help
+      - name: Test PDF diagnostic orchestration (mocked Revit, no Autodesk APIs)
+        run: |
+          python -m pip install 'pytest>=8.3,<9'
+          python -m pytest tests/test_revit_dev_pdf.py
 
   validate:
     runs-on: ubuntu-latest

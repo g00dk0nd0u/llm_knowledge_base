@@ -240,6 +240,16 @@ The Revit exporter is intentionally offline and source-oriented. It extracts exp
 
 See [`revit_exporter/README.md`](revit_exporter/README.md) for deployment, extraction policy, drawing-reference behavior, and required real-Revit smoke tests.
 
+On Windows, `python -m tools.revit_exporter dev-pdf` builds, registers, launches,
+and monitors a diagnostic for one or two explicitly named Sheets. See the
+[one-command diagnostic instructions](revit_exporter/README.md#one-command-local-diagnostic-runner-windows-python-312)
+for arguments and safety limits. A successful PDF alone is insufficient; the
+runner also requires confirmed transaction rollback. Real-Revit verification
+remains separate from CI.
+Use `python -m tools.revit_exporter inspect-pdf --session "<session-folder>"` to
+re-read the diagnostic results offline, including after a timeout, without Revit
+or the .NET SDK. See the [offline inspection instructions](revit_exporter/README.md#inspect-an-existing-diagnostic-session-offline).
+
 ## Design principles
 
 1. **Original sources remain authoritative**  
